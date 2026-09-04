@@ -1,0 +1,51 @@
+<local:ClassIngSettingsPageBase
+    x:Class="ClassIng.Plugin.Controls.SettingsPages.FileSettingsPage"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:ClassIng.Plugin.Controls.SettingsPages"
+    mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="800">
+
+    <ScrollViewer>
+        <StackPanel Margin="24" MaxWidth="720" Spacing="10">
+
+            <TextBlock Text="文件设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+
+            <TextBlock Text="下载根目录（相对插件数据目录或绝对路径）" FontWeight="SemiBold"/>
+            <TextBox Text="{Binding Settings.Files.DownloadRoot}"/>
+
+            <ToggleSwitch Content="按学科建目录归档（学科/日期/文件名）"
+                          IsChecked="{Binding Settings.Files.GroupBySubject}"/>
+            <ToggleSwitch Content="MD5 内容去重（重复文件不落盘，保留原记录）"
+                          IsChecked="{Binding Settings.Files.Md5DedupEnabled}"/>
+
+            <TextBlock Text="磁盘占用上限（MB，0 = 不限）"/>
+            <NumericUpDown Value="{Binding Settings.Files.MaxDiskUsageMb}" Minimum="0" Maximum="10485760"
+                           Increment="128"/>
+
+            <TextBlock Text="磁盘上限清理策略"/>
+            <ComboBox SelectedIndex="{Binding Settings.Files.CleanupPolicy}" MinWidth="260">
+                <ComboBoxItem Content="达到上限后停止接收新文件并告警"/>
+                <ComboBoxItem Content="达到上限后自动清理最旧文件"/>
+            </ComboBox>
+
+            <TextBlock Text="并发下载数"/>
+            <NumericUpDown Value="{Binding Settings.Files.DownloadConcurrency}" Minimum="1" Maximum="16"/>
+
+            <TextBlock Text="限速（KB/s，0 = 不限）"/>
+            <NumericUpDown Value="{Binding Settings.Files.SpeedLimitKbps}" Minimum="0" Maximum="1048576"
+                           Increment="64"/>
+
+            <TextBlock Text="单文件大小上限（MB），超出拒绝并告警"/>
+            <NumericUpDown Value="{Binding Settings.Files.MaxFileSizeMb}" Minimum="1" Maximum="65536"
+                           Increment="16"/>
+
+            <TextBlock Text="文件名最大长度（字符）"/>
+            <NumericUpDown Value="{Binding Settings.Files.MaxFileNameLength}" Minimum="16" Maximum="512"/>
+
+            <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
+                    Margin="0,10,0,0"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:ClassIngSettingsPageBase>

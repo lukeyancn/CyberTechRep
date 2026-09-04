@@ -1,0 +1,63 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:models="clr-namespace:ClassIng.Shared.Models;assembly=ClassIng.Shared"
+        mc:Ignorable="d" d:DesignWidth="320" d:DesignHeight="480"
+        x:Class="ClassIng.Plugin.Views.NoticeSuspensionWindow"
+        x:CompileBindings="True"
+        Title="ClassIng 通知" Width="320" Height="480" MinWidth="220" MinHeight="160"
+        SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
+        Topmost="True" Background="Transparent" FontSize="14">
+
+  <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
+    <Grid RowDefinitions="Auto,*,Auto">
+
+      <!-- 标题栏：拖拽区 + 关闭（隐藏，托盘/设置页可再唤出） -->
+      <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
+              PointerPressed="OnHeaderPointerPressed">
+        <Grid ColumnDefinitions="*,Auto" Margin="12,8,8,8">
+          <TextBlock Text="通知" FontWeight="SemiBold" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Content="×" Click="OnHideClick"
+                  Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+        </Grid>
+      </Border>
+
+      <!-- 通知列表 / 空状态 -->
+      <Panel Grid.Row="1">
+        <TextBlock x:Name="EmptyText" Text="暂无未读通知" HorizontalAlignment="Center"
+                   VerticalAlignment="Center" Opacity="0.6" IsVisible="True" />
+        <ScrollViewer Padding="8,4">
+          <ItemsControl x:Name="NoticeList">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="{x:Type models:NoticeItem}">
+                <Border Margin="0,4" CornerRadius="6" Background="#FFFFFFFF" BorderBrush="#22000000"
+                        BorderThickness="1" Padding="8">
+                  <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                    <TextBlock Grid.Column="0" Grid.Row="0" Text="{Binding Content}"
+                               TextWrapping="Wrap" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Grid.Row="0" Grid.RowSpan="2" Content="已读"
+                            Click="OnMarkReadClick" Margin="8,0,0,0" Padding="8,3" />
+                    <TextBlock Grid.Column="0" Grid.Row="1" Text="{Binding CreatedAt, StringFormat='{}{0:MM-dd HH:mm}'}"
+                               FontSize="11" Opacity="0.5" Margin="0,4,0,0" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </Panel>
+
+      <!-- 角部缩放 Thumb -->
+      <Thumb Grid.Row="2" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
+             HorizontalAlignment="Right" VerticalAlignment="Bottom" Opacity="0.4"
+             DragDelta="OnResizeDragDelta">
+        <Thumb.Template>
+          <ControlTemplate>
+            <Border CornerRadius="2" Background="#40000000" />
+          </ControlTemplate>
+        </Thumb.Template>
+      </Thumb>
+    </Grid>
+  </Border>
+</Window>

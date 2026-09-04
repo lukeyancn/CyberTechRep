@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build / Test / Package
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore ClassIng.sln
+
+      # Release 构建同时产出 .cipx 与 checksums.md
+      #（ClassIsland.PluginSdk targets 调用 pwsh generate-md5.ps1；windows-latest 自带 pwsh）
+      - name: Build (Release)
+        run: dotnet build ClassIng.sln -c Release --no-restore
+
+      - name: Test (Debug)
+        run: dotnet test ClassIng.sln -c Debug
+
+      # 本地同样的校验逻辑：checksums.md 中的 MD5 必须与实际包一致
+      - name: Verify cipx MD5 checksum
+        shell: pwsh
+        run: |
+          $dir = 'src/ClassIng.Plugin/cipx'
+          $summary = Get-Content "$dir/checksums.md" -Raw
+          if ($summary -notmatch '"ClassIng\.Plugin\.cipx"\s*:\s*"([0-9A-Fa-f]{32})"') {
+            throw 'checksums.md 缺少 ClassIng.Plugin.cipx 的 MD5 记录'
+          }
+          $expected = $Matches[1].ToUpperInvariant()
+          $actual = (Get-FileHash "$dir/ClassIng.Plugin.cipx" -Algorithm MD5).Hash.ToUpperInvariant()
+          if ($expected -ne $actual) {
+            throw "MD5 不一致：checksums.md=$expected 实际=$actual"
+          }
+          Write-Host "MD5 校验通过：$actual"
+
+      - name: Upload plugin package (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClassIng.Plugin-cipx
+          path: |
+            src/ClassIng.Plugin/cipx/ClassIng.Plugin.cipx
+            src/ClassIng.Plugin/cipx/checksums.md
+          if-no-files-found: error
+
+      # 打 tag（v*）时把 .cipx 与 checksums.md 发布为 GitHub Release 附件
+      - name: Release (tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src/ClassIng.Plugin/cipx/ClassIng.Plugin.cipx
+            src/ClassIng.Plugin/cipx/checksums.md
+          fail_on_unmatched_files: true

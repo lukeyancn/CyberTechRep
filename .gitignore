@@ -1,0 +1,25 @@
+# ---- 构建产物 ----
+[Bb]in/
+[Oo]bj/
+cipx/
+TestResults/
+*.trx
+*.user
+*.suo
+
+# ---- IDE ----
+.vs/
+.idea/
+*.swp
+
+# ---- 内嵌参考目录（上游宿主源码，不随插件仓库提交）----
+ClassIsland/
+ClassIsland.ExamplePlugins/
+ClassIsland.PluginTemplate2/
+
+# ---- 本地 .NET SDK（便携版，仅本机使用）----
+dotnet-sdk/
+
+# ---- OS ----
+Thumbs.db
+.DS_Store

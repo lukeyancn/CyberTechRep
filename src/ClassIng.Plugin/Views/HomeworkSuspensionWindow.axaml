@@ -1,0 +1,79 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="clr-namespace:ClassIng.Plugin.Views"
+        mc:Ignorable="d" d:DesignWidth="360" d:DesignHeight="520"
+        x:Class="ClassIng.Plugin.Views.HomeworkSuspensionWindow"
+        x:CompileBindings="True"
+        Title="ClassIng 作业" Width="360" Height="520" MinWidth="240" MinHeight="180"
+        SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
+        Topmost="True" Background="Transparent" FontSize="14">
+
+  <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
+    <Grid RowDefinitions="Auto,*,Auto">
+
+      <!-- 标题栏：拖拽区 + 关闭 -->
+      <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
+              PointerPressed="OnHeaderPointerPressed">
+        <Grid ColumnDefinitions="*,Auto" Margin="12,8,8,8">
+          <TextBlock Text="作业" FontWeight="SemiBold" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Content="×" Click="OnHideClick"
+                  Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+        </Grid>
+      </Border>
+
+      <!-- 分组列表 / 空状态 -->
+      <Panel Grid.Row="1">
+        <TextBlock x:Name="EmptyText" Text="暂无作业" HorizontalAlignment="Center"
+                   VerticalAlignment="Center" Opacity="0.6" IsVisible="True" />
+        <ScrollViewer Padding="8,4">
+          <ItemsControl x:Name="GroupList">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="{x:Type vm:HomeworkGroup}">
+                <Expander Header="{Binding Subject}" IsExpanded="True" Margin="0,4">
+                  <ItemsControl ItemsSource="{Binding Items}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate DataType="{x:Type vm:HomeworkRow}">
+                        <Border Margin="0,2" CornerRadius="6" Background="#FFFFFFFF"
+                                BorderBrush="#22000000" BorderThickness="1" Padding="8">
+                          <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+                            <TextBlock Grid.Column="0" Grid.Row="0" Text="{Binding Item.Content}"
+                                       TextWrapping="Wrap" />
+                            <ComboBox Grid.Column="1" Grid.Row="0" MinWidth="96"
+                                      ItemsSource="{Binding AvailableSubjects}"
+                                      SelectedItem="{Binding SelectedSubject, Mode=OneWay}"
+                                      SelectionChanged="OnSubjectSelectionChanged"
+                                      ToolTip.Tip="修正学科" />
+                            <TextBlock Grid.Column="0" Grid.Row="1"
+                                       Text="{Binding AttachmentText}"
+                                       IsVisible="{Binding HasAttachments}"
+                                       FontSize="11" Opacity="0.7" Margin="0,4,0,0" />
+                            <TextBlock Grid.Column="0" Grid.Row="2"
+                                       Text="{Binding CreatedAtText}"
+                                       FontSize="11" Opacity="0.5" Margin="0,2,0,0" />
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </Expander>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </Panel>
+
+      <!-- 角部缩放 Thumb -->
+      <Thumb Grid.Row="2" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
+             HorizontalAlignment="Right" VerticalAlignment="Bottom" Opacity="0.4"
+             DragDelta="OnResizeDragDelta">
+        <Thumb.Template>
+          <ControlTemplate>
+            <Border CornerRadius="2" Background="#40000000" />
+          </ControlTemplate>
+        </Thumb.Template>
+      </Thumb>
+    </Grid>
+  </Border>
+</Window>

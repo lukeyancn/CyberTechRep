@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>ClassIng.Plugin</RootNamespace>
+    <!-- 关键：插件以可动态加载的程序集构建（宿主进程内加载） -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <!-- 构建时产出 .cipx 插件包（由 ClassIsland.PluginSdk.targets 驱动） -->
+    <CreateCipx>true</CreateCipx>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- SDK 只用于编译期：ClassIsland.Core 等由宿主进程提供，不随插件分发 -->
+    <PackageReference Include="ClassIsland.PluginSdk" Version="2.1.0.1">
+      <ExcludeAssets>runtime; native</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="System.Text.Json" Version="9.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 模块 7：Avalonia 设置页编译期引用（axaml 编译与控件类型）；运行时由宿主进程提供 -->
+    <PackageReference Include="Avalonia" Version="11.3.17" ExcludeAssets="runtime; native" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- 模块 7：插件内 axaml（含模块 4-6 视图）统一走反射绑定，避免编译期绑定对新视图的强约束 -->
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClassIng.Shared\ClassIng.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 单元测试可见内部成员（排序策略 / URL 构造 / 原子写入等） -->
+    <InternalsVisibleTo Include="ClassIng.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="manifest.yml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\classification-keywords.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\subjects.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
