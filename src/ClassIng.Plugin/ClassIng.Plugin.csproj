@@ -20,13 +20,29 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+    <!-- 编译期引用；运行时由宿主进程提供这些程序集（打进包里会与宿主产生同名不同源的类型分裂，
+         导致入口类 Initialize 被判定为未实现而 TypeLoadException） -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" ExcludeAssets="runtime;native" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" ExcludeAssets="runtime;native" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- System.Text.Json 供插件内部序列化使用，随包分发（插件 ALC 私有，不与宿主交换类型） -->
     <PackageReference Include="System.Text.Json" Version="9.0.2" />
   </ItemGroup>
 
+  <!-- 打包前剥离宿主已提供的程序集，避免与宿主类型分裂（EnableDynamicLoading 会把传递依赖也复制进来） -->
+  <Target Name="StripHostProvidedAssemblies" BeforeTargets="CreateCipx">
+    <ItemGroup>
+      <HostProvidedAssemblies Include="$(OutputPath)Microsoft.Extensions.*.dll" />
+      <HostProvidedAssemblies Include="$(OutputPath)System.IO.Pipelines.dll" />
+    </ItemGroup>
+    <Delete Files="@(HostProvidedAssemblies)" />
+  </Target>
+
   <ItemGroup>
+    <!-- 悬浮窗/文档：宿主插件页要求包内提供 README.md -->
+    <None Update="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <!-- 模块 7：Avalonia 设置页编译期引用（axaml 编译与控件类型）；运行时由宿主进程提供 -->
     <PackageReference Include="Avalonia" Version="11.3.17" ExcludeAssets="runtime; native" />
   </ItemGroup>

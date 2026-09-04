@@ -1,8 +1,7 @@
 id: classisland.classing
 name: ClassIng 课堂信息分发
-description: QQ 群消息接管与课堂信息分发系统：接收班级群消息与文件，自动分类通知/作业、识别学科并在桌面悬浮窗展示。
-entranceAssembly: "ClassIng.Plugin.dll"
+description: QQ 群消息接管与课堂信息分发系统：接收班级群消息与文件，自动分类通知/作业、识别学科并在桌面悬浮窗展示�?entranceAssembly: "ClassIng.Plugin.dll"
 url: https://github.com/lukeyancn/ClassIng
 apiVersion: 2.0.0.0
-version: 0.1.0.0
+version: 0.1.1.0
 author: ClassIng
