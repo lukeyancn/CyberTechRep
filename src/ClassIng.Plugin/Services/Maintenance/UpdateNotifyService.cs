@@ -14,7 +14,7 @@ public sealed class UpdateNotifyOptions
     /// GitHub 仓库（owner/repo 或完整 releases API URL）。可配置，默认占位仓库，
     /// 正式发布前在插件配置中替换。
     /// </summary>
-    public string Repository { get; set; } = "ClassIng/ClassIng";
+    public string Repository { get; set; } = "lukeyancn/ClassIng";
 
     /// <summary>当前插件版本（用于比较；默认取入口程序集版本）。</summary>
     public string? CurrentVersion { get; set; }

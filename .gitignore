@@ -23,3 +23,6 @@ dotnet-sdk/
 # ---- OS ----
 Thumbs.db
 .DS_Store
+
+# 本地 ClassIsland 完整应用包
+ClassIsland_app_windows_x64_full_folder/
