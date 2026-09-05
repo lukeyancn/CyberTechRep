@@ -1,4 +1,4 @@
-<local:ClassIngSettingsPageBase
+﻿<local:ClassIngSettingsPageBase
     x:Class="ClassIng.Plugin.Controls.SettingsPages.OverlaySettingsPage"
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -10,56 +10,56 @@
     <ScrollViewer>
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
-            <TextBlock Text="?????" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+            <TextBlock Text="悬浮窗设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
 
-            <ToggleSwitch Content="??? ClassIsland ??"
+            <ToggleSwitch Content="随宿主 ClassIsland 启动"
                           IsChecked="{Binding Settings.Overlays.LaunchWithHost}"/>
 
-            <!-- ????? -->
-            <Expander Header="?????" IsExpanded="True">
+            <!-- 通知悬浮窗 -->
+            <Expander Header="通知悬浮窗" IsExpanded="True">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="X????? DIP?"/>
+                    <TextBlock Text="X（逻辑坐标 DIP）"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Notice.X}" Minimum="-10000" Maximum="10000"/>
-                    <TextBlock Text="Y????? DIP?"/>
+                    <TextBlock Text="Y（逻辑坐标 DIP）"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Notice.Y}" Minimum="-10000" Maximum="10000"/>
-                    <TextBlock Text="??"/>
+                    <TextBlock Text="宽度"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Notice.Width}" Minimum="80" Maximum="4000"/>
-                    <TextBlock Text="??"/>
+                    <TextBlock Text="高度"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Notice.Height}" Minimum="80" Maximum="4000"/>
-                    <TextBlock Text="????0.1~1.0?"/>
+                    <TextBlock Text="透明度（0.1~1.0）"/>
                     <Slider Minimum="0.1" Maximum="1" Value="{Binding Settings.Overlays.Notice.Opacity}"
                             TickFrequency="0.05"/>
-                    <TextBlock Text="??"/>
+                    <TextBlock Text="字号"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Notice.FontSize}" Minimum="8" Maximum="72"/>
-                    <ToggleSwitch Content="??" IsChecked="{Binding Settings.Overlays.Notice.Topmost}"/>
-                    <ToggleSwitch Content="?????" IsChecked="{Binding Settings.Overlays.Notice.Visible}"/>
-                    <Button Content="???????" Click="OnResetNoticeClicked" HorizontalAlignment="Left"/>
+                    <ToggleSwitch Content="置顶" IsChecked="{Binding Settings.Overlays.Notice.Topmost}"/>
+                    <ToggleSwitch Content="显示悬浮窗" IsChecked="{Binding Settings.Overlays.Notice.Visible}"/>
+                    <Button Content="复位通知悬浮窗" Click="OnResetNoticeClicked" HorizontalAlignment="Left"/>
                 </StackPanel>
             </Expander>
 
-            <!-- ????? -->
-            <Expander Header="?????" IsExpanded="True">
+            <!-- 作业悬浮窗 -->
+            <Expander Header="作业悬浮窗" IsExpanded="True">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="X????? DIP?"/>
+                    <TextBlock Text="X（逻辑坐标 DIP）"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Homework.X}" Minimum="-10000" Maximum="10000"/>
-                    <TextBlock Text="Y????? DIP?"/>
+                    <TextBlock Text="Y（逻辑坐标 DIP）"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Homework.Y}" Minimum="-10000" Maximum="10000"/>
-                    <TextBlock Text="??"/>
+                    <TextBlock Text="宽度"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Homework.Width}" Minimum="80" Maximum="4000"/>
-                    <TextBlock Text="??"/>
+                    <TextBlock Text="高度"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Homework.Height}" Minimum="80" Maximum="4000"/>
-                    <TextBlock Text="????0.1~1.0?"/>
+                    <TextBlock Text="透明度（0.1~1.0）"/>
                     <Slider Minimum="0.1" Maximum="1" Value="{Binding Settings.Overlays.Homework.Opacity}"
                             TickFrequency="0.05"/>
-                    <TextBlock Text="??"/>
+                    <TextBlock Text="字号"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Homework.FontSize}" Minimum="8" Maximum="72"/>
-                    <ToggleSwitch Content="??" IsChecked="{Binding Settings.Overlays.Homework.Topmost}"/>
-                    <ToggleSwitch Content="?????" IsChecked="{Binding Settings.Overlays.Homework.Visible}"/>
-                    <Button Content="???????" Click="OnResetHomeworkClicked" HorizontalAlignment="Left"/>
+                    <ToggleSwitch Content="置顶" IsChecked="{Binding Settings.Overlays.Homework.Topmost}"/>
+                    <ToggleSwitch Content="显示悬浮窗" IsChecked="{Binding Settings.Overlays.Homework.Visible}"/>
+                    <Button Content="复位作业悬浮窗" Click="OnResetHomeworkClicked" HorizontalAlignment="Left"/>
                 </StackPanel>
             </Expander>
 
-            <Button Content="?????" Click="OnSaveClicked" HorizontalAlignment="Left"
+            <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
                     Margin="0,10,0,0"/>
         </StackPanel>
     </ScrollViewer>
