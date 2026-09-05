@@ -28,6 +28,8 @@ public abstract class ClassIngSettingsPageBase : SettingsPageBase, INotifyProper
 
     protected ClassIngSettingsPageBase(ISettingsService settingsService, string dataDirectory)
     {
+        // ClassIsland 约定：设置页必须自持 DataContext，否则绑定解析到设置窗口的 VM，输入全部丢失
+        DataContext = this;
         SettingsService = settingsService;
         DataDirectory = dataDirectory;
         SettingsService.SettingsChanged += OnSettingsChangedExternal;
