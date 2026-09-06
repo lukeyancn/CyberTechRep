@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
     <RootNamespace>CyberTechRep.Shared</RootNamespace>
-    <Version>0.4.0.0</Version>
+    <Version>1.0.0.0</Version>
     <Product>CyberTechRep</Product>
     <Description>CyberTechRep 共享契约层：数据模型与模块接口（模块间只经此层通信）</Description>
   </PropertyGroup>
