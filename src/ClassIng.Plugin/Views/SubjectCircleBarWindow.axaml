@@ -4,7 +4,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="64" d:DesignHeight="440"
         x:Class="ClassIng.Plugin.Views.SubjectCircleBarWindow"
-        Title="ClassIng 学科圆圈" Width="64" Height="440" MinWidth="48" MinHeight="120"
+        Title="CyberTechRep 学科圆圈" Width="64" Height="440" MinWidth="48" MinHeight="120"
         SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
         Topmost="True" Background="Transparent" FontSize="12">
 

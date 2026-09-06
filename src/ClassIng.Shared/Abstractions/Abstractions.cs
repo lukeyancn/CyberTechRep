@@ -161,6 +161,32 @@ public interface IHomeworkStore
     /// 返回删除条数；删除后逐条触发 <see cref="Changed"/> 供悬浮窗刷新。
     /// </summary>
     Task<int> CleanupAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// 删除单条作业（作业悬浮窗「删除」入口；仅删除该条，不影响按发送者的学科映射规则）。
+    /// 返回是否实际删除（条目不存在时为 false）；删除成功后触发 <see cref="Changed"/> 供悬浮窗刷新。
+    /// </summary>
+    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
+}
+
+/// <summary>单群发送结果（逐群汇总，供 UI 反馈失败清单）。</summary>
+public sealed record GroupSendResult(string GroupOpenId, bool Success, string? Error);
+
+/// <summary>作业清单整理并发送（QQ 官方机器人开放平台群消息，目标 = 连接设置群白名单）。</summary>
+public interface IHomeworkSendService
+{
+    /// <summary>发送功能是否开启（防误发开关经构造注入，默认开）。</summary>
+    bool IsEnabled { get; }
+
+    /// <summary>
+    /// 向白名单群逐一发送文本消息（msg_type=0）。默认主动消息（不带 msg_id，受平台频控），
+    /// 传入 <paramref name="msgId"/> 则按被动回复发送（5 分钟有效期、同 msg_id 最多回复 5 次）。
+    /// 逐群独立尝试、互不影响；单群失败不中断其余群，结果逐群汇总由调用方反馈到 UI（不静默）。
+    /// </summary>
+    /// <param name="content">文本内容（已含整理后的清单与尾注）。</param>
+    /// <param name="msgId">被动回复来源消息 id；null = 主动消息。</param>
+    Task<IReadOnlyList<GroupSendResult>> SendTextToWhitelistedGroupsAsync(
+        string content, string? msgId = null, CancellationToken ct = default);
 }
 
 /// <summary>设置服务：五组配置的加载/保存/导入导出/恢复默认；敏感字段加密存取。</summary>

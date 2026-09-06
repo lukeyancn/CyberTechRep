@@ -28,6 +28,9 @@
             <TextBox Text="{Binding GroupWhitelistText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
                      Watermark="每一行一个群 OpenID"/>
 
+            <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗展示发送入口，确认后发送当天作业清单到白名单群）"
+                          IsChecked="{Binding Settings.Connection.HomeworkSendEnabled}"/>
+
             <Expander Header="断线重连参数" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="初始重连延迟（秒）"/>

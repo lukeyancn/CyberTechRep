@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using ClassIng.Plugin.Services.MessageAccess;
 using ClassIng.Plugin.Services.Overlays;
 using ClassIng.Shared.Abstractions;
 using ClassIng.Shared.Models;
@@ -48,8 +49,12 @@ public partial class HomeworkSuspensionWindow : Window
     internal static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(200);
 
     private readonly IHomeworkStore _store = null!;
+    private readonly IHomeworkSendService? _sendService;
+    private readonly ISettingsService? _settingsService;
     private readonly Func<IReadOnlyList<string>?>? _groupOrderProvider;
     private readonly DispatcherTimer _debounceTimer = null!;
+    private IReadOnlyList<HomeworkItem> _currentItems = [];
+    private bool _sending;
     private int _refreshing;
 
     public HomeworkSuspensionWindow()
@@ -61,11 +66,16 @@ public partial class HomeworkSuspensionWindow : Window
     public HomeworkSuspensionWindow(
         IHomeworkStore store,
         Func<IReadOnlyList<string>?>? groupOrderProvider = null,
-        ISettingsService? settingsService = null)
+        ISettingsService? settingsService = null,
+        IHomeworkSendService? sendService = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _groupOrderProvider = groupOrderProvider;
+        _sendService = sendService;
+        _settingsService = settingsService;
         InitializeComponent();
+        // 「整理并发送」开关：连接设置 HomeworkSendEnabled（热生效）；开关关闭时隐藏入口
+        UpdateSendEntryVisibility();
         _debounceTimer = new DispatcherTimer { Interval = RefreshDebounce };
         _debounceTimer.Tick += (_, _) =>
         {
@@ -97,7 +107,20 @@ public partial class HomeworkSuspensionWindow : Window
         }
     }
 
-    private void OnSettingsChanged(object? sender, AppSettings e) => OnStoreChanged(sender, null!);
+    private void OnSettingsChanged(object? sender, AppSettings e)
+    {
+        // 发送开关热生效：SettingsChanged 可能在非 UI 线程触发，可见性更新回 UI 线程
+        Dispatcher.UIThread.Post(UpdateSendEntryVisibility);
+        OnStoreChanged(sender, null!);
+    }
+
+    /// <summary>「整理并发送」入口可见性：发送服务存在且开关开启才显示（设置热生效）。</summary>
+    private void UpdateSendEntryVisibility()
+        => SendDigestButton.IsVisible = IsSendEntryVisible(_sendService);
+
+    /// <summary>发送入口可见性判定（纯逻辑，可单测）。</summary>
+    internal static bool IsSendEntryVisible(IHomeworkSendService? sendService)
+        => sendService is not null && sendService.IsEnabled;
 
     private void ScheduleRefresh()
     {
@@ -166,6 +189,7 @@ public partial class HomeworkSuspensionWindow : Window
 
             EmptyText.Text = "今天还没有作业";
             EmptyText.IsVisible = all.Count == 0;
+            _currentItems = all;
             GroupList.ItemsSource = groups;
         }
         catch
@@ -221,6 +245,157 @@ public partial class HomeworkSuspensionWindow : Window
             // 修正失败保持原学科，不中断
         }
     }
+
+    /// <summary>
+    /// 删除条目：轻量二次确认 = 同一按钮两段式（首次点击进入「确认删除?」待确认态，
+    /// 3 秒内再次点击才真正删除，超时自动复位）。理由：悬浮窗为无边框置顶小窗，
+    /// 弹模态对话框会打断桌面常驻体验且易被置顶层级遮挡；两段式按钮与「修正学科」下拉同级紧凑，
+    /// 误触概率低，刷新重建列表时待确认态自动失效（fail-safe）。
+    /// </summary>
+    private async void OnDeleteClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: HomeworkRow row } button)
+        {
+            return;
+        }
+
+        if (button.Tag is not true)
+        {
+            // 第一次点击：进入待确认态（3 秒后自动复位）
+            button.Tag = true;
+            button.Content = "确认删除?";
+            var revert = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            revert.Tick += (_, _) =>
+            {
+                revert.Stop();
+                if (button.Tag is true)
+                {
+                    button.Tag = null;
+                    button.Content = "删除";
+                }
+            };
+            revert.Start();
+            return;
+        }
+
+        button.Tag = null;
+        button.Content = "删除";
+        try
+        {
+            await _store.DeleteAsync(row.Item.Id);
+            // 列表刷新经 Changed → debounce 完成
+        }
+        catch
+        {
+            // 删除失败保持现状，不中断
+        }
+    }
+
+    // ---------- 整理并发送（需求 2）----------
+
+    private void OnSendDigestClick(object? sender, RoutedEventArgs e)
+    {
+        if (_sendService is null)
+        {
+            return;
+        }
+
+        // 清单预览：与实际发送内容同一格式化函数（同一份字符串），预览即所得
+        SendPreviewText.Text = _currentItems.Count == 0
+            ? "（今天还没有作业，无可发送内容）"
+            : HomeworkDigestFormatter.Format(_currentItems);
+        SendConfirmButton.IsEnabled = _currentItems.Count > 0;
+
+        var groups = SettingsServiceGroupWhitelist();
+        SendTargetText.Text = groups.Count == 0
+            ? "目标群：白名单为空（请在 CyberTechRep 连接设置中配置群白名单），发送会失败"
+            : $"目标群：{groups.Count} 个白名单群（{MaskGroups(groups)}），确认后逐群发送";
+        SendResultText.IsVisible = false;
+        SendResultText.Text = "";
+        SendConfirmOverlay.IsVisible = true;
+    }
+
+    private void OnSendCancelClick(object? sender, RoutedEventArgs e) => HideSendOverlay();
+
+    private void HideSendOverlay()
+    {
+        SendConfirmOverlay.IsVisible = false;
+        SendResultText.IsVisible = false;
+        SendResultText.Text = "";
+    }
+
+    private async void OnSendConfirmClick(object? sender, RoutedEventArgs e)
+    {
+        if (_sendService is null || _sending)
+        {
+            return; // 防重入：发送中忽略重复点击（按钮同时禁用）
+        }
+
+        _sending = true;
+        SendConfirmButton.IsEnabled = false;
+        SendConfirmButton.Content = "发送中…";
+        SendCancelButton.IsEnabled = false;
+        SendResultText.IsVisible = true;
+        SendResultText.Text = "正在发送…";
+        try
+        {
+            var digest = HomeworkDigestFormatter.Format(_currentItems);
+            var results = await _sendService.SendTextToWhitelistedGroupsAsync(digest);
+            var okCount = results.Count(r => r.Success);
+            var lines = new List<string> { $"发送完成：成功 {okCount}/{results.Count} 群" };
+            lines.AddRange(results.Where(r => !r.Success)
+                .Select(r => $"群 {MaskGroupId(r.GroupOpenId)} 失败：{r.Error}"));
+            SendResultText.Text = string.Join(Environment.NewLine, lines);
+            if (results.Count > 0 && okCount == results.Count)
+            {
+                // 全部成功：短暂展示结果后自动收起
+                var close = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.2) };
+                close.Tick += (_, _) =>
+                {
+                    close.Stop();
+                    HideSendOverlay();
+                };
+                close.Start();
+            }
+        }
+        catch (Exception ex)
+        {
+            // 失败明确回 UI，不静默
+            SendResultText.Text = $"发送失败：{ex.Message}";
+        }
+        finally
+        {
+            _sending = false;
+            SendConfirmButton.IsEnabled = true;
+            SendConfirmButton.Content = "发送";
+            SendCancelButton.IsEnabled = true;
+        }
+    }
+
+    private IReadOnlyList<string> SettingsServiceGroupWhitelist()
+    {
+        try
+        {
+            return _settingsService?.Current.Connection.GroupWhitelist ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static string MaskGroups(IReadOnlyList<string> groups)
+    {
+        const int maxShow = 3;
+        var shown = groups.Take(maxShow).Select(MaskGroupId);
+        return groups.Count > maxShow
+            ? string.Join("、", shown) + $" 等 {groups.Count} 个"
+            : string.Join("、", shown);
+    }
+
+    private static string MaskGroupId(string groupOpenId) =>
+        string.IsNullOrEmpty(groupOpenId) ? "(未配置)" :
+        groupOpenId.Length <= 10 ? groupOpenId : groupOpenId[..10] + "…";
 
     private void OnHeaderPointerPressed(object? sender, PointerPressedEventArgs e)
     {

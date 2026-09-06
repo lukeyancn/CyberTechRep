@@ -1,4 +1,4 @@
-# ClassIng 课堂信息分发
+# CyberTechRep 课堂信息分发
 
 ClassIsland 插件：QQ 群消息接管与课堂信息分发系统。
 
@@ -13,7 +13,7 @@ ClassIsland 插件：QQ 群消息接管与课堂信息分发系统。
 
 ## 使用
 
-1. 在 ClassIsland 设置 → 插件 中启用 ClassIng；
+1. 在 ClassIsland 设置 → 插件 中启用 CyberTechRep；
 2. 首次启动会弹出引导窗，按提示填写 OneBot 连接配置；
 3. 在维护设置页可重新打开引导、查看排错信息与重试队列。
 

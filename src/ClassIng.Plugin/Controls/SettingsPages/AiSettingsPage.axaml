@@ -1,0 +1,87 @@
+<local:ClassIngSettingsPageBase
+    x:Class="ClassIng.Plugin.Controls.SettingsPages.AiSettingsPage"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:ClassIng.Plugin.Controls.SettingsPages"
+    mc:Ignorable="d" d:DesignWidth="640" d:DesignHeight="900">
+
+    <ScrollViewer>
+        <StackPanel Margin="24" MaxWidth="720" Spacing="10">
+
+            <TextBlock Text="CyberTechRep AI" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
+            <TextBlock Text="为四种识别用途分别选择 AI 的参与方式：关闭 / 唯一识别 / 后补识别。保存后立即热生效。"
+                       TextWrapping="Wrap" Opacity="0.85"/>
+
+            <!-- 云端凭据引用说明（不重复字段） -->
+            <TextBlock Text="凭据说明：云端凭据（OpenAI 兼容端点、API Key、模型名、每日调用上限）、AI 总开关与置信度阈值均在「CyberTechRep 分类」页配置，本页复用同一份配置，此处不再重复。未配置云端凭据时，即使选择「唯一识别/后补识别」，AI 级也会自动跳过并按原有链路降级，行为与现状一致。"
+                       TextWrapping="Wrap" Opacity="0.75"/>
+
+            <!-- 用途① 学科分类 -->
+            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="① 通知作业学科分类" FontWeight="SemiBold"/>
+                    <TextBlock Text="判断作业消息属于哪个学科（数学/语文/英语等）。后补识别（默认）= 关键词不中或低置信时才用 AI（即现有三级链行为）；唯一识别 = 跳过关键词直接用 AI。"
+                               TextWrapping="Wrap" Opacity="0.8"/>
+                    <ComboBox SelectedIndex="{Binding SubjectClassifyModeIndex}" MinWidth="180" HorizontalAlignment="Left">
+                        <ComboBoxItem Content="关闭"/>
+                        <ComboBoxItem Content="唯一识别（AI 优先）"/>
+                        <ComboBoxItem Content="后补识别（关键词不中才 AI）"/>
+                    </ComboBox>
+                </StackPanel>
+            </Border>
+
+            <!-- 用途② 消息二分类 -->
+            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="② 通知/作业二分类" FontWeight="SemiBold"/>
+                    <TextBlock Text="判断消息是通知还是作业（现有实现为关键词规则）。后补识别 = 关键词未命中（消息原本会被忽略）时问 AI；唯一识别 = 每条消息都直接问 AI。"
+                               TextWrapping="Wrap" Opacity="0.8"/>
+                    <ComboBox SelectedIndex="{Binding MessageClassifyModeIndex}" MinWidth="180" HorizontalAlignment="Left">
+                        <ComboBoxItem Content="关闭"/>
+                        <ComboBoxItem Content="唯一识别（AI 优先）"/>
+                        <ComboBoxItem Content="后补识别（关键词不中才 AI）"/>
+                    </ComboBox>
+                    <TextBlock Text="⚠ 成本提示：唯一识别模式会对每一条收到的消息调用 AI，产生持续的 API 费用与每日调用上限消耗，请确认后再开启。"
+                               TextWrapping="Wrap" Foreground="#B8860B"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 用途③ 无关键词兜底 -->
+            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="③ 无关键词消息兜底识别" FontWeight="SemiBold"/>
+                    <TextBlock Text="消息文本不含任何通知/作业关键词时（原本会被直接忽略），兜底走学科识别链：能可信判断学科的按作业归档，判断不了仍保持忽略。后补识别 = 先试学科关键词再 AI；唯一识别 = 直接 AI。"
+                               TextWrapping="Wrap" Opacity="0.8"/>
+                    <ComboBox SelectedIndex="{Binding NoKeywordFallbackModeIndex}" MinWidth="180" HorizontalAlignment="Left">
+                        <ComboBoxItem Content="关闭"/>
+                        <ComboBoxItem Content="唯一识别（AI 优先）"/>
+                        <ComboBoxItem Content="后补识别（先关键词后 AI）"/>
+                    </ComboBox>
+                </StackPanel>
+            </Border>
+
+            <!-- 用途④ 文件分类（说明性，无独立模式） -->
+            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="④ 文件分类" FontWeight="SemiBold"/>
+                    <TextBlock Text="文件本身不单独分类：文件随其所在消息的学科归档（识别完成后自动移动到「学科/日期」目录），因此本用途没有独立模式，实际行为完全跟随「① 通知作业学科分类」的模式选择。"
+                               TextWrapping="Wrap" Opacity="0.8"/>
+                </StackPanel>
+            </Border>
+
+            <!-- AI 采样参数 -->
+            <Expander Header="高级：AI 采样参数" IsExpanded="False">
+                <StackPanel Spacing="8" Margin="0,6">
+                    <TextBlock Text="云端 LLM 采样温度（0 = 最确定；分类任务建议 0）"/>
+                    <NumericUpDown Value="{Binding Settings.Ai.CloudTemperature}" Minimum="0" Maximum="2"
+                                   Increment="0.1" FormatString="0.0"/>
+                </StackPanel>
+            </Expander>
+
+            <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
+                    Margin="0,10,0,0"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:ClassIngSettingsPageBase>

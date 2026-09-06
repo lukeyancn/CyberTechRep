@@ -1,37 +1,33 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using ClassIng.Shared.Abstractions;
 using ClassIng.Shared.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ClassIng.Plugin.Services.SubjectChain;
 
-/// <summary>OpenAI 兼容 chat/completions 响应的最小 DTO（仅取所需字段）。</summary>
-internal sealed class ChatCompletionResponseDto
+/// <summary>「通知/作业二分类」用途的 AI 识别结果。</summary>
+public sealed record MessageKindVerdict(MessageKind Kind, double Confidence, string Reason);
+
+/// <summary>
+/// 「通知/作业二分类」用途的 AI 识别提供者抽象（需求 6 用途②）。
+/// 与 <see cref="IAiProvider"/>（学科判定）分开：输出是消息种类而非学科。
+/// </summary>
+public interface IMessageKindAiProvider
 {
-    [JsonPropertyName("choices")]
-    public List<ChatChoiceDto> Choices { get; set; } = [];
+    string Name { get; }
+
+    bool IsAvailable { get; }
+
+    /// <summary>判定消息是通知还是作业；超时/失败/不可用返回 null（调用方降级回关键词链路），不抛异常。</summary>
+    Task<MessageKindVerdict?> ClassifyAsync(string text, CancellationToken ct = default);
 }
 
-internal sealed class ChatChoiceDto
+internal sealed class MessageKindVerdictDto
 {
-    [JsonPropertyName("message")]
-    public ChatMessageDto? Message { get; set; }
-}
-
-internal sealed class ChatMessageDto
-{
-    [JsonPropertyName("content")]
-    public string Content { get; set; } = "";
-}
-
-/// <summary>LLM 返回的学科判定 JSON（要求模型输出 {"subject","confidence","reason"}）。</summary>
-internal sealed class LlmSubjectVerdictDto
-{
-    [JsonPropertyName("subject")]
-    public string Subject { get; set; } = "";
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "";
 
     [JsonPropertyName("confidence")]
     public double Confidence { get; set; }
@@ -41,22 +37,25 @@ internal sealed class LlmSubjectVerdictDto
 }
 
 /// <summary>
-/// 模块 3 第②级（云端）：OpenAI 兼容 API 学科识别器（HttpClient 注入，可测）。
-/// 含每日调用限额保护（超过 <see cref="ClassificationSettings.CloudDailyCallLimit"/> 后
-/// <see cref="IsAvailable"/>=false 自动降级到人工队列）。
+/// 「通知/作业二分类」用途的云端 OpenAI 兼容识别器（需求 6 用途②）。
+/// <para>
+/// 纪律与 <see cref="CloudOpenAiProvider"/> 一致：HttpClient 超时 20 秒、单次尝试无链内重试、
+/// 异常吞掉返回 null 降级；每日调用限额复用 <see cref="ClassificationSettings.CloudDailyCallLimit"/>
+/// （本提供者独立计数，与学科识别的云端提供者各算一份）；密钥绝不写入日志。
+/// </para>
 /// </summary>
-public sealed class CloudOpenAiProvider : IAiProvider
+public sealed class CloudMessageKindProvider : IMessageKindAiProvider
 {
     private const string SystemPrompt =
-        "你是中小学作业学科分类器。根据用户文本判断学科（数学/语文/英语/物理/化学/生物/历史/地理/政治）。" +
-        "只输出 JSON：{\"subject\":\"<学科>\",\"confidence\":<0到1的小数>,\"reason\":\"<简短理由>\"}，不要输出其他内容。";
+        "你是中小学群消息分类器。判断用户消息是「通知」还是「作业」：" +
+        "作业=要求学生完成/提交/练习的内容；通知=告知、提醒、广播类信息。" +
+        "只输出 JSON：{\"kind\":\"通知\"|\"作业\",\"confidence\":<0到1的小数>,\"reason\":\"<简短理由>\"}，不要输出其他内容。";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    /// <summary>请求序列化：不转义非 ASCII（中文原文直出，部分兼容端点对 \u 转义支持差）。</summary>
     private static readonly JsonSerializerOptions RequestJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -68,7 +67,7 @@ public sealed class CloudOpenAiProvider : IAiProvider
     private readonly HttpClient _http;
     private readonly object _countLock = new();
 
-    public CloudOpenAiProvider(
+    public CloudMessageKindProvider(
         SubjectChainOptionsProvider provider,
         HttpClient? httpClient = null,
         ILogger? logger = null)
@@ -79,9 +78,9 @@ public sealed class CloudOpenAiProvider : IAiProvider
     }
 
     /// <inheritdoc />
-    public string Name => "CloudLlm";
+    public string Name => "CloudMessageKind";
 
-    /// <summary>今日已调用次数（跨日自动清零；排错面板可读）。</summary>
+    /// <summary>今日已调用次数（跨日自动清零）。</summary>
     public int TodayCallCount { get; private set; }
 
     /// <summary>计数所属日期（本地时区）。</summary>
@@ -116,7 +115,7 @@ public sealed class CloudOpenAiProvider : IAiProvider
     }
 
     /// <inheritdoc />
-    public async Task<SubjectResult?> ClassifyAsync(string text, CancellationToken ct = default)
+    public async Task<MessageKindVerdict?> ClassifyAsync(string text, CancellationToken ct = default)
     {
         try
         {
@@ -131,7 +130,7 @@ public sealed class CloudOpenAiProvider : IAiProvider
             var apiKey = _provider.SecretUnprotector(settings.CloudApiKeyProtected);
             IncrementCount();
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildEndpointUrl(settings.CloudEndpoint));
+            using var request = new HttpRequestMessage(HttpMethod.Post, CloudOpenAiProvider.BuildEndpointUrl(settings.CloudEndpoint));
             request.Headers.Add("Authorization", $"Bearer {apiKey}");
             request.Content = new StringContent(
                 JsonSerializer.Serialize(new
@@ -150,7 +149,7 @@ public sealed class CloudOpenAiProvider : IAiProvider
             using var response = await _http.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("云端识别 HTTP {Status}，返回 null 进入下一级", (int)response.StatusCode);
+                _logger.LogWarning("消息二分类 AI HTTP {Status}，返回 null 降级回关键词链路", (int)response.StatusCode);
                 return null;
             }
 
@@ -158,22 +157,15 @@ public sealed class CloudOpenAiProvider : IAiProvider
             var completion = JsonSerializer.Deserialize<ChatCompletionResponseDto>(body, JsonOptions);
             var content = completion?.Choices.FirstOrDefault()?.Message?.Content ?? "";
             var verdict = ParseVerdict(content);
-            if (verdict is null || string.IsNullOrWhiteSpace(verdict.Subject))
+            if (verdict is null)
             {
-                _logger.LogWarning("云端返回无法解析为学科判定：{Content}", content);
+                _logger.LogWarning("消息二分类 AI 返回无法解析：{Content}", content);
                 return null;
             }
 
-            var confidence = Math.Clamp(verdict.Confidence, 0, 1);
-            _logger.LogInformation("云端识别学科 {Subject}（置信度 {Confidence}）",
-                verdict.Subject, confidence);
-            return new SubjectResult
-            {
-                Subject = verdict.Subject.Trim(),
-                Confidence = confidence,
-                Source = SubjectSource.CloudLlm,
-                Reason = "llm:" + (string.IsNullOrWhiteSpace(verdict.Reason) ? "no_reason" : verdict.Reason)
-            };
+            _logger.LogInformation("消息二分类 AI 判定 {Kind}（置信度 {Confidence}）",
+                verdict.Kind, verdict.Confidence);
+            return verdict;
         }
         catch (OperationCanceledException)
         {
@@ -181,13 +173,13 @@ public sealed class CloudOpenAiProvider : IAiProvider
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "云端识别异常，返回 null 进入下一级");
+            _logger.LogError(ex, "消息二分类 AI 异常，返回 null 降级回关键词链路");
             return null;
         }
     }
 
-    /// <summary>从 LLM 文本中提取学科判定 JSON（容忍 ```json 围栏等噪音）。</summary>
-    internal static LlmSubjectVerdictDto? ParseVerdict(string content)
+    /// <summary>从 LLM 文本中提取消息种类判定 JSON（容忍 ```json 围栏等噪音）。</summary>
+    internal static MessageKindVerdict? ParseVerdict(string content)
     {
         if (string.IsNullOrWhiteSpace(content))
         {
@@ -205,20 +197,30 @@ public sealed class CloudOpenAiProvider : IAiProvider
         json = json[start..(end + 1)];
         try
         {
-            return JsonSerializer.Deserialize<LlmSubjectVerdictDto>(json, JsonOptions);
+            var dto = JsonSerializer.Deserialize<MessageKindVerdictDto>(json, JsonOptions);
+            if (dto is null || string.IsNullOrWhiteSpace(dto.Kind))
+            {
+                return null;
+            }
+
+            var kind = dto.Kind.Trim() switch
+            {
+                "作业" => MessageKind.Homework,
+                "通知" => MessageKind.Notice,
+                _ => MessageKind.Unknown
+            };
+            if (kind == MessageKind.Unknown)
+            {
+                return null;
+            }
+
+            return new MessageKindVerdict(kind, Math.Clamp(dto.Confidence, 0, 1),
+                string.IsNullOrWhiteSpace(dto.Reason) ? "no_reason" : dto.Reason);
         }
         catch (JsonException)
         {
             return null;
         }
-    }
-
-    internal static string BuildEndpointUrl(string endpoint)
-    {
-        var url = endpoint.Trim().TrimEnd('/');
-        return url.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
-            ? url
-            : url + "/chat/completions";
     }
 
     private void IncrementCount()

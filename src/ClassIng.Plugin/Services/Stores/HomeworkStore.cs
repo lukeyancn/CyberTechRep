@@ -270,6 +270,32 @@ public sealed class HomeworkStore : IHomeworkStore
         return Task.FromResult(removed.Count);
     }
 
+    /// <inheritdoc />
+    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        HomeworkItem? removed;
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            var index = _items!.FindIndex(i => i.Id == id);
+            if (index < 0)
+            {
+                _logger.LogWarning("删除作业失败：条目不存在 Id={Id}", id);
+                return Task.FromResult(false);
+            }
+
+            removed = _items[index];
+            _items.RemoveAt(index);
+            Save();
+            _logger.LogInformation("作业已删除（仅该条，不影响按发送者学科映射）Id={Id}, MessageId={MessageId}, Subject={Subject}",
+                removed.Id, removed.MessageId, removed.Subject);
+        }
+
+        // 锁外触发：悬浮窗合并刷新（被删条目从视图移除）
+        RaiseChanged(removed);
+        return Task.FromResult(true);
+    }
+
     /// <summary>
     /// 幂等合并：保留原 Id/CreatedAt/IsResolved，更新正文/附件。学科取值优先级
     /// （<see cref="HomeworkSubjectResolver"/>）：

@@ -10,6 +10,12 @@ public sealed class SubjectChainOptionsProvider
     /// <summary>提供当前分类设置（含置信度阈值 / AI 开关 / 云端限额等）。</summary>
     public required Func<ClassificationSettings> GetSettings { get; init; }
 
+    /// <summary>
+    /// 提供 CyberTechRep AI 设置（四用途识别模式等）；未接线时为 null，
+    /// <see cref="SafeGetAiSettings"/> 回退默认值（SubjectClassifyMode=Backup = 现状链路）。
+    /// </summary>
+    public Func<AiSettings>? GetAiSettings { get; init; }
+
     /// <summary>插件数据目录（subjects.json、pending-confirm.json 存放处）。</summary>
     public required string DataDirectory { get; init; }
 
@@ -38,6 +44,19 @@ public sealed class SubjectChainOptionsProvider
         catch
         {
             return new ClassificationSettings();
+        }
+    }
+
+    /// <summary>线程安全读取 AI 用途模式设置；异常/未接线时回退默认值（现状行为不变）。</summary>
+    public AiSettings SafeGetAiSettings()
+    {
+        try
+        {
+            return GetAiSettings?.Invoke() ?? new AiSettings();
+        }
+        catch
+        {
+            return new AiSettings();
         }
     }
 }

@@ -47,6 +47,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
     private readonly Services.Maintenance.RetryQueueService? _retryQueue;
     private readonly IUpdateNotifyService? _updateNotify;
     private readonly JsonPendingConfirmStore? _pendingConfirmStore;
+    private readonly INoKeywordFallbackClassifier? _noKeywordFallback;
     private readonly ILogger _logger;
 
     private EventHandler<MessageRecord>? _messageHandler;
@@ -65,6 +66,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         Services.Maintenance.RetryQueueService? retryQueue = null,
         IUpdateNotifyService? updateNotify = null,
         JsonPendingConfirmStore? pendingConfirmStore = null,
+        INoKeywordFallbackClassifier? noKeywordFallback = null,
         ILogger? logger = null)
     {
         _ingest = ingest;
@@ -76,6 +78,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         _retryQueue = retryQueue;
         _updateNotify = updateNotify;
         _pendingConfirmStore = pendingConfirmStore;
+        _noKeywordFallback = noKeywordFallback;
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -236,9 +239,15 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 break;
 
             default:
-                _logger.LogDebug(
-                    "消息未分类，忽略（MessageId={MessageId}, Reason={Reason}）",
-                    message.MessageId, classified.MatchReason);
+                // 需求 6 用途③：无关键词消息兜底识别（AiSettings.NoKeywordFallbackMode，默认 Off = 现状忽略）
+                if (!await TryNoKeywordFallbackAsync(
+                        message.MessageId, message.MemberOpenId, text, attachmentIds, ct).ConfigureAwait(false))
+                {
+                    _logger.LogDebug(
+                        "消息未分类，忽略（MessageId={MessageId}, Reason={Reason}）",
+                        message.MessageId, classified.MatchReason);
+                }
+
                 break;
         }
     }
@@ -298,6 +307,73 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
 
         await ReassignFilesSafeAsync(messageId, subject.Subject, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 需求 6 用途③：无关键词消息兜底识别。AI/学科链给出可信结果时按作业归档（含文件二次归档），
+    /// 否则返回 false（调用方保持现状：忽略该消息）。识别失败不投重试队列——兜底不改变
+    /// 「消息被忽略」的现状语义，避免对同一条无关键词消息无限重试。
+    /// </summary>
+    private async Task<bool> TryNoKeywordFallbackAsync(
+        string messageId, string memberOpenId, string text, IReadOnlyList<Guid> attachmentIds, CancellationToken ct)
+    {
+        if (_noKeywordFallback is null || _homeworkStore is null || string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        SubjectResult? subject;
+        try
+        {
+            subject = await _noKeywordFallback.ClassifyAsync(text, messageId, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "无关键词兜底识别异常（MessageId={MessageId}），保持现状忽略该消息", messageId);
+            return false;
+        }
+
+        if (subject is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            await _homeworkStore.UpsertAsync(new HomeworkItem
+            {
+                MessageId = messageId,
+                MemberOpenId = memberOpenId,
+                Content = text,
+                Subject = subject.Subject,
+                SubjectConfidence = subject.Confidence,
+                SubjectSource = subject.Source,
+                AttachmentIds = attachmentIds,
+                CreatedAt = DateTimeOffset.Now
+            }, ct).ConfigureAwait(false);
+            _logger.LogInformation(
+                "无关键词兜底作业已写入存储（MessageId={MessageId}, Subject={Subject}, Source={Source}, Confidence={Confidence}）",
+                messageId, subject.Subject, subject.Source, subject.Confidence);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "无关键词兜底作业写入存储失败（MessageId={MessageId}），投递 StoreWrite 重试", messageId);
+            await EnqueueRetrySafeAsync(
+                RetryOperationType.StoreWrite,
+                new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject, memberOpenId),
+                messageId).ConfigureAwait(false);
+        }
+
+        await ReassignFilesSafeAsync(messageId, subject.Subject, ct).ConfigureAwait(false);
+        return true;
     }
 
     /// <summary>通知：写 NoticeStore（悬浮窗经 Changed 自动刷新）。</summary>

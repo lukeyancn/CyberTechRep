@@ -8,7 +8,7 @@ namespace ClassIng.Plugin.Controls.SettingsPages;
 /// <summary>
 /// 连接设置页：AppId/AppSecret（脱敏）/ApiBase/TokenApiUrl/群白名单/重连参数/历史回溯提示。
 /// </summary>
-[SettingsPageInfo("classing.settings.connection", "ClassIng 连接")]
+[SettingsPageInfo("classing.settings.connection", "CyberTechRep 连接")]
 [Group("classing.settings")]
 public partial class ConnectionSettingsPage : ClassIngSettingsPageBase
 {

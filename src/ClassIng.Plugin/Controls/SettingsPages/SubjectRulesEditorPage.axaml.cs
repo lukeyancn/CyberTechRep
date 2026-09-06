@@ -22,7 +22,7 @@ namespace ClassIng.Plugin.Controls.SettingsPages;
 /// 随后经 SettingsService.SaveAsync → SettingsChanged → 各分类器 ReloadRules 热生效。
 /// 防呆校验（空学科名/非法字符/重复学科/空关键词）由 <see cref="SubjectRulesEditorLogic"/> 提供。
 /// </summary>
-[SettingsPageInfo("classing.settings.subject-rules", "ClassIng 词表编辑")]
+[SettingsPageInfo("classing.settings.subject-rules", "CyberTechRep 词表编辑")]
 [Group("classing.settings")]
 public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
 {

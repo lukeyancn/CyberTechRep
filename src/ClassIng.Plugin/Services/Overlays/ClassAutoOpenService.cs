@@ -60,8 +60,12 @@ public sealed class ClassAutoOpenService(
         lessons.OnAfterSchool += OnLessonsEvent;
         // 覆盖连堂/无课间直接切课：CurrentSubject 变化时同样评估（宿主仅在实际变化时触发）
         lessons.PropertyChanged += OnLessonsPropertyChanged;
+        // 设置变更（含上课中途打开 AutoOpenWithClass 开关）立即重新评估，
+        // 否则开关在课中打开要等到下一次状态迁移才生效，用户感知为「开了也不弹」
+        settingsService.SettingsChanged += OnSettingsChanged;
         _subscribed = true;
-        _logger.LogInformation("上课联动已接入宿主课程服务，当前状态 {State}", lessons.CurrentState);
+        _logger.LogInformation("上课联动已接入宿主课程服务，当前状态 {State}，AutoOpenWithClass={AutoOpen}",
+            lessons.CurrentState, settingsService.Current.Overlays.SubjectCircle.AutoOpenWithClass);
 
         // 启动即对一次表：插件在上课中途加载（宿主重启/热重载）时也能恢复联动
         EvaluateOnUi("启动对表");
@@ -78,12 +82,15 @@ public sealed class ClassAutoOpenService(
             _lessons.PropertyChanged -= OnLessonsPropertyChanged;
         }
 
+        settingsService.SettingsChanged -= OnSettingsChanged;
         _lessons = null;
         _subscribed = false;
         return Task.CompletedTask;
     }
 
     private void OnLessonsEvent(object? sender, EventArgs e) => EvaluateOnUi("时间状态迁移");
+
+    private void OnSettingsChanged(object? sender, AppSettings e) => EvaluateOnUi("设置变更");
 
     private void OnLessonsPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -113,14 +120,16 @@ public sealed class ClassAutoOpenService(
 
             var state = lessons.CurrentState;
             var subject = lessons.CurrentSubject;
+            var confirmed = lessons.IsLessonConfirmed;
+
+            _logger.LogInformation(
+                "上课联动评估：Reason={Reason} State={State} Subject={Subject} Confirmed={Confirmed}",
+                reason, state, subject?.Name, confirmed);
 
             // 判定「正在上课」必须以 CurrentState == OnClass 为准（辅以 IsLessonConfirmed），
             // CurrentSubject 非空不代表在上课（查不到课表/科目时是 Fallback 哨兵而非 null）
-            var inClass = state == TimeState.OnClass
-                && lessons.IsLessonConfirmed
-                && SubjectAutoOpenMatcher.IsRealLessonSubject(subject?.Name);
-
-            if (!inClass)
+            if (!ClassAutoOpenDecider.IsInClassState(
+                    state == TimeState.OnClass, confirmed, subject?.Name))
             {
                 // 下课/放学/空档/查不到当前课：只收联动窗（手动打开的不动），哨兵科目不弹窗
                 _lastHandledSubject = null;
@@ -129,6 +138,15 @@ public sealed class ClassAutoOpenService(
             }
 
             var name = subject!.Name!.Trim();
+            var autoOpen = settingsService.Current.Overlays.SubjectCircle.AutoOpenWithClass;
+            if (!autoOpen)
+            {
+                // Information 级：运行时 LogLevel=Info 也可取证（此前是 Debug，开关联动关闭时用户完全无迹可循）
+                _logger.LogInformation(
+                    "上课联动：检测到上课 {Subject}，但 AutoOpenWithClass 未开启（悬浮窗设置页可开启），跳过", name);
+                return;
+            }
+
             if (string.Equals(_lastHandledSubject, name, StringComparison.OrdinalIgnoreCase))
             {
                 return; // 同一节课的重复事件（状态迁移 + 科目变更），去重
@@ -136,28 +154,26 @@ public sealed class ClassAutoOpenService(
 
             _lastHandledSubject = name;
 
-            var autoOpen = settingsService.Current.Overlays.SubjectCircle.AutoOpenWithClass;
-            if (!autoOpen)
-            {
-                _logger.LogDebug("上课联动：检测到上课 {Subject}，但 AutoOpenWithClass 未开启，跳过", name);
-                return;
-            }
-
             var records = await pipeline.GetRecordsAsync();
             var archivedSubjects = records
                 .Select(r => SubjectFilesQuery.ExtractSubject(r.ArchivedRelativePath))
                 .ToList();
-            var matched = SubjectAutoOpenMatcher.MatchArchivedSubject(name, archivedSubjects);
+            var matched = ClassAutoOpenDecider.MatchArchivedSubject(name, archivedSubjects);
             if (matched is null)
             {
                 // 该学科没有已归档文件：不弹；若联动窗开着（上一节课留下的）则收起。
                 // 取舍：不保留旧学科内容展示，避免悬浮窗与当前课不一致造成误导；
                 // 用户手动打开的窗仍保持不动。
-                _logger.LogInformation("上课联动：学科 {Subject} 没有已归档文件，不弹出悬浮窗", name);
+                _logger.LogInformation(
+                    "上课联动：学科 {Subject} 没有已归档文件，不弹出悬浮窗（文件记录 {Count} 条，归档学科段 [{Segments}]）",
+                    name, records.Count, string.Join(", ", archivedSubjects.Distinct()));
                 await filesController.HideIfAutoOpenedAsync("当前学科无已归档文件");
                 return;
             }
 
+            _logger.LogInformation(
+                "上课联动：学科 {Subject} 归档命中 {Matched}，弹出文件悬浮窗（文件记录 {Count} 条）",
+                name, matched, records.Count);
             await filesController.OpenForClassAsync(matched);
         }
         catch (Exception ex)

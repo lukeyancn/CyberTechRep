@@ -6,6 +6,13 @@
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
     <RootNamespace>ClassIng.Plugin</RootNamespace>
+    <!-- 版本 0.4.0.0：与 manifest.yml 保持一致 -->
+    <Version>0.4.0.0</Version>
+    <!-- 品牌更名：用户可见的产品名（CyberTechRep）；程序集文件名/命名空间保持 ClassIng 不变 -->
+    <AssemblyName>ClassIng.Plugin</AssemblyName>
+    <Product>CyberTechRep</Product>
+    <Company>CyberTechRep</Company>
+    <Title>CyberTechRep（ClassIsland 插件）</Title>
     <!-- 关键：插件以可动态加载的程序集构建（宿主进程内加载） -->
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <!-- 构建时产出 .cipx 插件包（由 ClassIsland.PluginSdk.targets 驱动） -->

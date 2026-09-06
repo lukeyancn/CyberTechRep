@@ -14,7 +14,8 @@ namespace ClassIng.Plugin.Services.Overlays;
 ///   抬到所有窗口之上（这正是「悬浮窗盖住其他窗口」问题的根源）；
 /// - 非置顶：<c>SetWindowPos(HWND_BOTTOM)</c> 压到 Z 序最底；置顶：不打扰 Z 序；
 /// - 1 秒兜底计时器恒开：抗「显示桌面」（Win+D 最小化后立即还原，悬浮窗不消失），
-///   非置顶模式下同时持续压底（用户拖拽/缩放窗口期间自动让路，不与拖拽会话打架）；
+///   非置顶模式下同时持续压底（用户拖拽/缩放窗口期间自动让路，不与拖拽会话打架；
+///   已在 Z 序最底时跳过 SetWindowPos，避免与宿主 Bottommost 重申逻辑形成 Z 序拉锯）；
 /// - 鼠标穿透（clickThrough）：<c>WS_EX_TRANSPARENT</c> 让鼠标点击直接穿过悬浮窗落到
 ///   下方窗口；窗口未启用层叠合成时补 <c>WS_EX_LAYERED</c> +
 ///   <c>SetLayeredWindowAttributes(255)</c>（该补位由本类负责移除）。
@@ -40,6 +41,13 @@ internal sealed class DesktopLevelPinner
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+    /// <summary>取 Z 序相邻窗口（<see cref="GwHwndNext"/>=其下方窗口；已在最底时返回 0）。</summary>
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+
+    /// <summary>GW_HWNDNEXT：Z 序中位于指定窗口下方的窗口句柄。</summary>
+    private const uint GwHwndNext = 2;
 
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int index);
@@ -172,7 +180,16 @@ internal sealed class DesktopLevelPinner
         var hwnd = GetHandle();
         if (hwnd != IntPtr.Zero)
         {
-            SetWindowPos(hwnd, HwndBottom, 0, 0, 0, 0, SwpNomove | SwpNosize | SwpNoactivate);
+            // 已在 Z 序最底（没有任何窗口位于其下）时跳过 SetWindowPos：
+            // 类Island 宿主主窗口在 Bottommost 层会响应自身 Z 序变化并反复重申层级
+            // （MainWindow.ProcWnd → SetBottom，WindowTopmostRecheckMode=2/3 时更以
+            // 计时器/每 tick 频率重申），本钉底器的 1 秒兜底若无条件压底会与之形成
+            // 周期性 Z 序拉锯，表观为主窗口顶部课表偶发闪烁。真 no-op 化后只剩
+            // 宿主自身重申行为。
+            if (GetWindow(hwnd, GwHwndNext) != IntPtr.Zero)
+            {
+                SetWindowPos(hwnd, HwndBottom, 0, 0, 0, 0, SwpNomove | SwpNosize | SwpNoactivate);
+            }
         }
     }
 

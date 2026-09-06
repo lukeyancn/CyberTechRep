@@ -170,14 +170,14 @@ public partial class FirstRunWizardWindow : Window, IFirstRunWizardWindow
 
             ConnectionFeedback.IsVisible = false;
             FinishSummary.Text = string.IsNullOrEmpty(connection.AppId)
-                ? "未填写 AppID，ClassIng 暂不会连接协议端。可稍后在「ClassIng 连接」设置页补全。"
-                : "连接参数与引导状态已保存，之后可在 ClassIsland 设置的 ClassIng 分组中随时调整。";
+                ? "未填写 AppID，CyberTechRep 暂不会连接协议端。可稍后在「CyberTechRep 连接」设置页补全。"
+                : "连接参数与引导状态已保存，之后可在 ClassIsland 设置的 CyberTechRep 分组中随时调整。";
             ShowStep(FinishStep);
         }
         catch (Exception ex)
         {
             // 保存失败不崩溃：留在本步，提示可稍后到设置页重试
-            ShowFeedback($"保存连接配置失败：{ex.Message}（可稍后在「ClassIng 连接」设置页重试）");
+            ShowFeedback($"保存连接配置失败：{ex.Message}（可稍后在「CyberTechRep 连接」设置页重试）");
         }
     }
 

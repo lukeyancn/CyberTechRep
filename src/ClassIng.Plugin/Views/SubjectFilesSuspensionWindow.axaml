@@ -4,7 +4,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="360" d:DesignHeight="520"
         x:Class="ClassIng.Plugin.Views.SubjectFilesSuspensionWindow"
-        Title="ClassIng 学科文件" Width="360" Height="520" MinWidth="220" MinHeight="160"
+        Title="CyberTechRep 学科文件" Width="360" Height="520" MinWidth="220" MinHeight="160"
         SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
         Topmost="True" Background="Transparent" FontSize="14">
 

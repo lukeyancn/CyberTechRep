@@ -59,7 +59,7 @@ public sealed class UpdateNotifyService : IUpdateNotifyService
         else
         {
             _httpClient = new HttpClient();
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("ClassIng-Plugin/1.0");
+            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("CyberTechRep-Plugin/1.0");
             _ownsHttpClient = true;
         }
     }

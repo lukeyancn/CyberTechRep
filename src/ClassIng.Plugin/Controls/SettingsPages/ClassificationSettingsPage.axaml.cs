@@ -9,7 +9,7 @@ namespace ClassIng.Plugin.Controls.SettingsPages;
 /// 分类设置页：通知/作业关键词表增删改、学科词表（路径 + 打开编辑）、
 /// AI 开关/本地路径/云端端点与 Key（脱敏）/每日限额/置信度阈值/人工队列开关。
 /// </summary>
-[SettingsPageInfo("classing.settings.classification", "ClassIng 分类")]
+[SettingsPageInfo("classing.settings.classification", "CyberTechRep 分类")]
 [Group("classing.settings")]
 public partial class ClassificationSettingsPage : ClassIngSettingsPageBase
 {

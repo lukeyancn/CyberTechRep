@@ -172,6 +172,12 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
         public event EventHandler<HomeworkItem>? Changed;
 
+        public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+        {
+            var removed = Items.RemoveAll(i => i.Id == id) > 0;
+            return Task.FromResult(removed);
+        }
+
         public Task<HomeworkItem> UpsertAsync(HomeworkItem item, CancellationToken ct = default)
         {
             var existing = Items.Find(i => i.Id == item.Id)

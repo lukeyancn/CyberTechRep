@@ -6,7 +6,7 @@
         mc:Ignorable="d" d:DesignWidth="320" d:DesignHeight="480"
         x:Class="ClassIng.Plugin.Views.NoticeSuspensionWindow"
         x:CompileBindings="True"
-        Title="ClassIng 通知" Width="320" Height="480" MinWidth="220" MinHeight="160"
+        Title="CyberTechRep 通知" Width="320" Height="480" MinWidth="220" MinHeight="160"
         SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
         Topmost="True" Background="Transparent" FontSize="14">
 

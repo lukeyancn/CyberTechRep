@@ -6,7 +6,7 @@
         mc:Ignorable="d" d:DesignWidth="360" d:DesignHeight="520"
         x:Class="ClassIng.Plugin.Views.HomeworkSuspensionWindow"
         x:CompileBindings="True"
-        Title="ClassIng 作业" Width="360" Height="520" MinWidth="240" MinHeight="180"
+        Title="CyberTechRep 作业" Width="360" Height="520" MinWidth="240" MinHeight="180"
         SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
         Topmost="True" Background="Transparent" FontSize="14">
 
@@ -52,6 +52,13 @@
                             <TextBlock Grid.Column="0" Grid.Row="2"
                                        Text="{Binding CreatedAtText}"
                                        FontSize="11" Opacity="0.5" Margin="0,2,0,0" />
+                            <Button Grid.Column="1" Grid.Row="1"
+                                    Content="删除" Click="OnDeleteClick"
+                                    HorizontalAlignment="Right" Margin="0,4,0,0"
+                                    Padding="6,0" MinWidth="40" MinHeight="20" FontSize="11"
+                                    Background="Transparent" BorderThickness="0"
+                                    Foreground="#C0B3261E" ToolTip.Tip="删除该条作业（再次点击确认）" />
+
                           </Grid>
                         </Border>
                       </DataTemplate>
@@ -64,16 +71,49 @@
         </ScrollViewer>
       </Panel>
 
-      <!-- 角部缩放 Thumb -->
-      <Thumb Grid.Row="2" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
-             HorizontalAlignment="Right" VerticalAlignment="Bottom" Opacity="0.4"
-             DragDelta="OnResizeDragDelta">
-        <Thumb.Template>
-          <ControlTemplate>
-            <Border CornerRadius="2" Background="#40000000" />
-          </ControlTemplate>
-        </Thumb.Template>
-      </Thumb>
+      <!-- 底栏：左下角「整理并发送」 + 角部缩放 Thumb -->
+      <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="8,4,0,4">
+        <Button Grid.Column="0" x:Name="SendDigestButton" Content="整理并发送"
+                Click="OnSendDigestClick" HorizontalAlignment="Left"
+                Padding="10,4" MinHeight="26" FontSize="12"
+                ToolTip.Tip="按学科整理今日作业并发送到白名单群" />
+        <Thumb Grid.Column="1" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
+               HorizontalAlignment="Right" VerticalAlignment="Bottom" Opacity="0.4"
+               DragDelta="OnResizeDragDelta">
+          <Thumb.Template>
+            <ControlTemplate>
+              <Border CornerRadius="2" Background="#40000000" />
+            </ControlTemplate>
+          </Thumb.Template>
+        </Thumb>
+      </Grid>
+
+      <!-- 二级确认/结果浮层（窗内卡片，避免无边框置顶窗再弹模态窗） -->
+      <Panel Grid.Row="0" Grid.RowSpan="3" x:Name="SendConfirmOverlay" IsVisible="False">
+        <Panel.Background>
+          <SolidColorBrush Color="#000000" Opacity="0.25" />
+        </Panel.Background>
+        <Border Background="#FFF7FBFB" CornerRadius="8" BorderBrush="#33000000" BorderThickness="1"
+                HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                MaxWidth="340" MaxHeight="440" Margin="12" Padding="12">
+          <Grid RowDefinitions="Auto,*,Auto,Auto,Auto">
+            <TextBlock Grid.Row="0" Text="整理并发送 · 确认" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <ScrollViewer Grid.Row="1" MaxHeight="260" Margin="0,0,0,6">
+              <TextBlock x:Name="SendPreviewText" TextWrapping="Wrap" FontSize="12" LineHeight="18" />
+            </ScrollViewer>
+            <TextBlock Grid.Row="2" x:Name="SendTargetText" TextWrapping="Wrap" FontSize="11"
+                       Opacity="0.7" Margin="0,0,0,6" />
+            <TextBlock Grid.Row="3" x:Name="SendResultText" TextWrapping="Wrap" FontSize="11"
+                       IsVisible="False" Margin="0,0,0,6" Foreground="#C0B3261E" />
+            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+              <Button x:Name="SendCancelButton" Content="取消" Click="OnSendCancelClick" Padding="12,4" />
+              <Button x:Name="SendConfirmButton" Content="发送" Click="OnSendConfirmClick"
+                      Padding="12,4" Classes="accent" />
+            </StackPanel>
+          </Grid>
+        </Border>
+      </Panel>
+
     </Grid>
   </Border>
 </Window>

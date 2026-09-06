@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using ClassIng.Shared.Abstractions;
 using ClassIng.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -6,12 +7,27 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace ClassIng.Plugin.Services.SubjectChain;
 
 /// <summary>
-/// 模块 3：三级学科识别降级链组合器。
-/// 执行顺序：①关键词 → ②AI（本地 ONNX 优先 / 云端可配，任一可用且置信度达标即返回）
-/// → ③人工确认队列投递。<strong>永不返回 null</strong>：任何一级失败自动进入下一级，
-/// 全部失败返回 Subject=「未分类」且 NeedsManualConfirm=true 的兜底结果。
+/// 学科链按用途模式路由的内部抽象（<see cref="NoKeywordFallbackClassifier"/> 等依赖此接口而非具体类，便于单测替身）。
 /// </summary>
-public sealed class SubjectClassifierChain : ISubjectClassifierChain
+public interface ISubjectChainModeRouter
+{
+    /// <summary>按指定 AI 用途模式执行学科识别链（模式语义见 <see cref="AiUsageMode"/>）。</summary>
+    Task<SubjectResult> ClassifyWithModeAsync(
+        string text, string messageId, AiUsageMode mode, bool suppressManualQueue = false, CancellationToken ct = default);
+}
+
+/// <summary>
+/// 模块 3：三级学科识别降级链组合器（CyberTechRep AI「学科分类」用途路由在此实现）。
+/// <para>
+/// 路由矩阵（<see cref="AiSettings.SubjectClassifyMode"/>，经 <see cref="ISubjectChainModeRouter"/> 可显式指定）：
+/// - <see cref="AiUsageMode.Off"/>：①关键词 → ③兜底（AI 级整体跳过）；
+/// - <see cref="AiUsageMode.Backup"/>（默认 = 现状行为）：①关键词 → ②AI → ③兜底（关键词不中/低置信才 AI）；
+/// - <see cref="AiUsageMode.Primary"/>：②AI → ③兜底（跳过关键词，AI 为唯一识别方式；AI 失败降级兜底，不阻塞）。
+/// </para>
+/// <strong>永不返回 null</strong>：任何一级失败自动进入下一级，全部失败返回
+/// Subject=「未分类」且 NeedsManualConfirm=true 的兜底结果。
+/// </summary>
+public sealed class SubjectClassifierChain : ISubjectClassifierChain, ISubjectChainModeRouter
 {
     private readonly ISubjectClassifier _keyword;
     private readonly IReadOnlyList<IAiProvider> _aiProviders;
@@ -34,7 +50,17 @@ public sealed class SubjectClassifierChain : ISubjectClassifierChain
     }
 
     /// <inheritdoc />
-    public async Task<SubjectResult> ClassifyAsync(string text, string messageId, CancellationToken ct = default)
+    public Task<SubjectResult> ClassifyAsync(string text, string messageId, CancellationToken ct = default)
+    {
+        // 「学科分类」用途：模式由 AiSettings.SubjectClassifyMode 热读取（默认 Backup = 现状行为）
+        return ClassifyWithModeAsync(
+            text, messageId, _provider.SafeGetAiSettings().SubjectClassifyMode,
+            suppressManualQueue: false, ct);
+    }
+
+    /// <inheritdoc />
+    public async Task<SubjectResult> ClassifyWithModeAsync(
+        string text, string messageId, AiUsageMode mode, bool suppressManualQueue = false, CancellationToken ct = default)
     {
         var candidates = new List<SubjectResult>();
         try
@@ -42,36 +68,54 @@ public sealed class SubjectClassifierChain : ISubjectClassifierChain
             ct.ThrowIfCancellationRequested();
             text ??= "";
 
-            // ①关键词规则
-            var keywordResult = await SafeInvoke(_keyword, text, ct);
-            if (keywordResult is not null)
+            // ①关键词规则（Primary 模式跳过：AI 为唯一识别方式）
+            if (mode != AiUsageMode.Primary)
             {
-                candidates.Add(keywordResult);
-                if (IsConfident(keywordResult))
+                var keywordResult = await SafeInvoke(_keyword, text, ct);
+                if (keywordResult is not null)
                 {
-                    return keywordResult;
+                    candidates.Add(keywordResult);
+                    if (IsConfident(keywordResult))
+                    {
+                        return keywordResult;
+                    }
                 }
             }
 
             // ②AI（按设置排序：本地优先 / 云端优先）；低置信候选继续走完链
-            foreach (var ai in OrderAiProviders())
+            //   Off 模式整体跳过：AI 不参与该用途
+            if (mode != AiUsageMode.Off)
             {
-                if (!ai.IsAvailable)
+                foreach (var ai in OrderAiProviders())
                 {
-                    _logger.LogDebug("AI 级 {Provider} 不可用，跳过", ai.Name);
-                    continue;
-                }
+                    if (!ai.IsAvailable)
+                    {
+                        _logger.LogDebug("AI 级 {Provider} 不可用，跳过", ai.Name);
+                        continue;
+                    }
 
-                var aiResult = await SafeInvoke(ai, text, ct);
-                if (aiResult is null)
-                {
-                    continue;
-                }
+                    var sw = Stopwatch.StartNew();
+                    var aiResult = await SafeInvoke(ai, text, ct);
+                    sw.Stop();
 
-                candidates.Add(aiResult);
-                if (IsConfident(aiResult))
-                {
-                    return aiResult;
+                    // 结构化调用日志：用途/模式/提供者/命中结果/耗时（不含任何密钥信息）
+                    _logger.LogInformation(
+                        "AI 调用完成：用途=SubjectClassify, 模式={Mode}, Provider={Provider}, " +
+                        "命中={Hit}, 置信度={Confidence}, 耗时={ElapsedMs}ms, MessageId={MessageId}",
+                        mode, ai.Name,
+                        aiResult?.Subject ?? "(null)",
+                        aiResult?.Confidence, sw.ElapsedMilliseconds, messageId);
+
+                    if (aiResult is null)
+                    {
+                        continue;
+                    }
+
+                    candidates.Add(aiResult);
+                    if (IsConfident(aiResult))
+                    {
+                        return aiResult;
+                    }
                 }
             }
         }
@@ -85,11 +129,11 @@ public sealed class SubjectClassifierChain : ISubjectClassifierChain
             _logger.LogError(ex, "学科识别链执行异常（MessageId={MessageId}），进入兜底", messageId);
         }
 
-        return await FinalizeFallbackAsync(text, messageId, candidates, ct);
+        return await FinalizeFallbackAsync(text, messageId, candidates, suppressManualQueue, ct);
     }
 
     private async Task<SubjectResult> FinalizeFallbackAsync(
-        string text, string messageId, List<SubjectResult> candidates, CancellationToken ct)
+        string text, string messageId, List<SubjectResult> candidates, bool suppressManualQueue, CancellationToken ct)
     {
         var settings = _provider.SafeGetSettings();
 
@@ -114,6 +158,15 @@ public sealed class SubjectClassifierChain : ISubjectClassifierChain
             Reason = fallback.Reason,
             NeedsManualConfirm = true
         };
+
+        if (suppressManualQueue)
+        {
+            // 调用方明确不投人工队列（如无关键词兜底：低置信结果直接放弃，保持「消息被忽略」现状）
+            _logger.LogInformation(
+                "学科识别降级到底部但人工队列被调用方抑制：Subject={Subject}, Confidence={Confidence}, MessageId={MessageId}",
+                manualResult.Subject, manualResult.Confidence, messageId);
+            return manualResult;
+        }
 
         if (settings.ManualConfirmQueueEnabled)
         {

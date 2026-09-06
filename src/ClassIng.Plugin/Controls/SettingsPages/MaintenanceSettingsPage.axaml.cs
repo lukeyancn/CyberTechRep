@@ -14,7 +14,7 @@ namespace ClassIng.Plugin.Controls.SettingsPages;
 /// （连接状态/最近消息快照/手动重连，联动 <see cref="IDiagnosticsService"/>）、
 /// 配置导入导出（剪贴板通道，导出脱敏/导入保留本地 Secret）/恢复默认。
 /// </summary>
-[SettingsPageInfo("classing.settings.maintenance", "ClassIng 维护")]
+[SettingsPageInfo("classing.settings.maintenance", "CyberTechRep 维护")]
 [Group("classing.settings")]
 public partial class MaintenanceSettingsPage : ClassIngSettingsPageBase
 {

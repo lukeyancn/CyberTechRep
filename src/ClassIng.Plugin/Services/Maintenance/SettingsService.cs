@@ -80,7 +80,7 @@ public sealed class SettingsService : ISettingsService
         }
         catch (JsonException ex)
         {
-            throw new FormatException($"导入内容不是合法的 ClassIng 设置 JSON：{ex.Message}", ex);
+            throw new FormatException($"导入内容不是合法的 CyberTechRep 设置 JSON：{ex.Message}", ex);
         }
 
         if (imported.SchemaVersion != SupportedSchemaVersion)

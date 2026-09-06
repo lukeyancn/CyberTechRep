@@ -68,6 +68,8 @@ public class ClassIngPlugin : PluginBase
         {
             // 模块 7：接入 ISettingsService，热读取分类设置（含配置热更新）
             GetSettings = () => settingsService.Current.Classification,
+            // 需求 6：CyberTechRep AI 四用途识别模式（AiSettings）热读取
+            GetAiSettings = () => settingsService.Current.Ai,
             DataDirectory = dataDir,
             SecretUnprotector = Utils.SecretProtector.Unprotect
         });
@@ -92,13 +94,40 @@ public class ClassIngPlugin : PluginBase
                 sp.GetService<ILogger<JsonPendingConfirmStore>>()));
         services.AddSingleton<IPendingConfirmStore>(sp => sp.GetRequiredService<JsonPendingConfirmStore>());
         // 人工确认写回：由 Services/Pipeline/MessageDispatchService 在启动时挂接 store.Resolved 回调
-        services.AddSingleton<ISubjectClassifierChain>(sp =>
-            new SubjectClassifierChain(
+        // 需求 6：学科链注册为具体单例（NoKeywordFallbackClassifier 依赖 ISubjectChainModeRouter），
+        // ISubjectClassifierChain 与 ISubjectChainModeRouter 共享同一实例。
+        services.AddSingleton(sp =>
+        {
+            var chain = new SubjectClassifierChain(
                 sp.GetRequiredService<ISubjectClassifier>(),
                 sp.GetServices<IAiProvider>(),
                 sp.GetRequiredService<IPendingConfirmStore>(),
                 sp.GetRequiredService<SubjectChainOptionsProvider>(),
-                sp.GetService<ILogger<SubjectClassifierChain>>()));
+                sp.GetService<ILogger<SubjectClassifierChain>>());
+            return chain;
+        });
+        services.AddSingleton<ISubjectClassifierChain>(sp => sp.GetRequiredService<SubjectClassifierChain>());
+        services.AddSingleton<ISubjectChainModeRouter>(sp => sp.GetRequiredService<SubjectClassifierChain>());
+
+        // 需求 6 用途③：无关键词消息兜底识别（AiSettings.NoKeywordFallbackMode，默认 Off = 现状忽略）
+        services.AddSingleton<INoKeywordFallbackClassifier>(sp =>
+            new NoKeywordFallbackClassifier(
+                sp.GetRequiredService<ISubjectChainModeRouter>(),
+                sp.GetRequiredService<SubjectChainOptionsProvider>(),
+                sp.GetService<ILogger<NoKeywordFallbackClassifier>>()));
+
+        // 需求 6 用途②：通知/作业二分类 AI 路由（AiMessageKindRouter 包装关键词分类器；
+        // AiSettings.MessageClassifyMode 默认 Off 时行为与纯关键词分类完全一致）
+        services.AddSingleton<IMessageKindAiProvider>(sp =>
+            new CloudMessageKindProvider(
+                sp.GetRequiredService<SubjectChainOptionsProvider>(),
+                logger: sp.GetService<ILogger<CloudMessageKindProvider>>()));
+        services.AddSingleton<IMessageClassifier>(sp =>
+            new AiMessageKindRouter(
+                sp.GetRequiredService<KeywordMessageClassifier>(),
+                sp.GetService<IMessageKindAiProvider>(),
+                sp.GetRequiredService<SubjectChainOptionsProvider>(),
+                sp.GetService<ILogger<AiMessageKindRouter>>()));
 
         // ==== 模块 DI 注册区 ====
         // 模块 4：文件处理管道（原子下载 / MD5 去重 / 路径安全 / 磁盘上限）
@@ -129,6 +158,19 @@ public class ClassIngPlugin : PluginBase
             homeworkRetentionDays: () => settingsService.Current.Maintenance.HomeworkRetentionDays,
             userRules: sp.GetRequiredService<UserSubjectRuleStore>()));
         services.AddSingleton<IHomeworkStore>(sp => sp.GetRequiredService<HomeworkStore>());
+
+        // ---- 需求 2：作业清单「整理并发送」（QQ 官方机器人开放平台群消息 REST 发送）----
+        // 目标群 = 连接设置群白名单（GroupWhitelist）；发送开关 = 连接设置 HomeworkSendEnabled（默认 true，热生效）
+        services.AddSingleton(_ => new HomeworkSendOptionsProvider
+        {
+            GetSettings = () => settingsService.Current.Connection,
+            SecretUnprotector = Utils.SecretProtector.Unprotect,
+            GetEnabled = () => settingsService.Current.Connection.HomeworkSendEnabled
+        });
+        services.AddSingleton(sp => new HomeworkSendService(
+            sp.GetRequiredService<HomeworkSendOptionsProvider>(),
+            sp.GetService<ILogger<HomeworkSendService>>()));
+        services.AddSingleton<IHomeworkSendService>(sp => sp.GetRequiredService<HomeworkSendService>());
 
         // ---- 模块 6：悬浮窗（Avalonia 无边框置顶窗 + 共享控制器）----
         // 设置单一来源：ISettingsService.Current.Overlays（settings.json）；
@@ -167,7 +209,8 @@ public class ClassIngPlugin : PluginBase
                     SuspensionWindowController.HomeworkKey => new HomeworkSuspensionWindow(
                         sp.GetRequiredService<IHomeworkStore>(),
                         () => settingsService.Current.Overlays.HomeworkGroupOrder,
-                        sp.GetRequiredService<ISettingsService>()),
+                        sp.GetRequiredService<ISettingsService>(),
+                        sp.GetRequiredService<IHomeworkSendService>()),
                     SuspensionWindowController.FilesKey => sp.GetRequiredService<SubjectFilesSuspensionWindow>(),
                     SuspensionWindowController.CircleKey => (Window?)sp.GetRequiredService<SubjectCircleBarWindow>(),
                     _ => (Window?)null
@@ -219,9 +262,11 @@ public class ClassIngPlugin : PluginBase
         services.AddHostedService<Services.Maintenance.UpdateCheckStartupService>();
 
         // ---- 模块 7：设置页分组与五个设置页（连接/分类/悬浮窗/文件/维护）----
-        services.AddSettingsPageGroup("classing.settings", "\uE713", "ClassIng");
+        services.AddSettingsPageGroup("classing.settings", "\uE713", "CyberTechRep");
         services.AddSettingsPage<Controls.SettingsPages.ConnectionSettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.ClassificationSettingsPage>();
+        // 需求 6：CyberTechRep AI 设置页（四用途识别模式 + 云端采样参数）
+        services.AddSettingsPage<Controls.SettingsPages.AiSettingsPage>();
         // 需求 3：学科关键词规则（subjects.json）与消息分类关键词的可视化编辑入口
         services.AddSettingsPage<Controls.SettingsPages.SubjectRulesEditorPage>();
         services.AddSettingsPage<Controls.SettingsPages.OverlaySettingsPage>();

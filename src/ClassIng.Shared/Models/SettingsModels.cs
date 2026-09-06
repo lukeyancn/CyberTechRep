@@ -16,6 +16,9 @@ public sealed class AppSettings
 
     public ClassificationSettings Classification { get; set; } = new();
 
+    /// <summary>CyberTechRep AI：四用途识别模式与 AI 采样参数。</summary>
+    public AiSettings Ai { get; set; } = new();
+
     public OverlaySettings Overlays { get; set; } = new();
 
     public FileSettings Files { get; set; } = new();
@@ -50,6 +53,12 @@ public sealed class ConnectionSettings
 
     /// <summary>历史消息回溯天数。官方平台无历史补拉 API，当前恒为 0（保留字段兼容未来）。</summary>
     public int HistoryBackfillDays { get; set; } = 0;
+
+    /// <summary>
+    /// 作业清单「整理并发送」总开关（作业悬浮窗「整理并发送」入口与实际发送行为；
+    /// 默认 true = 现状开启）。关闭后悬浮窗隐藏发送入口，且发送服务拒绝发送。
+    /// </summary>
+    public bool HomeworkSendEnabled { get; set; } = true;
 }
 
 /// <summary>分类设置。</summary>
@@ -91,6 +100,63 @@ public sealed class ClassificationSettings
     public double ConfidenceThreshold { get; set; } = 0.7;
 
     public bool ManualConfirmQueueEnabled { get; set; } = true;
+}
+
+/// <summary>CyberTechRep AI 用途模式：AI 在某一识别用途中的参与方式。</summary>
+public enum AiUsageMode
+{
+    /// <summary>关闭：AI 不参与该用途（保持无 AI 的现状行为）。</summary>
+    Off = 0,
+
+    /// <summary>
+    /// 唯一识别：跳过/替代前面级别（关键词等），AI 为该用途的唯一识别方式；
+    /// AI 失败或不可用时自动降级回原有链路，不阻塞主流程。
+    /// 注意：二分类等逐条消息场景下此模式会对每条消息调用 AI，产生持续 API 费用。
+    /// </summary>
+    Primary = 1,
+
+    /// <summary>后补识别：前面级别（关键词）不中或低置信时才轮到 AI。</summary>
+    Backup = 2
+}
+
+/// <summary>
+/// CyberTechRep AI 设置（需求 6）：AI 的四种用途各自独立选择识别模式。
+/// <para>
+/// 默认值原则：<strong>未配置 AI 时现状行为完全不变</strong>——
+/// 学科分类默认 <see cref="AiUsageMode.Backup"/>（与既有「关键词不中 → 云端 LLM」链路语义一致，
+/// 云端未配置时该级自然不可用，行为不变）；其余用途默认 <see cref="AiUsageMode.Off"/>。
+/// 云端凭据（端点/API Key/模型名/每日限额）复用 <see cref="ClassificationSettings"/>，不在此重复。
+/// </para>
+/// </summary>
+public sealed class AiSettings
+{
+    /// <summary>
+    /// 用途① 通知作业学科分类：SubjectClassifierChain 的 AI 级路由模式。
+    /// Backup（默认）= 关键词不中或低置信才 AI（现状链路）；Primary = 跳过关键词直接 AI；Off = 不用 AI。
+    /// </summary>
+    public AiUsageMode SubjectClassifyMode { get; set; } = AiUsageMode.Backup;
+
+    /// <summary>
+    /// 用途② 通知/作业二分类：关键词分类器 Unknown 时（Backup）或每条消息（Primary）询问 AI；
+    /// 默认 Off = 现状（仅关键词，Unknown 消息直接忽略）。
+    /// </summary>
+    public AiUsageMode MessageClassifyMode { get; set; } = AiUsageMode.Off;
+
+    /// <summary>
+    /// 用途③ 无关键词消息兜底识别：文本中无任何通知/作业关键词（消息会被忽略）时，
+    /// 兜底走学科识别链判断学科并按作业归档；默认 Off = 现状（直接忽略）。
+    /// </summary>
+    public AiUsageMode NoKeywordFallbackMode { get; set; } = AiUsageMode.Off;
+
+    /// <summary>
+    /// 用途④ 文件分类无独立模式：文件随其所在消息的学科归档，实际行为跟随
+    /// <see cref="SubjectClassifyMode"/>（无独立字段，设置页仅做说明）。
+    /// </summary>
+    public const string FileClassifyNote =
+        "文件本身不单独分类：文件随其所在消息的学科归档，实际行为跟随「通知作业学科分类」的模式。";
+
+    /// <summary>云端 LLM 采样温度（0=最确定，多数分类任务建议 0）。</summary>
+    public double CloudTemperature { get; set; }
 }
 
 /// <summary>悬浮窗设置（通知/作业/学科文件三个悬浮窗 + 学科圆圈启动器共用一组窗口参数结构）。</summary>

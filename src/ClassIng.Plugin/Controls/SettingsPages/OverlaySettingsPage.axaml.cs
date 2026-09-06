@@ -14,7 +14,7 @@ namespace ClassIng.Plugin.Controls.SettingsPages;
 /// 复位按钮：恢复默认位置设置，并在悬浮窗控制器已注册时同步复位窗口位置；
 /// 控制器未注册时仅复位设置值。
 /// </summary>
-[SettingsPageInfo("classing.settings.overlay", "ClassIng 悬浮窗")]
+[SettingsPageInfo("classing.settings.overlay", "CyberTechRep 悬浮窗")]
 [Group("classing.settings")]
 public partial class OverlaySettingsPage : ClassIngSettingsPageBase
 {
