@@ -137,7 +137,12 @@ public class ClassIngPlugin : PluginBase
             GetSettings = () => settingsService.Current.Files,
             DataDirectory = dataDir
         });
-        services.AddSingleton<FilePipelineService>();
+        // 显式工厂注入 ILogger<FilePipelineService>：构造函数 logger 参数为非泛型 ILogger，
+        // 裸 AddSingleton<T>() 下 DI 解析不到非泛型 ILogger 会回落 NullLogger，
+        // 启动自检日志「文件管道就绪」会被静默吞掉。
+        services.AddSingleton(sp => new FilePipelineService(
+            sp.GetRequiredService<FilePipelineOptionsProvider>(),
+            logger: sp.GetService<ILogger<FilePipelineService>>()));
         services.AddSingleton<IFilePipelineService>(sp => sp.GetRequiredService<FilePipelineService>());
 
         // ---- 模块 5：持久化层（通知/作业存储，JSON 原子写入 + .bak 损坏恢复）----
