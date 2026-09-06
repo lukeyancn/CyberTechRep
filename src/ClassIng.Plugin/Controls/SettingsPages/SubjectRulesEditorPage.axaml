@@ -80,7 +80,7 @@
             <!-- 成员学科绑定管理（需求 2） -->
             <Expander Header="成员学科绑定（member-subject-bindings.json）" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="以群成员 OpenID 为单位显式绑定学科（群 OpenID 留空 = 全局生效，跨群有效）。保存后立即写入并热生效；此后该成员的作业/文件在「成员绑定优先」模式下按绑定学科归档。"
+                    <TextBlock Text="以群成员 OpenID 为单位显式绑定学科。每行可填：群 OpenID + 成员 OpenID + 学科；群 OpenID 留空 = 对所有群生效（全局绑定），非空则仅对该群生效，群内绑定优先于全局绑定。保存后立即写入并热生效；此后该成员的作业/文件在「成员绑定优先」模式下按绑定学科归档。"
                                TextWrapping="Wrap" Opacity="0.75"/>
                     <ListBox x:Name="BindingsList" ItemsSource="{Binding Bindings}" MinHeight="80" MaxHeight="320">
                         <ListBox.ItemTemplate>
@@ -101,6 +101,16 @@
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="＋ 添加绑定" Click="OnAddBindingClicked"/>
                     </StackPanel>
+
+                    <!-- 危险区：完全重置（仅学科识别相关，两段式轻确认） -->
+                    <Separator Margin="0,8,0,0"/>
+                    <TextBlock Text="危险区：完全重置学科识别数据" FontWeight="SemiBold" Foreground="Firebrick"/>
+                    <TextBlock Text="仅重置以下学科识别相关数据：清空全部成员学科绑定（member-subject-bindings.json）、清空按发送者学习映射（user-subjects.json）、学科识别模式恢复默认（成员绑定优先 + 显示选择窗）。不影响作业/通知数据、files.json 归档库、AI 凭据与其他页面设置。点击后需 3 秒内再次确认才执行。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <Button x:Name="ResetButton" Content="完全重置（清空绑定与学习映射）" Click="OnResetClicked"
+                            HorizontalAlignment="Left" FontWeight="SemiBold"
+                            Foreground="Firebrick" BorderBrush="Firebrick"/>
+                    <TextBlock Text="{Binding ResetFeedback}" Foreground="Firebrick" TextWrapping="Wrap"/>
                 </StackPanel>
             </Expander>
 

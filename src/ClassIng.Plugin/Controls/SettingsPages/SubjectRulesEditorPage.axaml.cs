@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Threading;
 using ClassIng.Plugin.Services.Classification;
 using ClassIng.Plugin.Services.Stores;
 using ClassIng.Plugin.Services.SubjectChain;
@@ -44,12 +45,18 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
     private readonly string _subjectsAssetPath;
     private readonly string _keywordsAssetPath;
     private readonly MemberSubjectBindingStore? _memberBindings;
+    private readonly UserSubjectRuleStore? _userRules;
+
+    /// <summary>完全重置两段式轻确认状态（首次点击 → 3 秒内再点才执行，超时复位）。</summary>
+    private readonly TwoStageConfirmGate _resetConfirmGate = new();
 
     private string _validationMessage = "";
     private string _transferFeedback = "";
+    private string _resetFeedback = "";
 
     public SubjectRulesEditorPage(ISettingsService settingsService,
-        MemberSubjectBindingStore? memberBindings = null)
+        MemberSubjectBindingStore? memberBindings = null,
+        UserSubjectRuleStore? userRules = null)
         : base(settingsService, PluginRuntime.DataDirectory)
     {
         _subjectsDataPath = Path.Combine(DataDirectory, SubjectsFileName);
@@ -57,6 +64,7 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
         _subjectsAssetPath = Path.Combine(AppContext.BaseDirectory, "Assets", SubjectsFileName);
         _keywordsAssetPath = Path.Combine(AppContext.BaseDirectory, "Assets", KeywordsFileName);
         _memberBindings = memberBindings ?? new MemberSubjectBindingStore(DataDirectory);
+        _userRules = userRules ?? new UserSubjectRuleStore(DataDirectory);
 
         Rules = new ObservableCollection<SubjectRuleRow>(
             LoadCurrentRules().Select(SubjectRuleRow.FromRule));
@@ -100,6 +108,17 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
         {
             _transferFeedback = value;
             RaisePropertyChanged(nameof(TransferFeedback));
+        }
+    }
+
+    /// <summary>完全重置操作反馈（只含条数摘要，不含任何 OpenID 明文）。</summary>
+    public string ResetFeedback
+    {
+        get => _resetFeedback;
+        private set
+        {
+            _resetFeedback = value;
+            RaisePropertyChanged(nameof(ResetFeedback));
         }
     }
 
@@ -241,6 +260,64 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
                 _memberBindings.Remove(existing.MemberOpenId,
                     existing.GroupOpenId.Length == 0 ? null : existing.GroupOpenId);
             }
+        }
+    }
+
+    // ============ 完全重置（危险区） ============
+
+    /// <summary>
+    /// 完全重置（两段式轻确认，与作业窗删除同口径）：首次点击进入「确认重置?」待确认态，
+    /// 3 秒内再次点击才执行，超时自动复位；不弹模态对话框。
+    /// 范围（见 <see cref="SubjectRecognitionResetLogic"/>）：清空成员绑定 + 学习映射 +
+    /// 识别设置恢复默认；不动作业/通知数据、files.json 归档库、AI 凭据与其他页面设置。
+    /// 执行后写盘并广播 SettingsChanged 热生效；日志/反馈只记条数，不含任何 OpenID 明文。
+    /// </summary>
+    private async void OnResetClicked(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button)
+        {
+            return;
+        }
+
+        const string resetText = "完全重置（清空绑定与学习映射）";
+        if (!_resetConfirmGate.IsPending)
+        {
+            // 第一次点击：进入待确认态（3 秒后自动复位）
+            _resetConfirmGate.Begin();
+            button.Content = "确认重置?";
+            var revert = new DispatcherTimer { Interval = TwoStageConfirmGate.DefaultWindow };
+            revert.Tick += (_, _) =>
+            {
+                revert.Stop();
+                if (_resetConfirmGate.IsPending)
+                {
+                    _resetConfirmGate.Reset();
+                    button.Content = resetText;
+                }
+            };
+            revert.Start();
+            return;
+        }
+
+        _resetConfirmGate.TryConfirm();
+        button.Content = resetText;
+        try
+        {
+            var summary = SubjectRecognitionResetLogic.Execute(_memberBindings, _userRules, Settings.SubjectRecognition);
+
+            // 绑定编辑列表同步清空；识别模式下拉回默认位（MemberSelection）
+            Bindings.Clear();
+            ModeBox.SelectedIndex = 0;
+
+            // settings.json 保存并广播 SettingsChanged → 识别链经实时委托读 Current，热生效
+            await SettingsService.SaveAsync().ConfigureAwait(true);
+
+            ResetFeedback = $"已完全重置：清除成员学科绑定 {summary.RemovedBindings} 条、"
+                + $"学习映射 {summary.RemovedRules} 条；学科识别模式已恢复默认（成员绑定优先 + 显示选择窗）。";
+        }
+        catch (Exception ex)
+        {
+            ResetFeedback = $"重置失败：{ex.Message}";
         }
     }
 

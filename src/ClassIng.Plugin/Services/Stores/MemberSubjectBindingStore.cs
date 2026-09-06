@@ -173,6 +173,32 @@ public sealed class MemberSubjectBindingStore
         return removed;
     }
 
+    /// <summary>清空全部绑定（全局 + 所有群作用域，完全重置用），返回清除条数并立即持久化。
+    /// 日志只记条数，不输出任何成员/群 OpenID 明文。</summary>
+    public int ClearAll()
+    {
+        int removed;
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            removed = _global!.Count + _byGroup!.Values.Sum(map => map.Count);
+            _global.Clear();
+            _byGroup.Clear();
+            _updatedAt.Clear();
+            if (removed > 0)
+            {
+                Save();
+            }
+        }
+
+        if (removed > 0)
+        {
+            _logger.LogInformation("已清空全部成员学科绑定（完全重置），共 {Count} 条", removed);
+        }
+
+        return removed;
+    }
+
     /// <summary>删除成员在全部作用域（全局 + 所有群）的绑定，返回是否实际删除。</summary>
     public bool RemoveAll(string memberOpenId)
     {

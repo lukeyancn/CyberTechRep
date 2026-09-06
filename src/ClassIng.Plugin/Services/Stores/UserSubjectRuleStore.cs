@@ -58,6 +58,43 @@ public sealed class UserSubjectRuleStore
         }
     }
 
+    /// <summary>当前规则条数（重置 UI 反馈用；只给条数，不暴露成员 OpenID）。</summary>
+    public int Count
+    {
+        get
+        {
+            lock (_lock)
+            {
+                LoadIfNeeded();
+                return _rules!.Count;
+            }
+        }
+    }
+
+    /// <summary>清空全部按发送者学习映射（完全重置用），返回清除条数并立即持久化。
+    /// 日志只记条数，不输出任何成员 OpenID 明文。</summary>
+    public int ClearAll()
+    {
+        int removed;
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            removed = _rules!.Count;
+            _rules.Clear();
+            if (removed > 0)
+            {
+                Save();
+            }
+        }
+
+        if (removed > 0)
+        {
+            _logger.LogInformation("已清空全部按发送者学科学习映射（完全重置），共 {Count} 条", removed);
+        }
+
+        return removed;
+    }
+
     /// <summary>写入/覆盖成员的永久学科规则并立即持久化。</summary>
     public void Set(string memberOpenId, string subject)
     {

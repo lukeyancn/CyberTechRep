@@ -132,6 +132,8 @@
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="当消息需要学科分类但发送者尚未绑定学科时弹出此窗，展示发送者/群/消息摘要与识别候选，点选学科即完成绑定并按所选学科归档。是否触发还受「学科识别模式」（词表编辑页）与显示开关控制。"
                                TextWrapping="Wrap" Opacity="0.75"/>
+                    <TextBlock Text="➜ 点选写入的绑定可在「CyberTechRep 词表编辑」页 → 「成员学科绑定」集中管理（增删改、按群 OpenID 分作用域；群 OpenID 留空 = 对所有群生效），保存后立即热生效。"
+                               TextWrapping="Wrap" FontWeight="SemiBold"/>
                     <TextBlock Text="X（逻辑坐标 DIP）"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Selection.X}" Minimum="-10000" Maximum="10000"/>
                     <TextBlock Text="Y（逻辑坐标 DIP）"/>
