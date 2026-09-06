@@ -21,6 +21,8 @@
     </PackageReference>
     <!-- 模块 6/7：模块 6 悬浮窗测试与设置页类型运行期需要 Avalonia 程序集 -->
     <PackageReference Include="Avalonia" Version="11.3.17" />
+    <!-- 悬浮窗门控测试需要构造 Window 实例：Headless 平台无需显示设备 -->
+    <PackageReference Include="Avalonia.Headless" Version="11.3.17" />
   </ItemGroup>
 
   <ItemGroup>

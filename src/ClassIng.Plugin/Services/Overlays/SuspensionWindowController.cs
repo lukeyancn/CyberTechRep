@@ -239,8 +239,9 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         return Task.CompletedTask;
     }
 
-    /// <summary>把一组 OverlayWindowSettings 即时应用到窗口（层级/透明度/字号/位置/大小）。</summary>
-    private void ApplyToWindow(string overlayKey, Window window, OverlayWindowSettings settings)
+    /// <summary>把一组 OverlayWindowSettings 即时应用到窗口（层级/透明度/字号/位置/大小）。
+    /// internal：供单测直接验证「固定」门控（OverlayBehaviors.Fixed 跟随 Pinned 设置）。</summary>
+    internal void ApplyToWindow(string overlayKey, Window window, OverlayWindowSettings settings)
     {
         // 层级由「置顶」开关决定：开 → 浮在所有窗口之上（Avalonia Topmost）；
         // 关 → 钉在桌面层最底（钉底器 HWND_BOTTOM，任何窗口都会遮挡悬浮窗）。

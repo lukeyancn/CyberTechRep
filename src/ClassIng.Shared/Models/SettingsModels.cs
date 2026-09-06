@@ -177,10 +177,12 @@ public sealed class OverlayWindowSettings
     public bool Topmost { get; set; }
 
     /// <summary>
-    /// 固定模式：禁用拖拽与缩放（位置大小只能经设置页调整）；不抢焦点与层级无关，
-    /// 由钉底器恒定生效。
+    /// 固定模式：开 → 禁用拖拽与缩放（位置大小只能经设置页调整）；关（默认）→
+    /// 标题栏可拖动、角部可缩放。不抢焦点与层级无关，由钉底器恒定生效。
+    /// 注意：必须保持默认 <c>false</c>——悬浮窗此前（0ac4052 之前）默认可拖拽，
+    /// 该默认值曾是拖拽失效回归的根因（0.2.0 曾误设为 true）。
     /// </summary>
-    public bool Pinned { get; set; } = true;
+    public bool Pinned { get; set; }
 
     /// <summary>鼠标穿透：仅固定模式下生效，鼠标点击直接穿过悬浮窗落到下方窗口。</summary>
     public bool ClickThrough { get; set; }

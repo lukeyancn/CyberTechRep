@@ -14,7 +14,7 @@ namespace ClassIng.Plugin.Services.Overlays;
 ///   抬到所有窗口之上（这正是「悬浮窗盖住其他窗口」问题的根源）；
 /// - 非置顶：<c>SetWindowPos(HWND_BOTTOM)</c> 压到 Z 序最底；置顶：不打扰 Z 序；
 /// - 1 秒兜底计时器恒开：抗「显示桌面」（Win+D 最小化后立即还原，悬浮窗不消失），
-///   非置顶模式下同时持续压底；
+///   非置顶模式下同时持续压底（用户拖拽/缩放窗口期间自动让路，不与拖拽会话打架）；
 /// - 鼠标穿透（clickThrough）：<c>WS_EX_TRANSPARENT</c> 让鼠标点击直接穿过悬浮窗落到
 ///   下方窗口；窗口未启用层叠合成时补 <c>WS_EX_LAYERED</c> +
 ///   <c>SetLayeredWindowAttributes(255)</c>（该补位由本类负责移除）。
@@ -33,6 +33,10 @@ internal sealed class DesktopLevelPinner
     private const uint SwpNomove = 0x0002;
     private const uint SwpNoactivate = 0x0010;
 
+    /// <summary>系统进入/退出模态移动或缩放循环（拖拽标题栏/边框期间）。</summary>
+    private const uint WmEnterSizeMove = 0x0231;
+    private const uint WmExitSizeMove = 0x0232;
+
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(
         IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
@@ -50,12 +54,36 @@ internal sealed class DesktopLevelPinner
     private readonly DispatcherTimer _timer;
     private bool _layeredByUs;
     private bool _topmost;
+    private bool _inSystemMoveSizeLoop;
 
     public DesktopLevelPinner(Window window)
     {
         _window = window;
+        // 跟踪系统模态移动/缩放循环：拖拽期间 PushToBottom 必须让路，避免
+        // 1 秒兜底 SetWindowPos(HWND_BOTTOM) 与 Avalonia BeginMoveDrag 的模态
+        // 移动循环打架（拖拽中被压底/重排 Z 序会中断拖拽会话）。
+        if (OperatingSystem.IsWindows())
+        {
+            Win32Properties.AddWndProcHookCallback(window, TrackMoveSizeLoop);
+        }
+
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => PushToBottom();
+    }
+
+    /// <summary>WndProc 钩子：仅记录进入/退出系统移动缩放循环，不吞任何消息。</summary>
+    private IntPtr TrackMoveSizeLoop(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WmEnterSizeMove)
+        {
+            _inSystemMoveSizeLoop = true;
+        }
+        else if (msg == WmExitSizeMove)
+        {
+            _inSystemMoveSizeLoop = false;
+        }
+
+        return IntPtr.Zero;
     }
 
     /// <summary>
@@ -108,6 +136,13 @@ internal sealed class DesktopLevelPinner
     private void PushToBottom()
     {
         if (!_window.IsVisible)
+        {
+            return;
+        }
+
+        // 系统模态移动/缩放循环中（用户正在拖拽标题栏/角部）：完全让路，
+        // 既不还原最小化也不压底，保证拖拽会话不被钉底器打断。
+        if (_inSystemMoveSizeLoop)
         {
             return;
         }
