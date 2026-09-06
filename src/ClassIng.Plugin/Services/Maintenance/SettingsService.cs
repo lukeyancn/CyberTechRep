@@ -31,6 +31,7 @@ public sealed class SettingsService : ISettingsService
     };
 
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly string _filePath;
     private readonly ILogger _logger;
 
@@ -177,15 +178,25 @@ public sealed class SettingsService : ISettingsService
         var directory = Path.GetDirectoryName(_filePath)!;
         Directory.CreateDirectory(directory);
 
-        // 原子写入：同目录临时文件 → 写入 + 落盘 → File.Move(overwrite)
-        var tempPath = _filePath + ".tmp";
-        await using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        // 原子写入：同目录临时文件 → 写入 + 落盘 → File.Move(overwrite)。
+        // SaveAsync 的 _lock 只保护快照读取，写盘可能被多路并发触发
+        //（悬浮窗拖拽回写 / 设置页保存 / 启动应用），必须串行化避免 .tmp 冲突。
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, ct).ConfigureAwait(false);
-            await stream.FlushAsync(ct).ConfigureAwait(false);
-        }
+            var tempPath = _filePath + ".tmp";
+            await using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, ct).ConfigureAwait(false);
+                await stream.FlushAsync(ct).ConfigureAwait(false);
+            }
 
-        File.Move(tempPath, _filePath, overwrite: true);
+            File.Move(tempPath, _filePath, overwrite: true);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     private void RaiseChanged(AppSettings snapshot)
