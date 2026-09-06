@@ -87,15 +87,70 @@ public sealed class ClassificationSettings
     public bool ManualConfirmQueueEnabled { get; set; } = true;
 }
 
-/// <summary>悬浮窗设置（两个悬浮窗各自一组）。</summary>
+/// <summary>悬浮窗设置（通知/作业/学科文件三个悬浮窗 + 学科圆圈启动器共用一组窗口参数结构）。</summary>
 public sealed class OverlaySettings
 {
     public OverlayWindowSettings Notice { get; set; } = new();
 
     public OverlayWindowSettings Homework { get; set; } = new();
 
+    /// <summary>
+    /// 学科文件悬浮窗（第三悬浮窗）：默认不随宿主显示（Visible=false），
+    /// 由学科圆圈栏点击唤出或设置页手动开启。
+    /// </summary>
+    public OverlayWindowSettings Files { get; set; } = new()
+    {
+        Visible = false,
+        Width = 360,
+        Height = 520
+    };
+
+    /// <summary>学科圆圈启动器（小型常驻窗，点击圆圈打开/切换学科文件悬浮窗）。</summary>
+    public OverlayWindowSettings Circle { get; set; } = new()
+    {
+        Visible = true,
+        Width = 64,
+        Height = 440,
+        Opacity = 0.85
+    };
+
+    /// <summary>学科圆圈栏/学科文件悬浮窗联动设置（排列方向/顺序/视图模式等）。</summary>
+    public SubjectCircleBarSettings SubjectCircle { get; set; } = new();
+
     /// <summary>随宿主 ClassIsland 启动（跟随宿主自启机制）。</summary>
     public bool LaunchWithHost { get; set; } = true;
+}
+
+/// <summary>学科圆圈栏/学科文件悬浮窗联动设置。</summary>
+public sealed class SubjectCircleBarSettings
+{
+    /// <summary>圆圈排列方向：Horizontal（横）/ Vertical（竖，默认）。</summary>
+    public string Orientation { get; set; } = SubjectCircleBarOptions.OrientationVertical;
+
+    /// <summary>学科顺序（圆圈栏展示与文件悬浮窗学科集合的排序依据；未列出的学科按固定顺序追加）。</summary>
+    public IReadOnlyList<string> Order { get; set; } = [];
+
+    /// <summary>文件悬浮窗视图模式：Icons（大图标，默认）/ Details（详细列表）。</summary>
+    public string ViewMode { get; set; } = SubjectCircleBarOptions.ViewModeIcons;
+
+    /// <summary>上课联动：进入上课（CurrentState==OnClass）时自动弹出/切换该学科已归档文件的悬浮窗，下课/放学自动收起联动打开的窗。</summary>
+    public bool AutoOpenWithClass { get; set; }
+}
+
+/// <summary>学科圆圈栏设置的合法取值常量（与 <see cref="SubjectCircleBarSettings"/> 配套）。</summary>
+public static class SubjectCircleBarOptions
+{
+    /// <summary>圆圈横向排列。</summary>
+    public const string OrientationHorizontal = "Horizontal";
+
+    /// <summary>圆圈纵向排列（默认）。</summary>
+    public const string OrientationVertical = "Vertical";
+
+    /// <summary>大图标视图（图标大、居中，文件名在图标下方，流式排列）。</summary>
+    public const string ViewModeIcons = "Icons";
+
+    /// <summary>详细列表视图（小图标在左、完整文件名在右的行列表）。</summary>
+    public const string ViewModeDetails = "Details";
 }
 
 /// <summary>单个悬浮窗的外观与位置。</summary>
@@ -115,7 +170,20 @@ public sealed class OverlayWindowSettings
 
     public double FontSize { get; set; } = 14;
 
-    public bool Topmost { get; set; } = true;
+    /// <summary>
+    /// 置顶模式：开 → 悬浮窗浮在所有窗口之上；关（默认）→ 悬浮窗钉在桌面层最底
+    /// （桌面之上、其他所有窗口之下），抗「显示桌面」（Win+D）两种模式下均生效。
+    /// </summary>
+    public bool Topmost { get; set; }
+
+    /// <summary>
+    /// 固定模式：禁用拖拽与缩放（位置大小只能经设置页调整）；不抢焦点与层级无关，
+    /// 由钉底器恒定生效。
+    /// </summary>
+    public bool Pinned { get; set; } = true;
+
+    /// <summary>鼠标穿透：仅固定模式下生效，鼠标点击直接穿过悬浮窗落到下方窗口。</summary>
+    public bool ClickThrough { get; set; }
 
     public bool Visible { get; set; } = true;
 }

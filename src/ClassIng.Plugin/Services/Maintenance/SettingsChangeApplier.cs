@@ -16,7 +16,8 @@ namespace ClassIng.Plugin.Services.Maintenance;
 /// - 连接/文件等设置通过各 OptionsProvider 的 GetSettings 委托读取
 ///   <see cref="ISettingsService.Current"/>，天然热生效（下次使用时生效）；
 /// - 悬浮窗（模块 6）：<see cref="ISuspensionWindowController.ApplySettingsAsync"/> 即时应用
-///   透明度/字号/位置等（控制器未注册时跳过）。
+///   透明度/字号/位置等，并按 <c>Visible</c> 调用 Show/Hide（控制器未注册时跳过）；
+///   启动时先应用一次（Visible=true 且 LaunchWithHost=true 的窗口随宿主显示）。
 /// </para>
 /// </summary>
 public sealed class SettingsChangeApplier : IHostedService, IDisposable
@@ -46,6 +47,22 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
     {
         _handler = (_, settings) => Apply(settings);
         _settingsService.SettingsChanged += _handler;
+
+        // 启动即应用一次悬浮窗设置：Visible=true（且开启随宿主启动）的窗口随宿主显示。
+        // 此前 ShowAsync 无任何调用点，悬浮窗创建后从未显示。
+        try
+        {
+            var current = _settingsService.Current;
+            if (current.Overlays.LaunchWithHost && _windowController is not null)
+            {
+                _ = ApplyOverlaysAsync(current);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "启动应用悬浮窗设置失败（不影响宿主启动）");
+        }
+
         _logger.LogInformation("设置热生效接线器已启动");
         return Task.CompletedTask;
     }
@@ -98,14 +115,29 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
     {
         try
         {
-            await _windowController!.ApplySettingsAsync("notice", settings.Overlays.Notice)
-                .ConfigureAwait(false);
-            await _windowController.ApplySettingsAsync("homework", settings.Overlays.Homework)
-                .ConfigureAwait(false);
+            await ApplyOverlayAsync("notice", settings.Overlays.Notice);
+            await ApplyOverlayAsync("homework", settings.Overlays.Homework);
+            // 第三悬浮窗（学科文件）与学科圆圈启动器共用同一套 Apply/Show/Hide 路径
+            await ApplyOverlayAsync("files", settings.Overlays.Files);
+            await ApplyOverlayAsync("circle", settings.Overlays.Circle);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "应用设置失败：悬浮窗 ApplySettingsAsync");
+            _logger.LogError(ex, "应用设置失败：悬浮窗显示/外观");
+        }
+    }
+
+    /// <summary>单窗应用：先即时应用外观与位置，再按 Visible 调 Show/Hide（此前只应用外观，从不显示窗口）。</summary>
+    private async Task ApplyOverlayAsync(string overlayKey, ClassIng.Shared.Models.OverlayWindowSettings windowSettings)
+    {
+        await _windowController!.ApplySettingsAsync(overlayKey, windowSettings);
+        if (windowSettings.Visible)
+        {
+            await _windowController.ShowAsync(overlayKey);
+        }
+        else
+        {
+            await _windowController.HideAsync(overlayKey);
         }
     }
 

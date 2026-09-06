@@ -29,6 +29,12 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// <summary>overlayKey：作业悬浮窗。</summary>
     public const string HomeworkKey = "homework";
 
+    /// <summary>overlayKey：学科文件悬浮窗（第三悬浮窗，由学科圆圈栏点击唤出）。</summary>
+    public const string FilesKey = "files";
+
+    /// <summary>overlayKey：学科圆圈启动器（小型常驻窗）。</summary>
+    public const string CircleKey = "circle";
+
     /// <summary>旧版独立悬浮窗设置文件（迁移后归档为 &lt;name&gt;.migrated）。</summary>
     internal const string LegacyFileName = "overlays.json";
     internal const string MigratedSuffix = ".migrated";
@@ -38,7 +44,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
 
     internal const double DefaultY = 40;
 
-    private static readonly string[] KnownKeys = [NoticeKey, HomeworkKey];
+    private static readonly string[] KnownKeys = [NoticeKey, HomeworkKey, FilesKey, CircleKey];
 
     private readonly string _filePath;
     private readonly ISettingsService? _settingsService;
@@ -46,6 +52,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     private readonly Func<string, Window?>? _windowFactory;
     private readonly object _lock = new();
     private readonly Dictionary<string, Window> _windows = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DesktopLevelPinner> _pinners = new(StringComparer.OrdinalIgnoreCase);
     private OverlaySettings _settings;
 
     /// <summary>
@@ -97,7 +104,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                 return;
             }
 
-            ApplyToWindow(window, GetWindowSettings(overlayKey));
+            ApplyToWindow(overlayKey, window, GetWindowSettings(overlayKey));
             window.Show();
             _logger.LogInformation("悬浮窗已显示 Key={Key}", overlayKey);
         }).GetTask();
@@ -191,13 +198,20 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
 
         lock (_lock)
         {
-            if (overlayKey == NoticeKey)
+            switch (overlayKey)
             {
-                _settings.Notice = settings;
-            }
-            else
-            {
-                _settings.Homework = settings;
+                case NoticeKey:
+                    _settings.Notice = settings;
+                    break;
+                case HomeworkKey:
+                    _settings.Homework = settings;
+                    break;
+                case FilesKey:
+                    _settings.Files = settings;
+                    break;
+                default:
+                    _settings.Circle = settings;
+                    break;
             }
 
             if (persist && !cameFromSettingsService)
@@ -219,26 +233,56 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
 
         if (window is not null)
         {
-            return Dispatcher.UIThread.InvokeAsync(() => ApplyToWindow(window, settings)).GetTask();
+            return Dispatcher.UIThread.InvokeAsync(() => ApplyToWindow(overlayKey, window, settings)).GetTask();
         }
 
         return Task.CompletedTask;
     }
 
-    /// <summary>把一组 OverlayWindowSettings 即时应用到窗口（透明度/字号/位置/大小/置顶）。</summary>
-    private void ApplyToWindow(Window window, OverlayWindowSettings settings)
+    /// <summary>把一组 OverlayWindowSettings 即时应用到窗口（层级/透明度/字号/位置/大小）。</summary>
+    private void ApplyToWindow(string overlayKey, Window window, OverlayWindowSettings settings)
     {
+        // 层级由「置顶」开关决定：开 → 浮在所有窗口之上（Avalonia Topmost）；
+        // 关 → 钉在桌面层最底（钉底器 HWND_BOTTOM，任何窗口都会遮挡悬浮窗）。
+        // 固定/穿透只影响交互方式。
         window.Topmost = settings.Topmost;
+        // 永不激活抢焦点——否则一次点击就会把悬浮窗抬到所有窗口之上
+        window.ShowActivated = false;
+        var pinned = settings.Pinned;
+        // 固定模式禁止系统级缩放
+        window.CanResize = !pinned;
         window.Opacity = Math.Clamp(settings.Opacity, 0.1, 1.0);
         window.FontSize = settings.FontSize;
         window.Width = settings.Width;
         window.Height = settings.Height;
 
-        // DPI 适配：持久化的是逻辑坐标（DIP），落地时按窗口缩放系数换算为像素
+        // 固定模式：禁用窗口内拖拽/缩放手势（手势处理器读该附加属性）；穿透由钉底器处理
+        Views.OverlayBehaviors.SetFixed(window, pinned);
+        GetOrCreatePinner(overlayKey, window).Apply(settings.ClickThrough, settings.Topmost);
+
+        // DPI 适配：持久化的是逻辑坐标（DIP），落地时按窗口缩放系数换算为像素。
+        // 值未变化时跳过赋值，避免 PositionChanged → CaptureBounds → Save → SettingsChanged →
+        // ApplyToWindow 的保存/广播回环。
         var scaling = window.RenderScaling;
-        window.Position = new PixelPoint(
+        var target = new PixelPoint(
             (int)Math.Round(settings.X * scaling),
             (int)Math.Round(settings.Y * scaling));
+        if (window.Position != target)
+        {
+            window.Position = target;
+        }
+    }
+
+    /// <summary>取或创建窗口的桌面层钉底器（每窗一个，生命周期与窗口缓存一致）。</summary>
+    private DesktopLevelPinner GetOrCreatePinner(string overlayKey, Window window)
+    {
+        if (!_pinners.TryGetValue(overlayKey, out var pinner))
+        {
+            pinner = new DesktopLevelPinner(window);
+            _pinners[overlayKey] = pinner;
+        }
+
+        return pinner;
     }
 
     private Window? GetOrCreateWindow(string overlayKey)
@@ -290,13 +334,20 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         settings.Height = window.Bounds.Height;
         lock (_lock)
         {
-            if (overlayKey == NoticeKey)
+            switch (overlayKey)
             {
-                _settings.Notice = settings;
-            }
-            else
-            {
-                _settings.Homework = settings;
+                case NoticeKey:
+                    _settings.Notice = settings;
+                    break;
+                case HomeworkKey:
+                    _settings.Homework = settings;
+                    break;
+                case FilesKey:
+                    _settings.Files = settings;
+                    break;
+                default:
+                    _settings.Circle = settings;
+                    break;
             }
 
             SaveSettings();
@@ -309,7 +360,13 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     {
         lock (_lock)
         {
-            return overlayKey == NoticeKey ? _settings.Notice : _settings.Homework;
+            return overlayKey switch
+            {
+                NoticeKey => _settings.Notice,
+                HomeworkKey => _settings.Homework,
+                FilesKey => _settings.Files,
+                _ => _settings.Circle
+            };
         }
     }
 
@@ -321,8 +378,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     private OverlaySettings LoadFromSettingsService(string dataDirectory, ISettingsService settingsService)
     {
         var container = settingsService.Current.Overlays;
-        container.Notice ??= new OverlayWindowSettings();
-        container.Homework ??= new OverlayWindowSettings();
+        EnsureWindowSettingsDefaults(container);
 
         var legacyPath = Path.Combine(dataDirectory, LegacyFileName);
         if (File.Exists(legacyPath))
@@ -334,8 +390,12 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                 {
                     legacy.Notice ??= new OverlayWindowSettings();
                     legacy.Homework ??= new OverlayWindowSettings();
+                    EnsureWindowSettingsDefaults(legacy);
                     container.Notice = legacy.Notice;
                     container.Homework = legacy.Homework;
+                    container.Files = legacy.Files;
+                    container.Circle = legacy.Circle;
+                    container.SubjectCircle = legacy.SubjectCircle;
                     container.LaunchWithHost = legacy.LaunchWithHost;
                     _ = PersistViaSettingsServiceAsync();
                     _logger.LogInformation("已将旧 overlays.json 的悬浮窗设置导入 ISettingsService（settings.json），悬浮窗设置统一为单一来源");
@@ -367,9 +427,21 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     {
         var dto = ServicesStores.JsonStoreFile.LoadOrRestore<OverlaySettings>(_filePath, _logger);
         var settings = dto ?? new OverlaySettings();
-        settings.Notice ??= new OverlayWindowSettings();
-        settings.Homework ??= new OverlayWindowSettings();
+        EnsureWindowSettingsDefaults(settings);
         return settings;
+    }
+
+    /// <summary>
+    /// 兜底补全四窗窗口设置与圆圈栏设置（旧 settings.json/overlays.json 缺字段、
+    /// 或反序列化得到 null 时补默认值，保证热生效路径永不为 null）。
+    /// </summary>
+    private static void EnsureWindowSettingsDefaults(OverlaySettings container)
+    {
+        container.Notice ??= new OverlayWindowSettings();
+        container.Homework ??= new OverlayWindowSettings();
+        container.Files ??= new OverlayWindowSettings { Visible = false, Width = 360, Height = 520 };
+        container.Circle ??= new OverlayWindowSettings { Visible = true, Width = 64, Height = 440, Opacity = 0.85 };
+        container.SubjectCircle ??= new SubjectCircleBarSettings();
     }
 
     private void SaveSettings()
@@ -407,7 +479,13 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     private OverlayWindowSettings? GetLiveContainerSettings(string overlayKey)
     {
         var container = _settingsService!.Current.Overlays;
-        return overlayKey == NoticeKey ? container.Notice : container.Homework;
+        return overlayKey switch
+        {
+            NoticeKey => container.Notice,
+            HomeworkKey => container.Homework,
+            FilesKey => container.Files,
+            _ => container.Circle
+        };
     }
 
     private void RaiseSettingsPersisted()
@@ -431,9 +509,21 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         {
             LaunchWithHost = source.LaunchWithHost,
             Notice = CloneWindowSettings(source.Notice),
-            Homework = CloneWindowSettings(source.Homework)
+            Homework = CloneWindowSettings(source.Homework),
+            Files = CloneWindowSettings(source.Files),
+            Circle = CloneWindowSettings(source.Circle),
+            SubjectCircle = CloneSubjectCircleSettings(source.SubjectCircle)
         };
     }
+
+    /// <summary>深拷贝圆圈栏/联动设置（局部克隆用，防止外部改动单一来源的活实例）。</summary>
+    private static SubjectCircleBarSettings CloneSubjectCircleSettings(SubjectCircleBarSettings s) => new()
+    {
+        Orientation = s.Orientation,
+        Order = [.. s.Order],
+        ViewMode = s.ViewMode,
+        AutoOpenWithClass = s.AutoOpenWithClass
+    };
 
     /// <summary>深拷贝单窗设置（局部克隆用，如复位时避免改动单一来源的活实例）。</summary>
     private static OverlayWindowSettings CloneWindowSettings(OverlayWindowSettings s) => new()
@@ -445,6 +535,8 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         Opacity = s.Opacity,
         FontSize = s.FontSize,
         Topmost = s.Topmost,
+        Pinned = s.Pinned,
+        ClickThrough = s.ClickThrough,
         Visible = s.Visible
     };
 }

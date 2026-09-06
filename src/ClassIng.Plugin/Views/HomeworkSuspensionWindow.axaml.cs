@@ -20,7 +20,7 @@ public sealed class HomeworkRow
 {
     public required HomeworkItem Item { get; init; }
 
-    /// <summary>「修正学科」候选：全部作业中已出现的学科（含本条当前学科）。</summary>
+    /// <summary>「修正学科」候选：固定七学科 + 全部作业中已出现的其他学科（本条当前学科置顶）。</summary>
     public required IReadOnlyList<string> AvailableSubjects { get; init; }
 
     public string SelectedSubject => Item.Subject;
@@ -88,6 +88,9 @@ public partial class HomeworkSuspensionWindow : Window
         _debounceTimer.Start();
     }
 
+    /// <summary>「修正学科」固定候选：无论作业列表里出现过哪些学科，这七项恒定可选。</summary>
+    internal static readonly string[] BaseSubjects = ["语文", "数学", "英语", "物理", "化学", "生物", "其他"];
+
     internal async Task RefreshAsync()
     {
         if (Interlocked.Exchange(ref _refreshing, 1) == 1)
@@ -98,9 +101,10 @@ public partial class HomeworkSuspensionWindow : Window
         try
         {
             var all = await _store.GetAllAsync();
-            var subjects = all.Select(i => i.Subject)
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            // 固定七学科之外，作业里出现过的其他学科也追加进候选（含历史遗留分类）
+            var extraSubjects = all.Select(i => i.Subject)
+                .Where(s => !string.IsNullOrWhiteSpace(s) && !BaseSubjects.Contains(s, StringComparer.Ordinal))
+                .Distinct(StringComparer.Ordinal)
                 .OrderBy(s => s, StringComparer.CurrentCulture)
                 .ToList();
 
@@ -113,9 +117,7 @@ public partial class HomeworkSuspensionWindow : Window
                         .Select(i => new HomeworkRow
                         {
                             Item = i,
-                            AvailableSubjects = subjects.Contains(i.Subject, StringComparer.OrdinalIgnoreCase)
-                                ? subjects
-                                : [i.Subject, .. subjects]
+                            AvailableSubjects = BuildCandidates(i.Subject, extraSubjects)
                         })
                         .ToList()
                 })
@@ -133,6 +135,21 @@ public partial class HomeworkSuspensionWindow : Window
         {
             Interlocked.Exchange(ref _refreshing, 0);
         }
+    }
+
+    /// <summary>候选顺序：本条当前学科（不在固定列表时置顶）→ 固定七学科 → 其他已出现学科。</summary>
+    private static IReadOnlyList<string> BuildCandidates(string currentSubject, List<string> extraSubjects)
+    {
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(currentSubject)
+            && !BaseSubjects.Contains(currentSubject, StringComparer.Ordinal))
+        {
+            candidates.Add(currentSubject);
+        }
+
+        candidates.AddRange(BaseSubjects);
+        candidates.AddRange(extraSubjects.Where(s => !string.Equals(s, currentSubject, StringComparison.Ordinal)));
+        return candidates;
     }
 
     private async void OnSubjectSelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -155,6 +172,12 @@ public partial class HomeworkSuspensionWindow : Window
 
     private void OnHeaderPointerPressed(object? sender, PointerPressedEventArgs e)
     {
+        // 固定模式下禁用拖拽（位置只能经设置页调整）
+        if (OverlayBehaviors.GetFixed(this))
+        {
+            return;
+        }
+
         if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
         {
             BeginMoveDrag(e);
@@ -165,6 +188,12 @@ public partial class HomeworkSuspensionWindow : Window
 
     private void OnResizeDragDelta(object? sender, VectorEventArgs e)
     {
+        // 固定模式下禁用缩放
+        if (OverlayBehaviors.GetFixed(this))
+        {
+            return;
+        }
+
         Width = Math.Max(MinWidth, Width + e.Vector.X);
         Height = Math.Max(MinHeight, Height + e.Vector.Y);
     }

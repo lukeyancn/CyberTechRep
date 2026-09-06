@@ -107,6 +107,12 @@ public partial class NoticeSuspensionWindow : Window
 
     private void OnHeaderPointerPressed(object? sender, PointerPressedEventArgs e)
     {
+        // 固定模式下禁用拖拽（位置只能经设置页调整）
+        if (OverlayBehaviors.GetFixed(this))
+        {
+            return;
+        }
+
         if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
         {
             BeginMoveDrag(e);
@@ -117,6 +123,12 @@ public partial class NoticeSuspensionWindow : Window
 
     private void OnResizeDragDelta(object? sender, VectorEventArgs e)
     {
+        // 固定模式下禁用缩放
+        if (OverlayBehaviors.GetFixed(this))
+        {
+            return;
+        }
+
         Width = Math.Max(MinWidth, Width + e.Vector.X);
         Height = Math.Max(MinHeight, Height + e.Vector.Y);
     }

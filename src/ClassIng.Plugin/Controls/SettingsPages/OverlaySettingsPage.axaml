@@ -10,7 +10,9 @@
     <ScrollViewer>
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
-            <TextBlock Text="悬浮窗设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+            <TextBlock Text="悬浮窗设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
+            <TextBlock Text="默认钉在桌面层最底：所有窗口都会遮挡悬浮窗，按 Win+D 显示桌面也不会消失。打开「置顶」后悬浮窗浮在所有窗口之上。「固定」控制能否拖拽缩放，「鼠标穿透」控制点击是否穿过悬浮窗。"
+                       TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,6"/>
 
             <ToggleSwitch Content="随宿主 ClassIsland 启动"
                           IsChecked="{Binding Settings.Overlays.LaunchWithHost}"/>
@@ -31,7 +33,12 @@
                             TickFrequency="0.05"/>
                     <TextBlock Text="字号"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Notice.FontSize}" Minimum="8" Maximum="72"/>
-                    <ToggleSwitch Content="置顶" IsChecked="{Binding Settings.Overlays.Notice.Topmost}"/>
+                    <ToggleSwitch Content="置顶（浮在所有窗口之上，关闭时钉在桌面层）"
+                                  IsChecked="{Binding Settings.Overlays.Notice.Topmost}"/>
+                    <ToggleSwitch Content="固定（禁用拖拽缩放，点击不抢焦点）"
+                                  IsChecked="{Binding Settings.Overlays.Notice.Pinned}"/>
+                    <ToggleSwitch Content="鼠标穿透（点击直接穿过悬浮窗）"
+                                  IsChecked="{Binding Settings.Overlays.Notice.ClickThrough}"/>
                     <ToggleSwitch Content="显示悬浮窗" IsChecked="{Binding Settings.Overlays.Notice.Visible}"/>
                     <Button Content="复位通知悬浮窗" Click="OnResetNoticeClicked" HorizontalAlignment="Left"/>
                 </StackPanel>
@@ -53,9 +60,95 @@
                             TickFrequency="0.05"/>
                     <TextBlock Text="字号"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Homework.FontSize}" Minimum="8" Maximum="72"/>
-                    <ToggleSwitch Content="置顶" IsChecked="{Binding Settings.Overlays.Homework.Topmost}"/>
+                    <ToggleSwitch Content="置顶（浮在所有窗口之上，关闭时钉在桌面层）"
+                                  IsChecked="{Binding Settings.Overlays.Homework.Topmost}"/>
+                    <ToggleSwitch Content="固定（禁用拖拽缩放，点击不抢焦点）"
+                                  IsChecked="{Binding Settings.Overlays.Homework.Pinned}"/>
+                    <ToggleSwitch Content="鼠标穿透（点击直接穿过悬浮窗）"
+                                  IsChecked="{Binding Settings.Overlays.Homework.ClickThrough}"/>
                     <ToggleSwitch Content="显示悬浮窗" IsChecked="{Binding Settings.Overlays.Homework.Visible}"/>
                     <Button Content="复位作业悬浮窗" Click="OnResetHomeworkClicked" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Expander>
+
+            <!-- 学科文件悬浮窗（第三悬浮窗） -->
+            <Expander Header="学科文件悬浮窗（第三悬浮窗，由学科圆圈栏点击唤出）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="X（逻辑坐标 DIP）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Files.X}" Minimum="-10000" Maximum="10000"/>
+                    <TextBlock Text="Y（逻辑坐标 DIP）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Files.Y}" Minimum="-10000" Maximum="10000"/>
+                    <TextBlock Text="宽度"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Files.Width}" Minimum="80" Maximum="4000"/>
+                    <TextBlock Text="高度"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Files.Height}" Minimum="80" Maximum="4000"/>
+                    <TextBlock Text="透明度（0.1~1.0）"/>
+                    <Slider Minimum="0.1" Maximum="1" Value="{Binding Settings.Overlays.Files.Opacity}"
+                            TickFrequency="0.05"/>
+                    <TextBlock Text="字号"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Files.FontSize}" Minimum="8" Maximum="72"/>
+                    <ToggleSwitch Content="置顶（浮在所有窗口之上，关闭时钉在桌面层）"
+                                  IsChecked="{Binding Settings.Overlays.Files.Topmost}"/>
+                    <ToggleSwitch Content="固定（禁用拖拽缩放，点击不抢焦点）"
+                                  IsChecked="{Binding Settings.Overlays.Files.Pinned}"/>
+                    <ToggleSwitch Content="鼠标穿透（点击直接穿过悬浮窗）"
+                                  IsChecked="{Binding Settings.Overlays.Files.ClickThrough}"/>
+                    <ToggleSwitch Content="显示悬浮窗（默认隐藏，圆圈栏点击唤出）"
+                                  IsChecked="{Binding Settings.Overlays.Files.Visible}"/>
+                    <Button Content="复位学科文件悬浮窗" Click="OnResetFilesClicked" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Expander>
+
+            <!-- 学科圆圈启动器 -->
+            <Expander Header="学科圆圈启动器（点击圆圈打开/切换学科文件悬浮窗）" IsExpanded="True">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="X（逻辑坐标 DIP）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Circle.X}" Minimum="-10000" Maximum="10000"/>
+                    <TextBlock Text="Y（逻辑坐标 DIP）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Circle.Y}" Minimum="-10000" Maximum="10000"/>
+                    <TextBlock Text="宽度（横向排列时调大、纵向排列时调小）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Circle.Width}" Minimum="48" Maximum="4000"/>
+                    <TextBlock Text="高度（纵向排列时调大、横向排列时调小）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Circle.Height}" Minimum="48" Maximum="4000"/>
+                    <TextBlock Text="透明度（0.1~1.0）"/>
+                    <Slider Minimum="0.1" Maximum="1" Value="{Binding Settings.Overlays.Circle.Opacity}"
+                            TickFrequency="0.05"/>
+                    <TextBlock Text="字号"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Circle.FontSize}" Minimum="8" Maximum="72"/>
+                    <ToggleSwitch Content="置顶（浮在所有窗口之上，关闭时钉在桌面层）"
+                                  IsChecked="{Binding Settings.Overlays.Circle.Topmost}"/>
+                    <ToggleSwitch Content="固定（禁用拖拽缩放，点击不抢焦点）"
+                                  IsChecked="{Binding Settings.Overlays.Circle.Pinned}"/>
+                    <ToggleSwitch Content="鼠标穿透（点击直接穿过圆圈栏）"
+                                  IsChecked="{Binding Settings.Overlays.Circle.ClickThrough}"/>
+                    <ToggleSwitch Content="显示圆圈栏"
+                                  IsChecked="{Binding Settings.Overlays.Circle.Visible}"/>
+                    <Button Content="复位圆圈栏" Click="OnResetCircleClicked" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Expander>
+
+            <!-- 圆圈栏行为 / 联动 -->
+            <Expander Header="圆圈栏排列与文件悬浮窗联动" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="圆圈排列方向"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ComboBox x:Name="OrientationBox" SelectionChanged="OnOrientationChanged">
+                        <ComboBoxItem Content="横向排列" Tag="Horizontal"/>
+                        <ComboBoxItem Content="纵向排列" Tag="Vertical"/>
+                    </ComboBox>
+                    <TextBlock Text="学科文件悬浮窗视图模式（记忆，重启保持）"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ComboBox x:Name="ViewModeBox" SelectionChanged="OnViewModeChanged">
+                        <ComboBoxItem Content="大图标（图标居中，文件名在图标下方）" Tag="Icons"/>
+                        <ComboBoxItem Content="详细列表（小图标在左，完整文件名在右）" Tag="Details"/>
+                    </ComboBox>
+                    <ToggleSwitch Content="上课时自动弹出对应学科文件悬浮窗"
+                                  IsChecked="{Binding Settings.Overlays.SubjectCircle.AutoOpenWithClass}"/>
+                    <TextBlock Text="学科顺序：圆圈栏展示「固定七学科 + 文件归档中出现过的学科」。调整方式：在悬浮窗里右键圆圈选「上移/下移」；也可在下方编辑（每行一个学科名，未列出的按固定顺序追加）。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <TextBox x:Name="OrderTextBox" AcceptsReturn="True" MinHeight="120" MaxHeight="260"
+                             Watermark="每行一个学科名，未列出的按固定顺序追加"
+                             LostFocus="OnOrderLostFocus"/>
                 </StackPanel>
             </Expander>
 
