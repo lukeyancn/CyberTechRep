@@ -107,9 +107,13 @@ public sealed class MessageDumpServiceTests : IDisposable
         }
 
         public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
-            CancellationToken ct = default)
+            string? groupOpenId = null, CancellationToken ct = default)
         {
-            var item = new NoticeItem { MessageId = messageId, Content = content };
+            var item = new NoticeItem
+            {
+                MessageId = messageId, Content = content,
+                MemberOpenId = memberOpenId ?? "", GroupOpenId = groupOpenId ?? ""
+            };
             Items.Add(item);
             return Task.FromResult(item);
         }
@@ -139,7 +143,7 @@ public sealed class MessageDumpServiceTests : IDisposable
 #pragma warning restore CS0067
 
         public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
-            CancellationToken ct = default)
+            string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default)
         {
             var record = new FileRecord { MessageId = messageId, FileName = fileName };
             Records.Add(record);

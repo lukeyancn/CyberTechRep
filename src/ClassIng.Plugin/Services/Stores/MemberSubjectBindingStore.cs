@@ -35,6 +35,10 @@ public sealed record MemberSubjectBinding(
     string Subject,
     DateTimeOffset UpdatedAt);
 
+/// <summary>成员绑定写入事件参数（<see cref="MemberSubjectBindingStore.BindingSet"/>；
+/// GroupOpenId 空 = 全局绑定）。</summary>
+public sealed record MemberBindingChangedEventArgs(string MemberOpenId, string GroupOpenId, string Subject);
+
 /// <summary>
 /// 成员学科显式绑定存储（member-subject-bindings.json，JSON 原子写入 + .bak 损坏恢复，进程内锁串行化）。
 /// <para>
@@ -137,6 +141,15 @@ public sealed class MemberSubjectBindingStore
         _logger.LogInformation(
             "已写入成员学科绑定 Member={Member}, Group={Group}, Subject={Subject}",
             memberOpenId, group.Length == 0 ? "(全局)" : group, subject);
+        try
+        {
+            BindingSet?.Invoke(this, new MemberBindingChangedEventArgs(memberOpenId, group, subject));
+        }
+        catch (Exception ex)
+        {
+            // 订阅方（回溯器等）异常不得影响绑定写入主流程
+            _logger.LogError(ex, "成员绑定写入事件订阅方异常（已吞掉）");
+        }
     }
 
     /// <summary>
@@ -263,6 +276,13 @@ public sealed class MemberSubjectBindingStore
     }
 
     private readonly Dictionary<string, DateTimeOffset> _updatedAt = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 成员绑定写入事件（收口点）：任何调用方经 <see cref="Set"/> 成功写入绑定后触发
+    /// （悬浮窗点选与设置页管理 UI 共用此唯一出口）。回溯器订阅此事件对历史「未分类」
+    /// 通知/文件做绑定回溯；订阅方须自行消化异常，不得影响存储与消息主流程。
+    /// </summary>
+    public event EventHandler<MemberBindingChangedEventArgs>? BindingSet;
 
     private static string Key(string memberOpenId, string groupOpenId) => $"{groupOpenId}\n{memberOpenId}";
 

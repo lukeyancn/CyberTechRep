@@ -71,6 +71,18 @@ public sealed class NoticeItem
 
     public string Content { get; init; } = "";
 
+    /// <summary>发送者成员 OpenID（旧数据为空；通知学科前缀与成员绑定回溯按此归因）。</summary>
+    public string MemberOpenId { get; init; } = "";
+
+    /// <summary>来源群 OpenID（旧数据为空；群作用域绑定回溯匹配用）。</summary>
+    public string GroupOpenId { get; init; } = "";
+
+    /// <summary>
+    /// 通知学科（写入/回溯时与前缀同步记录；空 = 未分类）。
+    /// 非空即视为已定学科：成员绑定回溯只补「未分类」，绝不覆盖已有学科（人工/显式语义最高）。
+    /// </summary>
+    public string Subject { get; set; } = "";
+
     public DateTimeOffset CreatedAt { get; init; }
 
     /// <summary>已读状态持久化：重启不复活。</summary>
@@ -113,6 +125,12 @@ public sealed class FileRecord
     public Guid Id { get; init; } = Guid.NewGuid();
 
     public required string MessageId { get; init; }
+
+    /// <summary>发送者成员 OpenID（旧数据为空；成员绑定回溯按此归因，空时经 MessageId→成员映射兜底）。</summary>
+    public string MemberOpenId { get; set; } = "";
+
+    /// <summary>来源群 OpenID（旧数据为空；群作用域绑定解析用）。</summary>
+    public string GroupOpenId { get; set; } = "";
 
     /// <summary>原始文件名（已做路径穿越校验与长度限制）。</summary>
     public string FileName { get; init; } = "";

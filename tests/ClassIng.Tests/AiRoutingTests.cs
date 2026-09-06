@@ -218,7 +218,8 @@ public sealed class AiRoutingTests : IDisposable
         public event EventHandler<FileRecord>? FileUpdated;
 #pragma warning restore CS0067
 
-        public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url, CancellationToken ct = default)
+        public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+            string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default)
             => throw new InvalidOperationException("not used");
 
         public Task ReassignSubjectAsync(Guid fileId, string subject, CancellationToken ct = default)

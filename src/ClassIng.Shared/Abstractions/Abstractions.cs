@@ -97,8 +97,11 @@ public interface IFilePipelineService
     /// <summary>文件记录变化（状态机推进，供作业悬浮窗「附件处理中」提示）。</summary>
     event EventHandler<FileRecord>? FileUpdated;
 
-    /// <summary>入队一个待处理文件（队列化，防文件名冲突与写入竞态）。</summary>
-    Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url, CancellationToken ct = default);
+    /// <summary>入队一个待处理文件（队列化，防文件名冲突与写入竞态）。
+    /// <paramref name="memberOpenId"/>/<paramref name="groupOpenId"/>：发送者/群 OpenID，
+    /// 随记录持久化供成员绑定回溯归因（旧调用不传为空）。</summary>
+    Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+        string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default);
 
     /// <summary>指定文件的学科（识别完成后二次归档：移动到 学科/日期 目录）。</summary>
     Task ReassignSubjectAsync(Guid fileId, string subject, CancellationToken ct = default);
@@ -117,8 +120,10 @@ public interface INoticeStore
     /// <summary>按消息 id 幂等添加或更新。
     /// <paramref name="memberOpenId"/>：发送者成员 OpenID——该发送者已绑定学科映射且
     /// ClassificationSettings.NoticeSubjectPrefix 开启时，写入内容前附加「学科：」前缀
-    /// （无映射不加，已有前缀不重复添加）；更新提示等无发送者场景传 null。</summary>
-    Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null, CancellationToken ct = default);
+    /// （无映射不加，已有前缀不重复添加）；更新提示等无发送者场景传 null。
+    /// <paramref name="groupOpenId"/>：来源群 OpenID——成员绑定群作用域解析与回溯归因用。</summary>
+    Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
+        string? groupOpenId = null, CancellationToken ct = default);
 
     Task MarkReadAsync(Guid id, CancellationToken ct = default);
 

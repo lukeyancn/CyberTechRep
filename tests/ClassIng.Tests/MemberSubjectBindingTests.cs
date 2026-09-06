@@ -207,7 +207,8 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         public event EventHandler<NoticeItem>? Changed;
 #pragma warning restore CS0067
 
-        public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null, CancellationToken ct = default)
+        public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
+            string? groupOpenId = null, CancellationToken ct = default)
         {
             var existing = Items.Find(i => i.MessageId == messageId);
             if (existing is not null)

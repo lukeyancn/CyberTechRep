@@ -174,6 +174,12 @@ public class ClassIngPlugin : PluginBase
         services.AddSingleton(sp => new NoticeStore(
             dataDir,
             userRules: sp.GetRequiredService<UserSubjectRuleStore>(),
+            // 需求（绑定生效）：通知前缀学科来源加入成员显式绑定（群作用域 → 全局），优先于学习映射；
+            // Keyword 模式由委托侧返回 null（现状行为不变）。延迟解析避免注册顺序耦合。
+            memberBindingSubject: (member, group) =>
+                settingsService.Current.SubjectRecognition.Mode == SubjectRecognitionMode.MemberSelection
+                    ? sp.GetRequiredService<MemberSubjectBindingStore>().GetSubject(member, group)
+                    : null,
             noticePrefixEnabled: () => settingsService.Current.Classification.NoticeSubjectPrefix,
             noticesRetentionDays: () => settingsService.Current.Maintenance.NoticesRetentionDays,
             logger: sp.GetService<ILogger<NoticeStore>>()));
@@ -380,6 +386,17 @@ public class ClassIngPlugin : PluginBase
             () => ClassIng.Plugin.Services.SubjectChain.SubjectRuleFile
                 .LoadOrSeed(sp.GetRequiredService<SubjectChainOptionsProvider>()).Rules
                 .Select(r => r.Subject).ToList()));
+
+        // ---- 需求（绑定回溯）：成员绑定写入 → 历史「未分类」通知/文件回溯 ----
+        // 收口点 = MemberSubjectBindingStore.Set 的 BindingSet 事件（悬浮窗点选与设置页写入共用）；
+        // IHostedService：StartAsync 即接线，回溯全程 try/catch 只记日志，不阻塞绑定写入与消息主流程。
+        services.AddSingleton(sp => new Services.Pipeline.MemberBindingBackfillService(
+            sp.GetRequiredService<MemberSubjectBindingStore>(),
+            sp.GetRequiredService<NoticeStore>(),
+            sp.GetRequiredService<IHomeworkStore>(),
+            sp.GetRequiredService<IFilePipelineService>(),
+            sp.GetService<ILogger<Services.Pipeline.MemberBindingBackfillService>>()));
+        services.AddHostedService(sp => sp.GetRequiredService<Services.Pipeline.MemberBindingBackfillService>());
 
         // ---- 模块 5：保留期清理任务（启动时 + 每日跨天 + 设置变更；只删过期桶，绝不动当天与未读）----
         services.AddHostedService<Services.Pipeline.RetentionCleanupService>();

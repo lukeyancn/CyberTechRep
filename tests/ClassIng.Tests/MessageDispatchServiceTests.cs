@@ -116,7 +116,8 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
         public event EventHandler<NoticeItem>? Changed;
 
-        public async Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null, CancellationToken ct = default)
+        public async Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
+            string? groupOpenId = null, CancellationToken ct = default)
         {
             if (OnAddOrUpdate is not null)
             {
@@ -234,7 +235,8 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
         public event EventHandler<FileRecord>? FileUpdated;
 
-        public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url, CancellationToken ct = default)
+        public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+            string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default)
         {
             EnqueueCalls.Add((messageId, fileName, url));
             var record = new FileRecord
@@ -242,6 +244,8 @@ public sealed class MessageDispatchServiceTests : IDisposable
                 Id = Guid.NewGuid(),
                 MessageId = messageId,
                 FileName = fileName,
+                MemberOpenId = memberOpenId ?? "",
+                GroupOpenId = groupOpenId ?? "",
                 Status = FileStatus.Archived,
                 CompletedAt = DateTimeOffset.Now
             };

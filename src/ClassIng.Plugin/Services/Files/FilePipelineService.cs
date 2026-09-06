@@ -66,9 +66,10 @@ public sealed class FilePipelineService : IFilePipelineService
     }
 
     /// <inheritdoc />
-    public async Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url, CancellationToken ct = default)
+    public async Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+        string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default)
     {
-        var record = BeginEnqueue(messageId ?? "", fileName ?? "");
+        var record = BeginEnqueue(messageId ?? "", fileName ?? "", memberOpenId, groupOpenId);
         RaiseUpdated(record);
 
         // ① 文件名路径安全校验（拒绝 ..、路径分隔符、非法字符、超长名、Windows 保留名）
@@ -535,8 +536,11 @@ public sealed class FilePipelineService : IFilePipelineService
 
     // ============ 记录管理与持久化 ============
 
-    /// <summary>入队：同 MessageId+FileName 的 Failed 记录可复用（可重入重试，AttemptCount 累计）。</summary>
-    private FileRecord BeginEnqueue(string messageId, string fileName)
+    /// <summary>
+    /// 入队：同 MessageId+FileName 的 Failed 记录可复用（可重入重试，AttemptCount 累计）。
+    /// MemberOpenId/GroupOpenId 随记录持久化（成员绑定回溯归因用；复用记录时补写空缺值）。
+    /// </summary>
+    private FileRecord BeginEnqueue(string messageId, string fileName, string? memberOpenId, string? groupOpenId)
     {
         lock (_lock)
         {
@@ -547,6 +551,12 @@ public sealed class FilePipelineService : IFilePipelineService
                 existing.Status = FileStatus.Pending;
                 existing.LastError = null;
                 existing.CompletedAt = null;
+                existing.MemberOpenId = string.IsNullOrEmpty(existing.MemberOpenId)
+                    ? memberOpenId ?? ""
+                    : existing.MemberOpenId;
+                existing.GroupOpenId = string.IsNullOrEmpty(existing.GroupOpenId)
+                    ? groupOpenId ?? ""
+                    : existing.GroupOpenId;
                 Save();
                 return existing;
             }
@@ -555,6 +565,8 @@ public sealed class FilePipelineService : IFilePipelineService
             {
                 MessageId = messageId,
                 FileName = fileName,
+                MemberOpenId = memberOpenId ?? "",
+                GroupOpenId = groupOpenId ?? "",
                 Status = FileStatus.Pending,
                 CreatedAt = DateTimeOffset.Now
             };

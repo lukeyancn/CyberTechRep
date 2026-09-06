@@ -183,7 +183,8 @@ public sealed class OverlayQuickMenuTests : IDisposable
             remove { }
         }
 
-        public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url, CancellationToken ct = default)
+        public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+            string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default)
             => throw new NotSupportedException("测试桩不写文件");
 
         public Task ReassignSubjectAsync(Guid fileId, string subject, CancellationToken ct = default)

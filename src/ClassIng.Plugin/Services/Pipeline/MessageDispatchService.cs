@@ -246,6 +246,16 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         {
             case MessageKind.Notice:
                 await WriteNoticeAsync(message, text, ct).ConfigureAwait(false);
+                // 需求（后续文件走绑定）：通知不经学科识别链，发送者已显式绑定时，
+                // 该消息文件按绑定学科二次归档（显式绑定 > 未分类；幂等，失败仅记日志）。
+                if (TryGetMemberBindingSubject(message, out var noticeBoundSubject))
+                {
+                    await ReassignFilesSafeAsync(message.MessageId, noticeBoundSubject, ct).ConfigureAwait(false);
+                    _logger.LogInformation(
+                        "通知附件按成员显式学科绑定归类（MessageId={MessageId}, Member={Member}, Subject={Subject}, Source=MemberBinding）",
+                        message.MessageId, MaskMember(message.SenderNickname, message.MemberOpenId), noticeBoundSubject);
+                }
+
                 // 需求 3：通知同样需要学科分类（按发送者绑定加「学科：」前缀）→ 未绑定时也触发
                 // 选择悬浮窗。通知不经学科识别链，链候选为空（悬浮窗仅展示 subjects.json 全部学科）。
                 RaiseSubjectSelectionIfNeeded(message, text, MessageKind.Notice, EmptyChainResult);
@@ -264,6 +274,16 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                     _logger.LogDebug(
                         "消息未分类，忽略（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Reason={Reason}）",
                         message.MessageId, message.GroupOpenId, classified.MatchReason);
+                }
+
+                // 需求（后续文件走绑定）：兜底未识别出学科 → 发送者文件按显式绑定二次归档；
+                // 兜底已识别 → 按现有优先级矩阵语义，显式绑定仍覆盖链结果（显式语义最高，红线）。
+                if (TryGetMemberBindingSubject(message, out var unclassifiedBoundSubject))
+                {
+                    await ReassignFilesSafeAsync(message.MessageId, unclassifiedBoundSubject, ct).ConfigureAwait(false);
+                    _logger.LogInformation(
+                        "未分类消息文件按成员显式学科绑定归类（MessageId={MessageId}, Member={Member}, Subject={Subject}, Source=MemberBinding）",
+                        message.MessageId, MaskMember(message.SenderNickname, message.MemberOpenId), unclassifiedBoundSubject);
                 }
 
                 break;
@@ -605,7 +625,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         var memberOpenId = message.MemberOpenId;
         try
         {
-            await _noticeStore!.AddOrUpdateAsync(messageId, text, memberOpenId, ct).ConfigureAwait(false);
+            await _noticeStore!.AddOrUpdateAsync(messageId, text, memberOpenId, message.GroupOpenId, ct)
+                .ConfigureAwait(false);
             _logger.LogInformation(
                 "通知已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Length={Length}）",
                 messageId, message.GroupOpenId, text.Length);
@@ -621,8 +642,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 messageId, message.GroupOpenId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
-                // 携带 MemberOpenId：重放时学科前缀语义与首次写入一致
-                new StoreWritePayload(StoreWriteKind.NoticeUpsert, messageId, text, null, memberOpenId),
+                // 携带 MemberOpenId/GroupOpenId：重放时学科前缀语义与首次写入一致
+                new StoreWritePayload(StoreWriteKind.NoticeUpsert, messageId, text, null, memberOpenId, message.GroupOpenId),
                 messageId).ConfigureAwait(false);
         }
     }
@@ -649,7 +670,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             var fileName = ResolveFileName(segment, message.MessageId, index);
             try
             {
-                var record = await _filePipeline!.EnqueueAsync(message.MessageId, fileName, segment.Url, ct)
+                var record = await _filePipeline!
+                    .EnqueueAsync(message.MessageId, fileName, segment.Url, message.MemberOpenId, message.GroupOpenId, ct)
                     .ConfigureAwait(false);
                 ids.Add(record.Id);
                 _logger.LogInformation(
@@ -667,7 +689,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                     message.MessageId, message.GroupOpenId, fileName);
                 await EnqueueRetrySafeAsync(
                     RetryOperationType.FileDownload,
-                    BuildFileDownloadPayload(message.MessageId, fileName, segment.Url),
+                    BuildFileDownloadPayload(message.MessageId, fileName, segment.Url, message.MemberOpenId, message.GroupOpenId),
                     message.MessageId).ConfigureAwait(false);
             }
         }
@@ -773,7 +795,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         try
         {
             // 幂等键：同版本只产生一条通知
-            await _noticeStore.AddOrUpdateAsync($"update:{info.LatestVersion}", content, null, ct).ConfigureAwait(false);
+            await _noticeStore.AddOrUpdateAsync($"update:{info.LatestVersion}", content, memberOpenId: null,
+                groupOpenId: null, ct).ConfigureAwait(false);
             _logger.LogInformation("更新提示已写入通知（Version={Version}）", info.LatestVersion);
         }
         catch (Exception ex)
@@ -808,7 +831,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
 
         var record = await _filePipeline
-            .EnqueueAsync(payload.MessageId, payload.FileName, payload.Url, ct)
+            .EnqueueAsync(payload.MessageId, payload.FileName, payload.Url, payload.MemberOpenId, payload.GroupOpenId, ct)
             .ConfigureAwait(false);
         var success = record.Status is FileStatus.Archived or FileStatus.Duplicate;
         _logger.LogInformation(
@@ -903,7 +926,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             switch (payload.Kind)
             {
                 case StoreWriteKind.NoticeUpsert when _noticeStore is not null:
-                    await _noticeStore.AddOrUpdateAsync(payload.MessageId, payload.Content ?? "", payload.MemberOpenId, ct)
+                    await _noticeStore
+                        .AddOrUpdateAsync(payload.MessageId, payload.Content ?? "", payload.MemberOpenId,
+                            payload.GroupOpenId, ct)
                         .ConfigureAwait(false);
                     break;
 
@@ -1053,15 +1078,19 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         HomeworkSetSubject
     }
 
-    internal sealed record FileDownloadPayload(string MessageId, string FileName, string Url);
+    internal sealed record FileDownloadPayload(
+        string MessageId, string FileName, string Url, string? MemberOpenId = null, string? GroupOpenId = null);
 
     internal sealed record SubjectClassifyPayload(string MessageId, string Text, string? MemberOpenId = null);
 
     internal sealed record StoreWritePayload(
-        StoreWriteKind Kind, string MessageId, string? Content, string? Subject, string? MemberOpenId = null);
+        StoreWriteKind Kind, string MessageId, string? Content, string? Subject,
+        string? MemberOpenId = null, string? GroupOpenId = null);
 
-    internal static string BuildFileDownloadPayload(string messageId, string fileName, string url) =>
-        JsonSerializer.Serialize(new FileDownloadPayload(messageId, fileName, url), PayloadJsonOptions);
+    internal static string BuildFileDownloadPayload(
+        string messageId, string fileName, string url, string? memberOpenId = null, string? groupOpenId = null) =>
+        JsonSerializer.Serialize(new FileDownloadPayload(messageId, fileName, url, memberOpenId, groupOpenId),
+            PayloadJsonOptions);
 
     internal static string BuildSubjectClassifyPayload(string messageId, string text, string memberOpenId = "") =>
         JsonSerializer.Serialize(new SubjectClassifyPayload(messageId, text, memberOpenId), PayloadJsonOptions);
