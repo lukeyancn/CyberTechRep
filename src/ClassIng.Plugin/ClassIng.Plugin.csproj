@@ -27,6 +27,8 @@
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <!-- System.Text.Json 供插件内部序列化使用，随包分发（插件 ALC 私有，不与宿主交换类型） -->
     <PackageReference Include="System.Text.Json" Version="9.0.2" />
+    <!-- 学科文件悬浮窗：提取文件关联图标（仅 Windows 运行期使用，代码内有 OS 判断与兜底） -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
 
   <!-- 打包前剥离宿主已提供的程序集，避免与宿主类型分裂（EnableDynamicLoading 会把传递依赖也复制进来） -->
