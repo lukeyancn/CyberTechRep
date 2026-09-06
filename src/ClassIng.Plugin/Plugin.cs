@@ -214,6 +214,8 @@ public class ClassIngPlugin : PluginBase
         services.AddSettingsPageGroup("classing.settings", "\uE713", "ClassIng");
         services.AddSettingsPage<Controls.SettingsPages.ConnectionSettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.ClassificationSettingsPage>();
+        // 需求 3：学科关键词规则（subjects.json）与消息分类关键词的可视化编辑入口
+        services.AddSettingsPage<Controls.SettingsPages.SubjectRulesEditorPage>();
         services.AddSettingsPage<Controls.SettingsPages.OverlaySettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.FileSettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.MaintenanceSettingsPage>();

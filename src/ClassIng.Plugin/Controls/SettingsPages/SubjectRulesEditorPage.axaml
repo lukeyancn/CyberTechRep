@@ -1,0 +1,73 @@
+<local:ClassIngSettingsPageBase
+    x:Class="ClassIng.Plugin.Controls.SettingsPages.SubjectRulesEditorPage"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:ClassIng.Plugin.Controls.SettingsPages"
+    mc:Ignorable="d" d:DesignWidth="640" d:DesignHeight="900">
+
+    <ScrollViewer>
+        <StackPanel Margin="24" MaxWidth="720" Spacing="10">
+
+            <TextBlock Text="分类词表编辑器" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
+            <TextBlock Text="在此可视化编辑学科关键词规则（subjects.json）与消息分类关键词（classification-keywords.json），无需手动改文件；点击「保存并应用」后立即写入并热生效。"
+                       TextWrapping="Wrap" Opacity="0.75"/>
+
+            <!-- 学科关键词规则（subjects.json） -->
+            <Expander Header="学科关键词规则（subjects.json）" IsExpanded="True">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="学科名同时用作归档目录名，不能包含斜杠、冒号、问号等非法字符。关键词一行一个，任一关键词命中即计分；一条消息命中多个学科时，先比命中关键词数，再比优先级（数值大者优先）。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ListBox x:Name="RulesList" ItemsSource="{Binding Rules}" MinHeight="160" MaxHeight="420">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="110,*,Auto,Auto,Auto" Margin="0,2">
+                                    <TextBox Grid.Column="0" Text="{Binding Subject}" Watermark="学科名"/>
+                                    <TextBox Grid.Column="1" Text="{Binding KeywordsText}" AcceptsReturn="True"
+                                             MinHeight="40" MaxHeight="120" Watermark="关键词，一行一个"
+                                             Margin="8,0"/>
+                                    <TextBlock Grid.Column="2" Text="优先级" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <NumericUpDown Grid.Column="3" Value="{Binding Priority}" Minimum="-100"
+                                                   Maximum="100" Width="110" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="4" Content="✕" Click="OnDeleteSubjectClicked"
+                                            VerticalAlignment="Center" Margin="8,0,0,0"
+                                            ToolTip.Tip="删除该学科"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="＋ 添加学科" Click="OnAddSubjectClicked"/>
+                        <Button Content="导出 JSON（剪贴板）" Click="OnExportSubjectsClicked"/>
+                        <Button Content="导入 JSON（剪贴板）" Click="OnImportSubjectsClicked"/>
+                        <Button Content="恢复默认（Assets 模板）" Click="OnRestoreSubjectsClicked"/>
+                    </StackPanel>
+                </StackPanel>
+            </Expander>
+
+            <!-- 消息分类关键词（classification-keywords.json） -->
+            <Expander Header="消息分类关键词（classification-keywords.json）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="区分「通知」与「作业」两类消息的关键词，一行一个；两侧同时命中时按作业处理。保存后写入文件并热生效。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <TextBlock Text="通知关键词" FontWeight="SemiBold"/>
+                    <TextBox Text="{Binding NoticeKeywordsText, Mode=TwoWay}" AcceptsReturn="True" Height="80"/>
+                    <TextBlock Text="作业关键词" FontWeight="SemiBold"/>
+                    <TextBox Text="{Binding HomeworkKeywordsText, Mode=TwoWay}" AcceptsReturn="True" Height="80"/>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="导出 JSON（剪贴板）" Click="OnExportKeywordsClicked"/>
+                        <Button Content="导入 JSON（剪贴板）" Click="OnImportKeywordsClicked"/>
+                        <Button Content="恢复默认（Assets 模板）" Click="OnRestoreKeywordsClicked"/>
+                    </StackPanel>
+                </StackPanel>
+            </Expander>
+
+            <TextBlock Text="{Binding ValidationMessage}" Foreground="Firebrick" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding TransferFeedback}" TextWrapping="Wrap" Opacity="0.85"/>
+
+            <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
+                    Margin="0,10,0,0"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:ClassIngSettingsPageBase>
