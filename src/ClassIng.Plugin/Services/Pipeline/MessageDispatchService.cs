@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ClassIng.Plugin.Services.Classification;
+using ClassIng.Plugin.Services.Stores;
 using ClassIng.Plugin.Services.SubjectChain;
 using ClassIng.Shared.Abstractions;
 using ClassIng.Shared.Models;
@@ -48,6 +49,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
     private readonly IUpdateNotifyService? _updateNotify;
     private readonly JsonPendingConfirmStore? _pendingConfirmStore;
     private readonly INoKeywordFallbackClassifier? _noKeywordFallback;
+    private readonly MemberSubjectBindingStore? _memberBindings;
+    private readonly Func<SubjectRecognitionSettings>? _getSubjectRecognitionSettings;
     private readonly ILogger _logger;
 
     private EventHandler<MessageRecord>? _messageHandler;
@@ -55,6 +58,13 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
     private Func<PendingConfirmItem, CancellationToken, Task>? _resolvedHook;
     private SemaphoreSlim? _processingGate;
     private bool _disposed;
+
+    /// <summary>
+    /// 需求 3：消息需要学科分类但发送者未绑定学科（且当前模式 = MemberSelection、开关开启）时触发；
+    /// 由 <see cref="Services.Overlays.SubjectSelectionCoordinator"/> 订阅并弹出选择悬浮窗。
+    /// 仅补充交互：主流程不等待、不阻塞，消息按现有降级语义处理。
+    /// </summary>
+    public event EventHandler<SubjectSelectionRequest>? SubjectSelectionRequired;
 
     public MessageDispatchService(
         IMessageIngestService? ingest = null,
@@ -67,6 +77,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         IUpdateNotifyService? updateNotify = null,
         JsonPendingConfirmStore? pendingConfirmStore = null,
         INoKeywordFallbackClassifier? noKeywordFallback = null,
+        MemberSubjectBindingStore? memberBindings = null,
+        Func<SubjectRecognitionSettings>? getSubjectRecognitionSettings = null,
         ILogger? logger = null)
     {
         _ingest = ingest;
@@ -79,6 +91,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         _updateNotify = updateNotify;
         _pendingConfirmStore = pendingConfirmStore;
         _noKeywordFallback = noKeywordFallback;
+        _memberBindings = memberBindings;
+        _getSubjectRecognitionSettings = getSubjectRecognitionSettings;
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -259,6 +273,39 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
     {
         var messageId = message.MessageId;
         var memberOpenId = message.MemberOpenId;
+
+        // 需求 4：MemberSelection 模式下成员显式绑定优先于识别链（Keyword 模式完全不读取绑定，现状不变）。
+        // 绑定来自设置页/选择悬浮窗的显式操作，语义等同人工指定（SubjectSource=Manual，人工修正永不回退）。
+        if (TryGetMemberBindingSubject(message, out var boundSubject))
+        {
+            try
+            {
+                await WriteHomeworkAsync(message, text, boundSubject, 1.0, SubjectSource.Manual, attachmentIds, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "按成员绑定写入作业失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}），投递 StoreWrite 重试",
+                    messageId, message.GroupOpenId);
+                await EnqueueRetrySafeAsync(
+                    RetryOperationType.StoreWrite,
+                    new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, boundSubject, memberOpenId),
+                    messageId).ConfigureAwait(false);
+                return;
+            }
+
+            await ReassignFilesSafeAsync(messageId, boundSubject, ct).ConfigureAwait(false);
+            _logger.LogInformation(
+                "作业按成员显式学科绑定归类（MessageId={MessageId}, Member={Member}, Subject={Subject}, Source=MemberBinding）",
+                messageId, memberOpenId, boundSubject);
+            return;
+        }
+
         SubjectResult subject;
         try
         {
@@ -282,21 +329,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
 
         try
         {
-            var item = new HomeworkItem
-            {
-                MessageId = messageId,
-                MemberOpenId = memberOpenId,
-                Content = text,
-                Subject = subject.Subject,
-                SubjectConfidence = subject.Confidence,
-                SubjectSource = subject.Source,
-                AttachmentIds = attachmentIds,
-                CreatedAt = DateTimeOffset.Now
-            };
-            await _homeworkStore!.UpsertAsync(item, ct).ConfigureAwait(false);
-            _logger.LogInformation(
-                "作业已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Subject={Subject}, Source={Source}, Confidence={Confidence}, Attachments={Count}）",
-                messageId, message.GroupOpenId, subject.Subject, subject.Source, subject.Confidence, attachmentIds.Count);
+            await WriteHomeworkAsync(message, text, subject.Subject, subject.Confidence, subject.Source,
+                attachmentIds, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -314,6 +348,105 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
 
         await ReassignFilesSafeAsync(messageId, subject.Subject, ct).ConfigureAwait(false);
+
+        // 需求 3/4：MemberSelection 模式下链仍未得出可信学科（未分类/需人工确认）且成员未绑定 →
+        // 触发选择悬浮窗（补充交互，不改变已按现有降级语义写入的结果）。
+        RaiseSubjectSelectionIfNeeded(message, text, subject);
+    }
+
+    /// <summary>作业写入 HomeworkStore（成员绑定路径与识别链路径共用；失败抛给调用方按 StoreWrite 重试处理）。</summary>
+    private async Task WriteHomeworkAsync(
+        MessageRecord message, string text, string subject, double confidence, SubjectSource source,
+        IReadOnlyList<Guid> attachmentIds, CancellationToken ct)
+    {
+        var messageId = message.MessageId;
+        var item = new HomeworkItem
+        {
+            MessageId = messageId,
+            MemberOpenId = message.MemberOpenId,
+            Content = text,
+            Subject = subject,
+            SubjectConfidence = confidence,
+            SubjectSource = source,
+            AttachmentIds = attachmentIds,
+            CreatedAt = DateTimeOffset.Now
+        };
+        await _homeworkStore!.UpsertAsync(item, ct).ConfigureAwait(false);
+        _logger.LogInformation(
+            "作业已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Subject={Subject}, Source={Source}, Confidence={Confidence}, Attachments={Count}）",
+            messageId, message.GroupOpenId, subject, source, confidence, attachmentIds.Count);
+    }
+
+    /// <summary>
+    /// MemberSelection 模式下取成员显式绑定学科（群作用域优先于全局）。
+    /// Keyword 模式或存储/设置未接线时恒返回 false（现状行为不变）。
+    /// </summary>
+    private bool TryGetMemberBindingSubject(MessageRecord message, out string subject)
+    {
+        subject = "";
+        if (_memberBindings is null || !IsMemberSelectionMode())
+        {
+            return false;
+        }
+
+        return _memberBindings.TryGetSubject(message.MemberOpenId, message.GroupOpenId, out subject)
+            && !string.IsNullOrWhiteSpace(subject);
+    }
+
+    /// <summary>当前学科识别模式（设置未接线时按 Keyword=现状处理）。</summary>
+    private SubjectRecognitionMode GetRecognitionMode() =>
+        _getSubjectRecognitionSettings?.Invoke().Mode ?? SubjectRecognitionMode.Keyword;
+
+    private bool IsMemberSelectionMode() => GetRecognitionMode() == SubjectRecognitionMode.MemberSelection;
+
+    /// <summary>
+    /// 选择悬浮窗触发判定（internal 纯逻辑拆出供单测）：
+    /// MemberSelection 模式 + 显示开关开启 + 消息有发送者 + 链结果需人工确认（未分类）+ 成员未绑定。
+    /// </summary>
+    internal static bool ShouldRaiseSubjectSelection(
+        SubjectRecognitionMode mode, bool selectionWindowEnabled, string memberOpenId,
+        SubjectResult chainResult, bool memberBound)
+    {
+        return mode == SubjectRecognitionMode.MemberSelection
+            && selectionWindowEnabled
+            && !string.IsNullOrWhiteSpace(memberOpenId)
+            && (chainResult.NeedsManualConfirm || HomeworkSubjectResolver.IsUnclassified(chainResult.Subject))
+            && !memberBound;
+    }
+
+    private void RaiseSubjectSelectionIfNeeded(MessageRecord message, string text, SubjectResult chainResult)
+    {
+        try
+        {
+            var mode = GetRecognitionMode();
+            var enabled = _getSubjectRecognitionSettings?.Invoke().SelectionWindowEnabled ?? true;
+            var bound = _memberBindings is not null
+                && _memberBindings.TryGetSubject(message.MemberOpenId, message.GroupOpenId, out _);
+            if (!ShouldRaiseSubjectSelection(mode, enabled, message.MemberOpenId, chainResult, bound))
+            {
+                return;
+            }
+
+            var request = new SubjectSelectionRequest(
+                message.MessageId,
+                message.MemberOpenId,
+                message.SenderNickname,
+                message.GroupOpenId,
+                text,
+                chainResult.Subject,
+                chainResult.Confidence,
+                chainResult.Source,
+                DateTimeOffset.Now);
+            SubjectSelectionRequired?.Invoke(this, request);
+            _logger.LogInformation(
+                "发送者未绑定学科，已触发选择悬浮窗（MessageId={MessageId}, Member={Member}, ChainSubject={ChainSubject}）",
+                message.MessageId, message.MemberOpenId, chainResult.Subject);
+        }
+        catch (Exception ex)
+        {
+            // 触发失败只记日志：主流程已按现有降级语义完成，不重试不阻塞
+            _logger.LogError(ex, "触发未绑定学科选择悬浮窗失败（MessageId={MessageId}）", message.MessageId);
+        }
     }
 
     /// <summary>
@@ -860,3 +993,19 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
     /// <summary>重试载荷序列化选项（internal 供单元测试复用）。</summary>
     internal static JsonSerializerOptions PayloadSerializerOptions => PayloadJsonOptions;
 }
+
+/// <summary>
+/// 未绑定学科选择悬浮窗的触发请求（需求 3）：携带发送者/群/消息摘要与识别链结果，
+/// 由 <see cref="Services.Overlays.SubjectSelectionCoordinator"/> 转交悬浮窗展示；
+/// 用户点选学科后经协调器写回 <see cref="MemberSubjectBindingStore"/> 并修正该消息的作业学科。
+/// </summary>
+public sealed record SubjectSelectionRequest(
+    string MessageId,
+    string MemberOpenId,
+    string SenderNickname,
+    string GroupOpenId,
+    string MessageDigest,
+    string ChainSubject,
+    double ChainConfidence,
+    SubjectSource ChainSource,
+    DateTimeOffset TriggeredAt);

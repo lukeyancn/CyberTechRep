@@ -47,6 +47,10 @@ public partial class OverlaySettingsPage : ClassIngSettingsPageBase
         => ResetWindow(SuspensionWindowController.CircleKey,
             () => Settings.Overlays.Circle = new OverlayWindowSettings { Visible = true, Width = 64, Height = 440, Opacity = 0.85 });
 
+    private void OnResetSelectionClicked(object? sender, RoutedEventArgs e)
+        => ResetWindow(SuspensionWindowController.SubjectSelectionKey,
+            () => Settings.Overlays.Selection = new OverlayWindowSettings { Visible = false, Width = 320, Height = 260 });
+
     private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 
     private void OnOrientationChanged(object? sender, SelectionChangedEventArgs e)

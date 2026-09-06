@@ -1,0 +1,56 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="320" d:DesignHeight="260"
+        x:Class="ClassIng.Plugin.Views.SubjectSelectionSuspensionWindow"
+        x:CompileBindings="True"
+        Title="CyberTechRep 学科选择" Width="320" Height="260" MinWidth="260" MinHeight="200"
+        SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
+        Topmost="True" Background="Transparent" FontSize="14">
+
+  <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
+    <Grid RowDefinitions="Auto,*,Auto">
+
+      <!-- 标题栏：拖拽区 + 关闭（隐藏；下次触发自动再弹出） -->
+      <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
+              PointerPressed="OnHeaderPointerPressed">
+        <Grid ColumnDefinitions="*,Auto" Margin="12,8,8,8">
+          <TextBlock Text="选择学科" FontWeight="SemiBold" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Content="×" Click="OnHideClick"
+                  Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+        </Grid>
+      </Border>
+
+      <!-- 触发信息 + 学科点选 -->
+      <ScrollViewer Grid.Row="1" Padding="12,8">
+        <StackPanel Spacing="8">
+          <TextBlock x:Name="SenderText" TextWrapping="Wrap" FontWeight="SemiBold" Text="发送者："/>
+          <TextBlock x:Name="DigestText" TextWrapping="Wrap" Opacity="0.8" Text=""/>
+          <TextBlock x:Name="ChainText" TextWrapping="Wrap" Opacity="0.6" FontSize="12" Text=""/>
+          <TextBlock Text="点选该发送者的学科（此后其消息按此学科归档）：" TextWrapping="Wrap" Margin="0,4,0,0"/>
+          <ItemsControl x:Name="SubjectList">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Button Content="{Binding}" Click="OnSubjectClick" Margin="0,2"
+                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"/>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </ScrollViewer>
+
+      <!-- 角部缩放 Thumb -->
+      <Grid Grid.Row="2">
+        <Thumb x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
+               HorizontalAlignment="Right" Opacity="0.4" DragDelta="OnResizeDragDelta">
+          <Thumb.Template>
+            <ControlTemplate>
+              <Border CornerRadius="2" Background="#40000000" />
+            </ControlTemplate>
+          </Thumb.Template>
+        </Thumb>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

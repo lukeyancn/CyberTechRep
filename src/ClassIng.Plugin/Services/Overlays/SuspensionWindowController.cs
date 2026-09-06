@@ -35,6 +35,9 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// <summary>overlayKey：学科圆圈启动器（小型常驻窗）。</summary>
     public const string CircleKey = "circle";
 
+    /// <summary>overlayKey：未绑定学科选择悬浮窗（第五悬浮窗，需求 3；消息需学科分类但发送者未绑定时由管道触发）。</summary>
+    public const string SubjectSelectionKey = "subjectSelection";
+
     /// <summary>旧版独立悬浮窗设置文件（迁移后归档为 &lt;name&gt;.migrated）。</summary>
     internal const string LegacyFileName = "overlays.json";
     internal const string MigratedSuffix = ".migrated";
@@ -48,7 +51,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// 内存即时更新、落盘合并为最后一次（避免每帧写盘 + 广播风暴，且广播回放不会与拖拽会话打架）。</summary>
     internal const int GeometrySaveDebounceMs = 300;
 
-    private static readonly string[] KnownKeys = [NoticeKey, HomeworkKey, FilesKey, CircleKey];
+    private static readonly string[] KnownKeys = [NoticeKey, HomeworkKey, FilesKey, CircleKey, SubjectSelectionKey];
 
     private readonly string _filePath;
     private readonly ISettingsService? _settingsService;
@@ -218,6 +221,9 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                     break;
                 case FilesKey:
                     _settings.Files = settings;
+                    break;
+                case SubjectSelectionKey:
+                    _settings.Selection = settings;
                     break;
                 default:
                     _settings.Circle = settings;
@@ -396,6 +402,9 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                 case FilesKey:
                     _settings.Files = settings;
                     break;
+                case SubjectSelectionKey:
+                    _settings.Selection = settings;
+                    break;
                 default:
                     _settings.Circle = settings;
                     break;
@@ -460,6 +469,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                 NoticeKey => _settings.Notice,
                 HomeworkKey => _settings.Homework,
                 FilesKey => _settings.Files,
+                SubjectSelectionKey => _settings.Selection,
                 _ => _settings.Circle
             };
         }
@@ -493,6 +503,8 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                     container.SubjectCircle = legacy.SubjectCircle;
                     container.HomeworkGroupOrder = legacy.HomeworkGroupOrder;
                     container.LaunchWithHost = legacy.LaunchWithHost;
+                    container.Selection = legacy.Selection;
+                    EnsureWindowSettingsDefaults(container);
                     _ = PersistViaSettingsServiceAsync();
                     _logger.LogInformation("已将旧 overlays.json 的悬浮窗设置导入 ISettingsService（settings.json），悬浮窗设置统一为单一来源");
                 }
@@ -537,6 +549,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         container.Homework ??= new OverlayWindowSettings();
         container.Files ??= new OverlayWindowSettings { Visible = false, Width = 360, Height = 520 };
         container.Circle ??= new OverlayWindowSettings { Visible = true, Width = 64, Height = 440, Opacity = 0.85 };
+        container.Selection ??= new OverlayWindowSettings { Visible = false, Width = 320, Height = 260 };
         container.SubjectCircle ??= new SubjectCircleBarSettings();
     }
 
@@ -580,6 +593,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
             NoticeKey => container.Notice,
             HomeworkKey => container.Homework,
             FilesKey => container.Files,
+            SubjectSelectionKey => container.Selection,
             _ => container.Circle
         };
     }
@@ -608,6 +622,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
             Homework = CloneWindowSettings(source.Homework),
             Files = CloneWindowSettings(source.Files),
             Circle = CloneWindowSettings(source.Circle),
+            Selection = CloneWindowSettings(source.Selection),
             SubjectCircle = CloneSubjectCircleSettings(source.SubjectCircle),
             HomeworkGroupOrder = [.. source.HomeworkGroupOrder]
         };

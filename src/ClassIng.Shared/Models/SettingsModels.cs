@@ -21,6 +21,9 @@ public sealed class AppSettings
 
     public OverlaySettings Overlays { get; set; } = new();
 
+    /// <summary>学科识别模式（需求 4）：纯关键词 / 成员绑定优先；含未绑定学科选择悬浮窗开关。</summary>
+    public SubjectRecognitionSettings SubjectRecognition { get; set; } = new();
+
     public FileSettings Files { get; set; } = new();
 
     public MaintenanceSettings Maintenance { get; set; } = new();
@@ -77,26 +80,34 @@ public sealed class ClassificationSettings
     /// <summary>学科关键词表外置文件相对路径（subjects.json）。</summary>
     public string SubjectRulesPath { get; set; } = "subjects.json";
 
-    // --- AI 识别 ---
+    // --- AI 识别（旧字段，兼容保留） ---
+    // 需求 5：AI 相关设置已整体迁移到 AiSettings（设置 UI 集中在「CyberTechRep AI」页）。
+    // 以下旧字段仅为 settings.json 旧结构的一次性迁移保留：加载/导入时若旧位置有值而
+    // 新位置为默认值，由 SettingsService 迁移到 AiSettings 后将旧字段复位为默认值。
+    // 运行时代码一律读取 AiSettings，不再读取此处。
 
+    /// <summary>旧字段（迁移用）：AI 总开关，现读 <see cref="AiSettings.AiEnabled"/>。</summary>
     public bool AiEnabled { get; set; } = true;
 
-    /// <summary>true=本地 ONNX 优先；false=云端优先。</summary>
+    /// <summary>旧字段（迁移用）：本地 ONNX 优先，现读 <see cref="AiSettings.PreferLocalModel"/>。</summary>
     public bool PreferLocalModel { get; set; } = true;
 
+    /// <summary>旧字段（迁移用）：本地模型路径，现读 <see cref="AiSettings.LocalModelPath"/>。</summary>
     public string LocalModelPath { get; set; } = "models/subject-classifier.onnx";
 
-    /// <summary>云端 OpenAI 兼容端点与密钥（密钥加密存储）。</summary>
+    /// <summary>旧字段（迁移用）：云端端点，现读 <see cref="AiSettings.CloudEndpoint"/>。</summary>
     public string CloudEndpoint { get; set; } = "";
 
+    /// <summary>旧字段（迁移用）：云端 API Key 密文，现读 <see cref="AiSettings.CloudApiKeyProtected"/>。</summary>
     public string CloudApiKeyProtected { get; set; } = "";
 
+    /// <summary>旧字段（迁移用）：云端模型名，现读 <see cref="AiSettings.CloudModelName"/>。</summary>
     public string CloudModelName { get; set; } = "";
 
-    /// <summary>云端费用/频率保护：每日最大调用次数。</summary>
+    /// <summary>旧字段（迁移用）：云端每日上限，现读 <see cref="AiSettings.CloudDailyCallLimit"/>。</summary>
     public int CloudDailyCallLimit { get; set; } = 200;
 
-    /// <summary>置信度阈值：低于此值进人工确认队列。</summary>
+    /// <summary>旧字段（迁移用）：置信度阈值，现读 <see cref="AiSettings.ConfidenceThreshold"/>。</summary>
     public double ConfidenceThreshold { get; set; } = 0.7;
 
     public bool ManualConfirmQueueEnabled { get; set; } = true;
@@ -119,17 +130,61 @@ public enum AiUsageMode
     Backup = 2
 }
 
+/// <summary>云端 API 提供者类型（需求 5+6：OpenAI 兼容 / Anthropic Messages API）。</summary>
+public enum CloudAiProvider
+{
+    /// <summary>OpenAI 兼容 chat/completions 端点（默认 = 迁移前行为不变）。</summary>
+    OpenAiCompatible = 0,
+
+    /// <summary>Anthropic Messages API（{base}/v1/messages，x-api-key + anthropic-version 头）。</summary>
+    Anthropic = 1
+}
+
 /// <summary>
 /// CyberTechRep AI 设置（需求 6）：AI 的四种用途各自独立选择识别模式。
 /// <para>
 /// 默认值原则：<strong>未配置 AI 时现状行为完全不变</strong>——
 /// 学科分类默认 <see cref="AiUsageMode.Backup"/>（与既有「关键词不中 → 云端 LLM」链路语义一致，
 /// 云端未配置时该级自然不可用，行为不变）；其余用途默认 <see cref="AiUsageMode.Off"/>。
-/// 云端凭据（端点/API Key/模型名/每日限额）复用 <see cref="ClassificationSettings"/>，不在此重复。
+/// </para>
+/// <para>
+/// 需求 5：云端凭据与 AI 相关字段已从 <see cref="ClassificationSettings"/> 整体迁移至此
+/// （settings.json 旧位置字段由 SettingsService 一次性迁移，已配置密钥的用户无需重填）。
 /// </para>
 /// </summary>
 public sealed class AiSettings
 {
+    // ---- AI 总开关与云端 API 接口配置（自 ClassificationSettings 迁入）----
+
+    /// <summary>AI 识别总开关（本地 ONNX 与云端 LLM 共用；关闭后所有 AI 级自动跳过）。</summary>
+    public bool AiEnabled { get; set; } = true;
+
+    /// <summary>云端 API 提供者类型：OpenAI 兼容 / Anthropic（路由层按此无感切换）。</summary>
+    public CloudAiProvider CloudProvider { get; set; } = CloudAiProvider.OpenAiCompatible;
+
+    /// <summary>云端 API 端点（OpenAI 兼容 Base URL 或 Anthropic API Base；密钥加密存储）。</summary>
+    public string CloudEndpoint { get; set; } = "";
+
+    /// <summary>云端 API Key（DPAPI 加密存储，UI 脱敏显示，绝不入日志）。</summary>
+    public string CloudApiKeyProtected { get; set; } = "";
+
+    /// <summary>云端模型名称。</summary>
+    public string CloudModelName { get; set; } = "";
+
+    /// <summary>云端费用/频率保护：每日最大调用次数。</summary>
+    public int CloudDailyCallLimit { get; set; } = 200;
+
+    /// <summary>置信度阈值：低于此值进人工确认队列。</summary>
+    public double ConfidenceThreshold { get; set; } = 0.7;
+
+    /// <summary>true=本地 ONNX 优先；false=云端优先（本地 ONNX 为占位实现，设置 UI 不暴露）。</summary>
+    public bool PreferLocalModel { get; set; } = true;
+
+    /// <summary>本地 ONNX 模型路径（占位实现预留，设置 UI 不暴露）。</summary>
+    public string LocalModelPath { get; set; } = "models/subject-classifier.onnx";
+
+    // ---- 四用途识别模式 ----
+
     /// <summary>
     /// 用途① 通知作业学科分类：SubjectClassifierChain 的 AI 级路由模式。
     /// Backup（默认）= 关键词不中或低置信才 AI（现状链路）；Primary = 跳过关键词直接 AI；Off = 不用 AI。
@@ -159,6 +214,43 @@ public sealed class AiSettings
     public double CloudTemperature { get; set; }
 }
 
+/// <summary>学科识别模式（需求 4）：成员绑定的参与方式。</summary>
+public enum SubjectRecognitionMode
+{
+    /// <summary>
+    /// 纯关键词（现状）：完全不读取成员学科绑定、不触发选择悬浮窗，
+    /// 识别链行为与历史版本完全一致（人工修正 &gt; 识别链 &gt; 发送者映射矩阵不变）。
+    /// </summary>
+    Keyword = 0,
+
+    /// <summary>
+    /// 成员绑定优先（默认）：优先使用成员 OpenID 的显式学科绑定（member-subject-bindings.json）；
+    /// 未绑定时照常走关键词识别链；链仍未得出可信学科且成员未绑定时，
+    /// 触发「未绑定学科选择悬浮窗」让用户点选学科完成绑定（主流程不阻塞，消息仍按现有降级语义处理）。
+    /// </summary>
+    MemberSelection = 1
+}
+
+/// <summary>
+/// 学科识别模式设置（需求 4，独立分组，不与 AiSettings 混用）：
+/// <see cref="Mode"/> 决定成员绑定在学科识别中的参与方式，
+/// <see cref="SelectionWindowEnabled"/> 是「未绑定学科选择悬浮窗」的显示总开关（关闭后管道不再触发该窗）。
+/// </summary>
+public sealed class SubjectRecognitionSettings
+{
+    /// <summary>
+    /// 学科识别模式：Keyword（纯关键词，现状行为）/ MemberSelection（默认，成员绑定优先）。
+    /// 切换仅影响管道是否消费成员绑定与触发选择悬浮窗；Keyword 档不读取任何新存储，行为与现状逐字节一致。
+    /// </summary>
+    public SubjectRecognitionMode Mode { get; set; } = SubjectRecognitionMode.MemberSelection;
+
+    /// <summary>
+    /// 未绑定学科选择悬浮窗显示开关（需求 3）：开（默认）= 消息需学科分类但发送者未绑定学科时弹出选择窗；
+    /// 关 = 完全不触发该窗（消息仍按现有降级语义处理）。
+    /// </summary>
+    public bool SelectionWindowEnabled { get; set; } = true;
+}
+
 /// <summary>悬浮窗设置（通知/作业/学科文件三个悬浮窗 + 学科圆圈启动器共用一组窗口参数结构）。</summary>
 public sealed class OverlaySettings
 {
@@ -184,6 +276,17 @@ public sealed class OverlaySettings
         Width = 64,
         Height = 440,
         Opacity = 0.85
+    };
+
+    /// <summary>
+    /// 未绑定学科选择悬浮窗（第五悬浮窗，需求 3）：消息需要学科分类但发送者未绑定学科时由管道触发弹出。
+    /// 默认不随宿主显示（Visible=false），只在触发时机显示；位置大小透明度与其他悬浮窗同构并持久化。
+    /// </summary>
+    public OverlayWindowSettings Selection { get; set; } = new()
+    {
+        Visible = false,
+        Width = 320,
+        Height = 260
     };
 
     /// <summary>学科圆圈栏/学科文件悬浮窗联动设置（排列方向/顺序/视图模式等）。</summary>

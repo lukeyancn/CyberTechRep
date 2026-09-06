@@ -1,4 +1,4 @@
-﻿<local:ClassIngSettingsPageBase
+<local:ClassIngSettingsPageBase
     x:Class="ClassIng.Plugin.Controls.SettingsPages.OverlaySettingsPage"
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -124,6 +124,36 @@
                     <ToggleSwitch Content="显示圆圈栏"
                                   IsChecked="{Binding Settings.Overlays.Circle.Visible}"/>
                     <Button Content="复位圆圈栏" Click="OnResetCircleClicked" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Expander>
+
+            <!-- 未绑定学科选择悬浮窗（第五悬浮窗） -->
+            <Expander Header="未绑定学科选择悬浮窗（发送者未绑定学科时弹出点选）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="当消息需要学科分类但发送者尚未绑定学科时弹出此窗，展示发送者/群/消息摘要与识别候选，点选学科即完成绑定并按所选学科归档。是否触发还受「学科识别模式」（词表编辑页）与显示开关控制。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <TextBlock Text="X（逻辑坐标 DIP）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Selection.X}" Minimum="-10000" Maximum="10000"/>
+                    <TextBlock Text="Y（逻辑坐标 DIP）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Selection.Y}" Minimum="-10000" Maximum="10000"/>
+                    <TextBlock Text="宽度"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Selection.Width}" Minimum="80" Maximum="4000"/>
+                    <TextBlock Text="高度"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Selection.Height}" Minimum="80" Maximum="4000"/>
+                    <TextBlock Text="透明度（0.1~1.0）"/>
+                    <Slider Minimum="0.1" Maximum="1" Value="{Binding Settings.Overlays.Selection.Opacity}"
+                            TickFrequency="0.05"/>
+                    <TextBlock Text="字号"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Selection.FontSize}" Minimum="8" Maximum="72"/>
+                    <ToggleSwitch Content="置顶（浮在所有窗口之上，关闭时钉在桌面层）"
+                                  IsChecked="{Binding Settings.Overlays.Selection.Topmost}"/>
+                    <ToggleSwitch Content="固定（禁用拖拽缩放，点击不抢焦点）"
+                                  IsChecked="{Binding Settings.Overlays.Selection.Pinned}"/>
+                    <ToggleSwitch Content="鼠标穿透（点击直接穿过悬浮窗）"
+                                  IsChecked="{Binding Settings.Overlays.Selection.ClickThrough}"/>
+                    <ToggleSwitch Content="显示悬浮窗（触发时自动弹出；此开关控制当前可见状态）"
+                                  IsChecked="{Binding Settings.Overlays.Selection.Visible}"/>
+                    <Button Content="复位学科选择悬浮窗" Click="OnResetSelectionClicked" HorizontalAlignment="Left"/>
                 </StackPanel>
             </Expander>
 

@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using ClassIng.Plugin.Services.Classification;
+using ClassIng.Plugin.Services.Stores;
 using ClassIng.Plugin.Services.SubjectChain;
 using ClassIng.Shared.Abstractions;
 using ClassIng.Shared.Models;
@@ -42,27 +43,37 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
     private readonly string _keywordsDataPath;
     private readonly string _subjectsAssetPath;
     private readonly string _keywordsAssetPath;
+    private readonly MemberSubjectBindingStore? _memberBindings;
 
     private string _validationMessage = "";
     private string _transferFeedback = "";
 
-    public SubjectRulesEditorPage(ISettingsService settingsService)
+    public SubjectRulesEditorPage(ISettingsService settingsService,
+        MemberSubjectBindingStore? memberBindings = null)
         : base(settingsService, PluginRuntime.DataDirectory)
     {
         _subjectsDataPath = Path.Combine(DataDirectory, SubjectsFileName);
         _keywordsDataPath = Path.Combine(DataDirectory, KeywordsFileName);
         _subjectsAssetPath = Path.Combine(AppContext.BaseDirectory, "Assets", SubjectsFileName);
         _keywordsAssetPath = Path.Combine(AppContext.BaseDirectory, "Assets", KeywordsFileName);
+        _memberBindings = memberBindings ?? new MemberSubjectBindingStore(DataDirectory);
 
         Rules = new ObservableCollection<SubjectRuleRow>(
             LoadCurrentRules().Select(SubjectRuleRow.FromRule));
         NoticeKeywordsText = LinesToText(LoadCurrentKeywords().NoticeKeywords);
         HomeworkKeywordsText = LinesToText(LoadCurrentKeywords().HomeworkKeywords);
+        Bindings = new ObservableCollection<MemberBindingRow>(
+            _memberBindings.GetAll().Select(b => MemberBindingRow.FromBinding(b, LoadSubjectOptions())));
         InitializeComponent();
+        // 组合框初始选中项按当前设置回填（需在 InitializeComponent 之后）
+        ModeBox.SelectedIndex = Settings.SubjectRecognition.Mode == SubjectRecognitionMode.Keyword ? 1 : 0;
     }
 
     /// <summary>学科规则编辑行集合（UI 绑定源）。</summary>
     public ObservableCollection<SubjectRuleRow> Rules { get; }
+
+    /// <summary>成员学科绑定编辑行集合（UI 绑定源，需求 2 管理入口）。</summary>
+    public ObservableCollection<MemberBindingRow> Bindings { get; }
 
     /// <summary>通知关键词 ↔ 多行文本（classification-keywords.json 编辑区）。</summary>
     public string NoticeKeywordsText { get; set; } = "";
@@ -97,7 +108,8 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
     protected override async Task SaveCoreAsync(Button? saveButton)
     {
         var rules = SubjectRulesEditorLogic.Normalize(Rules.Select(r => r.ToRule()));
-        var errors = SubjectRulesEditorLogic.Validate(rules);
+        var errors = new List<string>(SubjectRulesEditorLogic.Validate(rules));
+        errors.AddRange(ValidateBindings());
         if (errors.Count > 0)
         {
             ValidationMessage = string.Join("\n", errors);
@@ -111,6 +123,9 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
             var dto = new SubjectRulesDto { Rules = [.. rules] };
             SubjectRuleFile.WriteAtomic(_subjectsDataPath, JsonSerializer.Serialize(dto, JsonOptions));
 
+            // 成员学科绑定（需求 2）：与存储做差量同步（删掉的行 Remove、新增/修改的行 Set），即时持久化
+            SaveBindings();
+
             // 消息分类关键词：原子写 classification-keywords.json，并与设置值保持同步
             var noticeKeywords = TextToLines(NoticeKeywordsText);
             var homeworkKeywords = TextToLines(HomeworkKeywordsText);
@@ -121,12 +136,111 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
             ValidationMessage = "";
             // settings.json 保存并广播 SettingsChanged → SettingsChangeApplier →
             // KeywordMessageClassifier.ReloadRules + KeywordSubjectClassifier.ReloadRules（热生效）
+            // 学科识别模式（SubjectRecognition.Mode/SelectionWindowEnabled）随本次保存一并持久化并热生效
             await base.SaveCoreAsync(saveButton).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
             SaveButtonFeedback.ShowFailure(saveButton, ex.Message);
             ValidationMessage = $"保存失败：{ex.Message}";
+        }
+    }
+
+    // ============ 学科识别模式与成员绑定管理（需求 2/4） ============
+
+    private void OnModeChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (ModeBox.SelectedItem is ComboBoxItem { Tag: string tag }
+            && Enum.TryParse<SubjectRecognitionMode>(tag, out var mode))
+        {
+            Settings.SubjectRecognition.Mode = mode;
+        }
+    }
+
+    /// <summary>学科下拉选项（subjects.json 当前学科名列表；与归档目录一致）。</summary>
+    private IReadOnlyList<string> LoadSubjectOptions() =>
+        LoadCurrentRules().Select(r => r.Subject).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+
+    private void OnAddBindingClicked(object? sender, RoutedEventArgs e)
+    {
+        var row = new MemberBindingRow { SubjectOptions = LoadSubjectOptions() };
+        Bindings.Add(row);
+        BindingsList.ScrollIntoView(row);
+    }
+
+    private void OnDeleteBindingClicked(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: MemberBindingRow row })
+        {
+            Bindings.Remove(row);
+        }
+    }
+
+    /// <summary>绑定行防呆校验：成员 OpenID 必填、学科必选、同一（群, 成员）不可重复。空行（全空）忽略。</summary>
+    private List<string> ValidateBindings()
+    {
+        var errors = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in Bindings)
+        {
+            if (string.IsNullOrWhiteSpace(row.MemberOpenId)
+                && string.IsNullOrWhiteSpace(row.GroupOpenId)
+                && string.IsNullOrWhiteSpace(row.Subject))
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(row.MemberOpenId))
+            {
+                errors.Add("成员学科绑定：成员 OpenID 不能为空。");
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(row.Subject))
+            {
+                errors.Add($"成员学科绑定：{row.MemberOpenId} 未选择学科。");
+                continue;
+            }
+
+            if (!seen.Add($"{row.GroupOpenId?.Trim() ?? ""}\n{row.MemberOpenId.Trim()}"))
+            {
+                errors.Add($"成员学科绑定：成员 {row.MemberOpenId}（群 {row.GroupOpenId}）重复条目。");
+            }
+        }
+
+        return errors;
+    }
+
+    /// <summary>绑定编辑行 → 存储差量同步（先删后写，即时持久化；空行视为删除）。</summary>
+    private void SaveBindings()
+    {
+        if (_memberBindings is null)
+        {
+            return;
+        }
+
+        var valid = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var row in Bindings)
+        {
+            if (string.IsNullOrWhiteSpace(row.MemberOpenId) || string.IsNullOrWhiteSpace(row.Subject))
+            {
+                continue;
+            }
+
+            var group = row.GroupOpenId?.Trim() ?? "";
+            var key = $"{group}\n{row.MemberOpenId.Trim()}";
+            valid.Add(key);
+            _memberBindings.Set(row.MemberOpenId.Trim(), row.Subject.Trim(), group.Length == 0 ? null : group);
+        }
+
+        foreach (var existing in _memberBindings.GetAll())
+        {
+            var key = $"{existing.GroupOpenId}\n{existing.MemberOpenId}";
+            if (!valid.Contains(key))
+            {
+                _memberBindings.Remove(existing.MemberOpenId,
+                    existing.GroupOpenId.Length == 0 ? null : existing.GroupOpenId);
+            }
         }
     }
 
@@ -423,6 +537,62 @@ public partial class SubjectRulesEditorPage : ClassIngSettingsPageBase
                 .ToArray(),
             Priority = Priority
         };
+
+        private void RaisePropertyChanged(string name) =>
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+    }
+
+    /// <summary>
+    /// 成员学科绑定编辑行（需求 2 管理入口）：成员 OpenID / 群 OpenID（留空=全局）/ 学科下拉。
+    /// </summary>
+    public sealed class MemberBindingRow : INotifyPropertyChanged
+    {
+        private string _memberOpenId = "";
+        private string _groupOpenId = "";
+        private string _subject = "";
+
+        public IReadOnlyList<string> SubjectOptions { get; init; } = [];
+
+        public string MemberOpenId
+        {
+            get => _memberOpenId;
+            set
+            {
+                _memberOpenId = value;
+                RaisePropertyChanged(nameof(MemberOpenId));
+            }
+        }
+
+        public string GroupOpenId
+        {
+            get => _groupOpenId;
+            set
+            {
+                _groupOpenId = value;
+                RaisePropertyChanged(nameof(GroupOpenId));
+            }
+        }
+
+        public string Subject
+        {
+            get => _subject;
+            set
+            {
+                _subject = value;
+                RaisePropertyChanged(nameof(Subject));
+            }
+        }
+
+        public static MemberBindingRow FromBinding(MemberSubjectBinding binding, IReadOnlyList<string> subjectOptions) =>
+            new()
+            {
+                MemberOpenId = binding.MemberOpenId,
+                GroupOpenId = binding.GroupOpenId,
+                Subject = binding.Subject,
+                SubjectOptions = subjectOptions
+            };
 
         private void RaisePropertyChanged(string name) =>
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

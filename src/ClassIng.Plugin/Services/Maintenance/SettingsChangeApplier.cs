@@ -1,4 +1,5 @@
 using ClassIng.Plugin.Services.Classification;
+using ClassIng.Plugin.Services.Overlays;
 using ClassIng.Plugin.Services.SubjectChain;
 using ClassIng.Shared.Abstractions;
 using Microsoft.Extensions.Hosting;
@@ -82,7 +83,7 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
     {
         _logger.LogInformation(
             "设置变更，开始热生效：LogLevel={LogLevel}，AiEnabled={AiEnabled}",
-            settings.Maintenance.LogLevel, settings.Classification.AiEnabled);
+            settings.Maintenance.LogLevel, settings.Ai.AiEnabled);
 
         // ① 关键词分类器：词表重载
         try
@@ -120,6 +121,9 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
             // 第三悬浮窗（学科文件）与学科圆圈启动器共用同一套 Apply/Show/Hide 路径
             await ApplyOverlayAsync("files", settings.Overlays.Files);
             await ApplyOverlayAsync("circle", settings.Overlays.Circle);
+            // 第五悬浮窗（未绑定学科选择，需求 3）：与其他窗同构；默认 Visible=false 不随宿主显示，
+            // 仅在管道触发（成员未绑定）时显示
+            await ApplyOverlayAsync(SuspensionWindowController.SubjectSelectionKey, settings.Overlays.Selection);
         }
         catch (Exception ex)
         {

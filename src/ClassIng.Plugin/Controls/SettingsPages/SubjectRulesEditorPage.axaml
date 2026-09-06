@@ -63,6 +63,47 @@
                 </StackPanel>
             </Expander>
 
+            <!-- 学科识别模式（需求 4） -->
+            <Expander Header="学科识别模式（成员绑定优先 / 纯关键词）" IsExpanded="True">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="成员绑定优先（默认）：优先按成员 OpenID 的显式学科绑定归类；未绑定时照常走关键词识别链；链仍无结果且未绑定时弹出「未绑定学科选择悬浮窗」点选补绑定。纯关键词：完全不读取成员绑定、不触发选择悬浮窗，行为与历史版本完全一致（人工修正 &gt; 识别链 &gt; 发送者映射的优先级不变）。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ComboBox x:Name="ModeBox" SelectionChanged="OnModeChanged">
+                        <ComboBoxItem Content="成员绑定优先（默认）" Tag="MemberSelection"/>
+                        <ComboBoxItem Content="纯关键词（现状）" Tag="Keyword"/>
+                    </ComboBox>
+                    <ToggleSwitch Content="未绑定学科选择悬浮窗（发送者未绑定时弹出点选）"
+                                  IsChecked="{Binding Settings.SubjectRecognition.SelectionWindowEnabled}"/>
+                </StackPanel>
+            </Expander>
+
+            <!-- 成员学科绑定管理（需求 2） -->
+            <Expander Header="成员学科绑定（member-subject-bindings.json）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="以群成员 OpenID 为单位显式绑定学科（群 OpenID 留空 = 全局生效，跨群有效）。保存后立即写入并热生效；此后该成员的作业/文件在「成员绑定优先」模式下按绑定学科归档。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ListBox x:Name="BindingsList" ItemsSource="{Binding Bindings}" MinHeight="80" MaxHeight="320">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="*,120,110,Auto" Margin="0,2">
+                                    <TextBox Grid.Column="0" Text="{Binding MemberOpenId}" Watermark="成员 OpenID"/>
+                                    <TextBox Grid.Column="1" Text="{Binding GroupOpenId}" Watermark="群（留空=全局）"
+                                             Margin="8,0"/>
+                                    <ComboBox Grid.Column="2" ItemsSource="{Binding SubjectOptions}"
+                                              SelectedItem="{Binding Subject}" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="3" Content="✕" Click="OnDeleteBindingClicked"
+                                            VerticalAlignment="Center" Margin="8,0,0,0"
+                                            ToolTip.Tip="删除该绑定"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="＋ 添加绑定" Click="OnAddBindingClicked"/>
+                    </StackPanel>
+                </StackPanel>
+            </Expander>
+
             <TextBlock Text="{Binding ValidationMessage}" Foreground="Firebrick" TextWrapping="Wrap"/>
             <TextBlock Text="{Binding TransferFeedback}" TextWrapping="Wrap" Opacity="0.85"/>
 
