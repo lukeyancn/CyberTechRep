@@ -46,7 +46,9 @@ public class ClassIngPlugin : PluginBase
             SecretUnprotector = Utils.SecretProtector.Unprotect,
             DataDirectory = dataDir
         });
-        services.AddSingleton<MessageIngestService>();
+        services.AddSingleton(sp => new MessageIngestService(
+            sp.GetRequiredService<IngestOptionsProvider>(),
+            sp.GetService<ILogger<MessageIngestService>>()));
         services.AddSingleton<IMessageIngestService>(sp => sp.GetRequiredService<MessageIngestService>());
 
         // 模块 2：通知/作业关键词分类器（词表外置 JSON，ReloadRules 热生效）
@@ -119,7 +121,26 @@ public class ClassIngPlugin : PluginBase
 
         // ---- 模块 6：悬浮窗（Avalonia 无边框置顶窗 + 共享控制器）----
         // 设置单一来源：ISettingsService.Current.Overlays（settings.json）；
-        // 首启检测到旧 overlays.json 时由控制器导入后归档（集成收口：双源合一）
+        // 首启检测到旧 overlays.json 时由控制器导入后归档（集成收口：双源合一）。
+        // 第三悬浮窗（学科文件）与学科圆圈启动器复用同一 ApplyToWindow/钉底器路径。
+        // 学科文件悬浮窗注册为显式单例：控制器窗口工厂与 SubjectFilesController 共享同实例，
+        // 圆圈 toggle/切换才能原地改内容（不闪关）。
+        services.AddSingleton(sp => new SubjectFilesSuspensionWindow(
+            sp.GetRequiredService<IFilePipelineService>(),
+            () => settingsService.Current.Overlays.SubjectCircle,
+            relative => ResolveArchivePath(settingsService.Current.Files, dataDir, relative),
+            sp.GetService<ILogger<SubjectFilesSuspensionWindow>>()));
+        services.AddSingleton(sp => new SubjectFilesController(
+            sp.GetRequiredService<ISuspensionWindowController>(),
+            sp.GetRequiredService<ISettingsService>(),
+            () => sp.GetRequiredService<SubjectFilesSuspensionWindow>(),
+            sp.GetService<ILogger<SubjectFilesController>>()));
+        services.AddSingleton(sp => new SubjectCircleBarWindow(
+            sp.GetRequiredService<SubjectFilesController>(),
+            sp.GetRequiredService<IFilePipelineService>(),
+            () => settingsService.Current.Overlays.SubjectCircle,
+            sp.GetService<ILogger<SubjectCircleBarWindow>>(),
+            settingsService));
         services.AddSingleton(sp =>
             new SuspensionWindowController(
                 dataDir,
@@ -130,6 +151,8 @@ public class ClassIngPlugin : PluginBase
                         sp.GetRequiredService<INoticeStore>()),
                     SuspensionWindowController.HomeworkKey => new HomeworkSuspensionWindow(
                         sp.GetRequiredService<IHomeworkStore>()),
+                    SuspensionWindowController.FilesKey => sp.GetRequiredService<SubjectFilesSuspensionWindow>(),
+                    SuspensionWindowController.CircleKey => (Window?)sp.GetRequiredService<SubjectCircleBarWindow>(),
                     _ => (Window?)null
                 },
                 sp.GetRequiredService<ISettingsService>()));
@@ -145,12 +168,16 @@ public class ClassIngPlugin : PluginBase
             GetSettings = () => settingsService.Current.Maintenance,
             DataDirectory = dataDir
         });
-        services.AddSingleton<Services.Maintenance.RetryQueueService>();
+        services.AddSingleton(sp => new Services.Maintenance.RetryQueueService(
+            sp.GetRequiredService<Services.Maintenance.RetryQueueOptions>(),
+            sp.GetService<ILogger<Services.Maintenance.RetryQueueService>>()));
         services.AddSingleton<IRetryQueueService>(sp => sp.GetRequiredService<Services.Maintenance.RetryQueueService>());
 
         // ---- 模块 8：更新检测（GitHub Releases；默认占位仓库，只发事件 + 记日志）----
         services.AddSingleton(_ => new Services.Maintenance.UpdateNotifyOptions());
-        services.AddSingleton<Services.Maintenance.UpdateNotifyService>();
+        services.AddSingleton(sp => new Services.Maintenance.UpdateNotifyService(
+            sp.GetRequiredService<Services.Maintenance.UpdateNotifyOptions>(),
+            sp.GetService<ILogger<Services.Maintenance.UpdateNotifyService>>()));
         services.AddSingleton<IUpdateNotifyService>(sp => sp.GetRequiredService<Services.Maintenance.UpdateNotifyService>());
 
         // ---- 模块 8：环境探测（磁盘空间 / 协议端离线时长，告警事件）----
@@ -200,5 +227,34 @@ public class ClassIngPlugin : PluginBase
         // 并负责拉起 IMessageIngestService（此前无宿主启动点）。
         // 全流程 try/catch + 结构化日志，失败按类型进重试队列，任何一环失败不崩溃。
         services.AddHostedService<Services.Pipeline.MessageDispatchService>();
+
+        // ---- 模块 10：上课自动弹出对应学科文件悬浮窗联动 ----
+        // IHostedService：StartAsync（宿主容器构建完成后）才解析宿主 ILessonsService；
+        // 解析失败只记日志跳过，不影响宿主启动。弹出/收起经 SubjectFilesController 的
+        // 联动来源标记执行，只收联动窗不误关手动窗。
+        services.AddHostedService<Services.Overlays.ClassAutoOpenService>();
+    }
+
+    /// <summary>
+    /// 归档相对路径 → 绝对路径（下载根目录 = FileSettings.DownloadRoot，相对路径时基于插件数据目录；
+    /// 与文件管道 GetDownloadRoot 的解析规则一致）。路径异常时返回 null（调用方兜底）。
+    /// </summary>
+    private static string? ResolveArchivePath(FileSettings files, string dataDirectory, string relativePath)
+    {
+        try
+        {
+            var configured = files.DownloadRoot;
+            if (string.IsNullOrWhiteSpace(configured))
+            {
+                configured = "下载文件";
+            }
+
+            var root = Path.IsPathRooted(configured) ? configured : Path.Combine(dataDirectory, configured);
+            return Path.GetFullPath(Path.Combine(root, relativePath));
+        }
+        catch
+        {
+            return null;
+        }
     }
 }
