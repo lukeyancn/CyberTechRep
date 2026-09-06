@@ -86,6 +86,9 @@ public sealed class HomeworkItem
 
     public required string MessageId { get; init; }
 
+    /// <summary>发送者成员 OpenID（协议端透传；用于「按发送者记住学科」的永久规则）。</summary>
+    public string MemberOpenId { get; init; } = "";
+
     /// <summary>识别出的学科（可为「未分类」，经修正后更新）。</summary>
     public string Subject { get; set; } = "未分类";
 

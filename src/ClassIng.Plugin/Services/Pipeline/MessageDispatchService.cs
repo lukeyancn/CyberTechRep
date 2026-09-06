@@ -231,7 +231,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 break;
 
             case MessageKind.Homework:
-                await ProcessHomeworkAsync(message.MessageId, text, attachmentIds, ct).ConfigureAwait(false);
+                await ProcessHomeworkAsync(message.MessageId, message.MemberOpenId, text, attachmentIds, ct)
+                    .ConfigureAwait(false);
                 break;
 
             default:
@@ -244,7 +245,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
 
     /// <summary>作业：学科链识别 → HomeworkStore 写入 → 文件二次归档到学科目录。</summary>
     private async Task ProcessHomeworkAsync(
-        string messageId, string text, IReadOnlyList<Guid> attachmentIds, CancellationToken ct)
+        string messageId, string memberOpenId, string text, IReadOnlyList<Guid> attachmentIds, CancellationToken ct)
     {
         SubjectResult subject;
         try
@@ -260,7 +261,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             _logger.LogError(ex, "学科识别链失败（MessageId={MessageId}），投递 SubjectClassify 重试", messageId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.SubjectClassify,
-                BuildSubjectClassifyPayload(messageId, text),
+                BuildSubjectClassifyPayload(messageId, text, memberOpenId),
                 messageId).ConfigureAwait(false);
             return;
         }
@@ -270,6 +271,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             var item = new HomeworkItem
             {
                 MessageId = messageId,
+                MemberOpenId = memberOpenId,
                 Content = text,
                 Subject = subject.Subject,
                 SubjectConfidence = subject.Confidence,
@@ -291,7 +293,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             _logger.LogError(ex, "作业写入存储失败（MessageId={MessageId}），投递 StoreWrite 重试", messageId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
-                new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject),
+                new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject, memberOpenId),
                 messageId).ConfigureAwait(false);
         }
 
@@ -551,6 +553,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             var item = new HomeworkItem
             {
                 MessageId = payload.MessageId ?? "",
+                MemberOpenId = payload.MemberOpenId ?? "",
                 Content = payload.Text ?? "",
                 Subject = result.Subject,
                 SubjectConfidence = result.Confidence,
@@ -607,6 +610,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                     await _homeworkStore.UpsertAsync(new HomeworkItem
                     {
                         MessageId = payload.MessageId,
+                        MemberOpenId = payload.MemberOpenId ?? "",
                         Content = payload.Content ?? "",
                         Subject = result.Subject,
                         SubjectConfidence = result.Confidence,
@@ -746,15 +750,16 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
 
     internal sealed record FileDownloadPayload(string MessageId, string FileName, string Url);
 
-    internal sealed record SubjectClassifyPayload(string MessageId, string Text);
+    internal sealed record SubjectClassifyPayload(string MessageId, string Text, string? MemberOpenId = null);
 
-    internal sealed record StoreWritePayload(StoreWriteKind Kind, string MessageId, string? Content, string? Subject);
+    internal sealed record StoreWritePayload(
+        StoreWriteKind Kind, string MessageId, string? Content, string? Subject, string? MemberOpenId = null);
 
     internal static string BuildFileDownloadPayload(string messageId, string fileName, string url) =>
         JsonSerializer.Serialize(new FileDownloadPayload(messageId, fileName, url), PayloadJsonOptions);
 
-    internal static string BuildSubjectClassifyPayload(string messageId, string text) =>
-        JsonSerializer.Serialize(new SubjectClassifyPayload(messageId, text), PayloadJsonOptions);
+    internal static string BuildSubjectClassifyPayload(string messageId, string text, string memberOpenId = "") =>
+        JsonSerializer.Serialize(new SubjectClassifyPayload(messageId, text, memberOpenId), PayloadJsonOptions);
 
     /// <summary>重试载荷序列化选项（internal 供单元测试复用）。</summary>
     internal static JsonSerializerOptions PayloadSerializerOptions => PayloadJsonOptions;
