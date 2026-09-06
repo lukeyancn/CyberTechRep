@@ -348,13 +348,17 @@ public sealed class QQOfficialWsClient : IAsyncDisposable
         _logger?.LogInformation("请求 AccessToken：{Url}（AppId={AppId}）", url, _options.AppId);
 
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
-        req.Content = new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["appId"] = _options.AppId,
-            ["clientSecret"] = _options.AppSecretPlain
-        });
+        // QQ 官方接口要求 JSON 请求体；用表单格式会返回误导性的 {"code":100007,"message":"appid invalid"}
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(new { appId = _options.AppId, clientSecret = _options.AppSecretPlain }),
+            Encoding.UTF8,
+            "application/json");
 
-        using var resp = await invoker.SendAsync(req, ct).ConfigureAwait(false);
+        // 无整体超时（HttpMessageInvoker 不带默认超时），防止代理黑洞时启动循环永久挂起
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(15));
+
+        using var resp = await invoker.SendAsync(req, timeoutCts.Token).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
@@ -392,7 +396,10 @@ public sealed class QQOfficialWsClient : IAsyncDisposable
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("QQBot", token);
 
-        using var resp = await invoker.SendAsync(req, ct).ConfigureAwait(false);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(15));
+
+        using var resp = await invoker.SendAsync(req, timeoutCts.Token).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
