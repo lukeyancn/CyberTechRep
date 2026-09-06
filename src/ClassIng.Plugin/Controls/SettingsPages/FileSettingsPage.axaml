@@ -15,7 +15,7 @@
                        TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,6"/>
 
             <!-- 下载与归档 -->
-            <Expander Header="下载与归档" IsExpanded="True">
+            <Expander Header="下载与归档" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="下载根目录（相对插件数据目录或绝对路径）" FontWeight="SemiBold"/>
                     <TextBox Text="{Binding Settings.Files.DownloadRoot}"/>
@@ -27,7 +27,7 @@
             </Expander>
 
             <!-- 磁盘占用与清理 -->
-            <Expander Header="磁盘占用与清理" IsExpanded="True">
+            <Expander Header="磁盘占用与清理" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="磁盘占用上限（MB，0 = 不限）"/>
                     <NumericUpDown Value="{Binding Settings.Files.MaxDiskUsageMb}" Minimum="0" Maximum="10485760"
@@ -57,7 +57,7 @@
             </Expander>
 
             <!-- 数据保留（通知/作业存储的保留期，语义上与归档清理同组） -->
-            <Expander Header="数据保留与清理" IsExpanded="True">
+            <Expander Header="数据保留与清理" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="通知与作业按创建日期分桶存储，超过保留期后由清理任务在启动时或跨天时移除；已读通知仅保留当天，未读通知不受保留期限制。"
                                TextWrapping="Wrap" Opacity="0.75"/>

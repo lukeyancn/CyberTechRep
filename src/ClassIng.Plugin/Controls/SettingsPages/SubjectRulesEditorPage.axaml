@@ -15,7 +15,7 @@
                        TextWrapping="Wrap" Opacity="0.75"/>
 
             <!-- 学科关键词规则（subjects.json） -->
-            <Expander Header="学科关键词规则（subjects.json）" IsExpanded="True">
+            <Expander Header="学科关键词规则（subjects.json）" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="学科名同时用作归档目录名，不能包含斜杠、冒号、问号等非法字符。关键词一行一个，任一关键词命中即计分；一条消息命中多个学科时，先比命中关键词数，再比优先级（数值大者优先）。"
                                TextWrapping="Wrap" Opacity="0.75"/>
@@ -64,7 +64,7 @@
             </Expander>
 
             <!-- 学科识别模式（需求 4） -->
-            <Expander Header="学科识别模式（成员绑定优先 / 纯关键词）" IsExpanded="True">
+            <Expander Header="学科识别模式（成员绑定优先 / 纯关键词）" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="成员绑定优先（默认）：优先按成员 OpenID 的显式学科绑定归类；未绑定时照常走关键词识别链；链仍无结果且未绑定时弹出「未绑定学科选择悬浮窗」点选补绑定。纯关键词：完全不读取成员绑定、不触发选择悬浮窗，行为与历史版本完全一致（人工修正 &gt; 识别链 &gt; 发送者映射的优先级不变）。"
                                TextWrapping="Wrap" Opacity="0.75"/>

@@ -37,7 +37,7 @@
             </Expander>
 
             <!-- 排错面板 -->
-            <Expander Header="排错面板（连接状态 / 最近消息 / 重试队列）" IsExpanded="True">
+            <Expander Header="排错面板（连接状态 / 最近消息 / 重试队列）" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="{Binding DiagnosticsSummaryText}" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">

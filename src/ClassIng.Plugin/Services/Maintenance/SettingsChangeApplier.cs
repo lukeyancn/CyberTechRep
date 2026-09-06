@@ -70,6 +70,18 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        // 宿主停止：先于宿主 DesktopLifetime.Shutdown() 批量关闭窗口（ClassIsland App.Stop 顺序），
+        // 通知控制器抑制退出期间的可见性持久化——否则每次正常退出都会把全部悬浮窗 Visible=false
+        // 写回 settings.json，重启后所有悬浮窗默认全关。
+        try
+        {
+            _windowController?.NotifyHostStopping();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "通知悬浮窗控制器宿主停止失败（不影响宿主停止）");
+        }
+
         if (_handler is not null)
         {
             _settingsService.SettingsChanged -= _handler;

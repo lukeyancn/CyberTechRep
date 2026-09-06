@@ -64,6 +64,15 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     private System.Threading.Timer? _geometrySaveTimer;
 
     /// <summary>
+    /// 宿主退出抑制（<see cref="NotifyHostStopping"/>）：置位后窗口因宿主退出被批量关闭
+    /// 触发的可见性同步不再把 Visible=false 持久化。否则每次正常退出（宿主 DesktopLifetime.Shutdown
+    /// 会关闭所有窗口 → IsVisible=false → 同步回写）都会把全部悬浮窗的关闭态写进 settings.json，
+    /// 重启后所有悬浮窗默认全关（用户实测缺陷：出厂默认明明是显示，重启一次就全灭）。
+    /// 用户主动 ×（直接 Hide）与设置页隐藏发生在置位前，持久化语义不受影响。
+    /// </summary>
+    private volatile bool _suppressVisiblePersist;
+
+    /// <summary>
     /// <paramref name="settingsService"/> 提供时以其为设置单一来源（推荐）；
     /// 为 null 时保持旧行为：独立 overlays.json 读写（旧测试/独立场景兼容）。
     /// </summary>
@@ -201,6 +210,9 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         // 窗口未创建（无平台信息）：按持久化设置判定；无屏幕信息时视为在屏
         return OverlayGeometry.IsOnScreen(settings.X, settings.Y, settings.Width, settings.Height, []);
     }
+
+    /// <inheritdoc />
+    public void NotifyHostStopping() => _suppressVisiblePersist = true;
 
     private Task ApplySettingsCoreAsync(string overlayKey, OverlayWindowSettings settings, bool persist)
     {
@@ -444,6 +456,12 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// <summary>把窗口实际可见性同步回设置 Visible 并持久化（仅真实变化时写盘，防广播回环）。</summary>
     private void SyncVisible(string overlayKey, bool visible)
     {
+        if (_suppressVisiblePersist)
+        {
+            // 宿主退出中的批量窗口关闭不是用户意图，不回写（见 _suppressVisiblePersist 注释）
+            return;
+        }
+
         lock (_lock)
         {
             var settings = GetWindowSettings(overlayKey);

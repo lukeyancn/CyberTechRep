@@ -237,6 +237,14 @@ public interface ISuspensionWindowController
 
     /// <summary>窗口是否在任一显示器可视范围内（排错面板自检）。</summary>
     bool IsOnScreen(string overlayKey);
+
+    /// <summary>
+    /// 宿主停止通知（SettingsChangeApplier 在 IHostedService.StopAsync 调用，早于宿主关闭所有窗口）：
+    /// 通知控制器进入「退出抑制」——此后窗口因宿主退出被批量关闭触发的可见性同步
+    /// 不再把 Visible=false 持久化，否则每次正常退出都会把全部悬浮窗的关闭态写回
+    /// settings.json，导致重启后所有悬浮窗默认全关。用户主动 ×/设置页隐藏仍正常持久化。
+    /// </summary>
+    void NotifyHostStopping();
 }
 
 // ============ 模块 8：更新与排错 ============

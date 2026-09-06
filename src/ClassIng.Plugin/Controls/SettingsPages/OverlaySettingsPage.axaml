@@ -18,7 +18,7 @@
                           IsChecked="{Binding Settings.Overlays.LaunchWithHost}"/>
 
             <!-- 通知悬浮窗 -->
-            <Expander Header="通知悬浮窗" IsExpanded="True">
+            <Expander Header="通知悬浮窗" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="X（逻辑坐标 DIP）"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Notice.X}" Minimum="-10000" Maximum="10000"/>
@@ -45,7 +45,7 @@
             </Expander>
 
             <!-- 作业悬浮窗 -->
-            <Expander Header="作业悬浮窗" IsExpanded="True">
+            <Expander Header="作业悬浮窗" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="X（逻辑坐标 DIP）"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Homework.X}" Minimum="-10000" Maximum="10000"/>
@@ -100,7 +100,7 @@
             </Expander>
 
             <!-- 学科圆圈启动器 -->
-            <Expander Header="学科圆圈启动器（点击圆圈打开/切换学科文件悬浮窗）" IsExpanded="True">
+            <Expander Header="学科圆圈启动器（点击圆圈打开/切换学科文件悬浮窗）" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="X（逻辑坐标 DIP）"/>
                     <NumericUpDown Value="{Binding Settings.Overlays.Circle.X}" Minimum="-10000" Maximum="10000"/>

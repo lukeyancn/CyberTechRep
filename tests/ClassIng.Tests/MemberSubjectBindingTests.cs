@@ -795,6 +795,10 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
             Task.CompletedTask;
 
         public bool IsOnScreen(string overlayKey) => true;
+
+        public void NotifyHostStopping()
+        {
+        }
     }
 
     /// <summary>带 SetSubjectAsync 的最小作业存储替身（复用 SubjectRecognitionRoutingTests 的 FakeHomeworkStore 不可见，此处独立实现）。</summary>
