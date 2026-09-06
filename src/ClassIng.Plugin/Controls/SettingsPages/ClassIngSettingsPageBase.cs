@@ -54,21 +54,25 @@ public abstract class ClassIngSettingsPageBase : SettingsPageBase, INotifyProper
     protected void RaisePropertyChanged(string name)
         => _clrPropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
-    /// <summary>立即保存并广播热生效（显式「保存并应用」按钮 / 页面离开自动保存）。</summary>
-    protected void SaveNow()
-    {
-        _ = SaveCoreAsync();
-    }
+    /// <summary>立即保存并广播热生效（显式「保存并应用」按钮，sender 为按钮以展示成功/失败反馈）。</summary>
+    protected void SaveNow(object? sender) => _ = SaveCoreAsync(sender as Button);
 
-    private async Task SaveCoreAsync()
+    /// <summary>立即保存并广播热生效（页面关闭自动保存等无按钮场景，无 UI 反馈）。</summary>
+    protected void SaveNow() => _ = SaveCoreAsync(null);
+
+    /// <summary>保存核心流程：默认写 settings.json 并广播；展示成功对勾/失败提示反馈。
+    /// 需要前置校验或落盘其他文件的页面（如词表编辑页）可重写并在此前后插入逻辑。</summary>
+    protected virtual async Task SaveCoreAsync(Button? saveButton)
     {
         try
         {
             await SettingsService.SaveAsync().ConfigureAwait(true);
+            SaveButtonFeedback.ShowSuccess(saveButton);
         }
         catch (Exception ex)
         {
-            // 保存失败：服务内部已记日志，UI 不阻塞
+            // 保存失败：给用户明确失败反馈，不假装成功；服务内部已记日志
+            SaveButtonFeedback.ShowFailure(saveButton, ex.Message);
             System.Diagnostics.Debug.WriteLine($"保存设置失败：{ex.Message}");
         }
     }

@@ -116,7 +116,7 @@ public partial class MaintenanceSettingsPage : ClassIngSettingsPageBase
 
     // ============ 事件处理 ============
 
-    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow();
+    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 
     private async void OnRefreshDiagnosticsClicked(object? sender, RoutedEventArgs e)
     {

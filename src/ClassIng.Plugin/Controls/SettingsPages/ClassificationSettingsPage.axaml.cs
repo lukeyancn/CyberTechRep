@@ -43,7 +43,7 @@ public partial class ClassificationSettingsPage : ClassIngSettingsPageBase
     /// <summary>置信度阈值显示。</summary>
     public string ConfidenceThresholdText => $"当前阈值：{Settings.Classification.ConfidenceThreshold:0.00}";
 
-    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow();
+    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 
     private void OnOpenSubjectRulesClicked(object? sender, RoutedEventArgs e)
     {

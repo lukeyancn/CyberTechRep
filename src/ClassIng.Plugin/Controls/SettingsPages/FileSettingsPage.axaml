@@ -5,44 +5,70 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:local="clr-namespace:ClassIng.Plugin.Controls.SettingsPages"
-    mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="800">
+    mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="900">
 
     <ScrollViewer>
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
-            <TextBlock Text="文件设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+            <TextBlock Text="文件设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
+            <TextBlock Text="下载文件的存放、归档与清理策略；排版与「分类设置」页保持一致。"
+                       TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,6"/>
 
-            <TextBlock Text="下载根目录（相对插件数据目录或绝对路径）" FontWeight="SemiBold"/>
-            <TextBox Text="{Binding Settings.Files.DownloadRoot}"/>
+            <!-- 下载与归档 -->
+            <Expander Header="下载与归档" IsExpanded="True">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="下载根目录（相对插件数据目录或绝对路径）" FontWeight="SemiBold"/>
+                    <TextBox Text="{Binding Settings.Files.DownloadRoot}"/>
+                    <ToggleSwitch Content="按学科分组归档（下载文件按 学科/日期/文件名 目录结构存放）"
+                                  IsChecked="{Binding Settings.Files.GroupBySubject}"/>
+                    <ToggleSwitch Content="MD5 内容去重（重复文件不落盘，保留原记录）"
+                                  IsChecked="{Binding Settings.Files.Md5DedupEnabled}"/>
+                </StackPanel>
+            </Expander>
 
-            <ToggleSwitch Content="按学科建目录归档（学科/日期/文件名）"
-                          IsChecked="{Binding Settings.Files.GroupBySubject}"/>
-            <ToggleSwitch Content="MD5 内容去重（重复文件不落盘，保留原记录）"
-                          IsChecked="{Binding Settings.Files.Md5DedupEnabled}"/>
+            <!-- 磁盘占用与清理 -->
+            <Expander Header="磁盘占用与清理" IsExpanded="True">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="磁盘占用上限（MB，0 = 不限）"/>
+                    <NumericUpDown Value="{Binding Settings.Files.MaxDiskUsageMb}" Minimum="0" Maximum="10485760"
+                                   Increment="128"/>
+                    <TextBlock Text="磁盘上限清理策略"/>
+                    <ComboBox SelectedIndex="{Binding Settings.Files.CleanupPolicy}" MinWidth="260">
+                        <ComboBoxItem Content="达到上限后停止接收新文件并告警"/>
+                        <ComboBoxItem Content="达到上限后自动清理最旧文件"/>
+                    </ComboBox>
+                </StackPanel>
+            </Expander>
 
-            <TextBlock Text="磁盘占用上限（MB，0 = 不限）"/>
-            <NumericUpDown Value="{Binding Settings.Files.MaxDiskUsageMb}" Minimum="0" Maximum="10485760"
-                           Increment="128"/>
+            <!-- 下载限制 -->
+            <Expander Header="下载限制" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="并发下载数（同时下载的文件数）"/>
+                    <NumericUpDown Value="{Binding Settings.Files.DownloadConcurrency}" Minimum="1" Maximum="16"/>
+                    <TextBlock Text="下载限速（KB/s，0 = 不限）"/>
+                    <NumericUpDown Value="{Binding Settings.Files.SpeedLimitKbps}" Minimum="0" Maximum="1048576"
+                                   Increment="64"/>
+                    <TextBlock Text="单文件大小上限（MB），超出拒绝接收并告警"/>
+                    <NumericUpDown Value="{Binding Settings.Files.MaxFileSizeMb}" Minimum="1" Maximum="65536"
+                                   Increment="16"/>
+                    <TextBlock Text="文件名最大长度（字符，超出拒绝接收并告警）"/>
+                    <NumericUpDown Value="{Binding Settings.Files.MaxFileNameLength}" Minimum="16" Maximum="512"/>
+                </StackPanel>
+            </Expander>
 
-            <TextBlock Text="磁盘上限清理策略"/>
-            <ComboBox SelectedIndex="{Binding Settings.Files.CleanupPolicy}" MinWidth="260">
-                <ComboBoxItem Content="达到上限后停止接收新文件并告警"/>
-                <ComboBoxItem Content="达到上限后自动清理最旧文件"/>
-            </ComboBox>
-
-            <TextBlock Text="并发下载数"/>
-            <NumericUpDown Value="{Binding Settings.Files.DownloadConcurrency}" Minimum="1" Maximum="16"/>
-
-            <TextBlock Text="限速（KB/s，0 = 不限）"/>
-            <NumericUpDown Value="{Binding Settings.Files.SpeedLimitKbps}" Minimum="0" Maximum="1048576"
-                           Increment="64"/>
-
-            <TextBlock Text="单文件大小上限（MB），超出拒绝并告警"/>
-            <NumericUpDown Value="{Binding Settings.Files.MaxFileSizeMb}" Minimum="1" Maximum="65536"
-                           Increment="16"/>
-
-            <TextBlock Text="文件名最大长度（字符）"/>
-            <NumericUpDown Value="{Binding Settings.Files.MaxFileNameLength}" Minimum="16" Maximum="512"/>
+            <!-- 数据保留（通知/作业存储的保留期，语义上与归档清理同组） -->
+            <Expander Header="数据保留与清理" IsExpanded="True">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="通知与作业按创建日期分桶存储，超过保留期后由清理任务在启动时或跨天时移除；已读通知仅保留当天，未读通知不受保留期限制。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <TextBlock Text="通知保留天数（0 = 永久保留）"/>
+                    <NumericUpDown Value="{Binding Settings.Maintenance.NoticesRetentionDays}" Minimum="0"
+                                   Maximum="3650"/>
+                    <TextBlock Text="作业保留天数（0 = 永久保留；大于 0 时保留最近 N 天，含当天）"/>
+                    <NumericUpDown Value="{Binding Settings.Maintenance.HomeworkRetentionDays}" Minimum="0"
+                                   Maximum="3650"/>
+                </StackPanel>
+            </Expander>
 
             <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
                     Margin="0,10,0,0"/>

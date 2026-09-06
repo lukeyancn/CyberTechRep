@@ -18,5 +18,5 @@ public partial class FileSettingsPage : ClassIngSettingsPageBase
         InitializeComponent();
     }
 
-    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow();
+    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 }

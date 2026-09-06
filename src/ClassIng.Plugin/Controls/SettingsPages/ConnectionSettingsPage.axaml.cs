@@ -32,5 +32,5 @@ public partial class ConnectionSettingsPage : ClassIngSettingsPageBase
         set => Settings.Connection.GroupWhitelist = TextToLines(value);
     }
 
-    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow();
+    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 }
