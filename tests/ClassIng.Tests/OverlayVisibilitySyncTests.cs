@@ -163,13 +163,20 @@ public sealed class OverlayListFilterTests
         IsRead = isRead
     };
 
+    /// <summary>按测试机器本地时区构造「本地墙上时间」时间戳，保证断言在任意时区（含 CI 的 UTC）成立。</summary>
+    private static DateTimeOffset LocalTime(int year, int month, int day, int hour, int minute = 0)
+    {
+        var naive = new DateTime(year, month, day, hour, minute, 0);
+        return new DateTimeOffset(naive, TimeZoneInfo.Local.GetUtcOffset(naive));
+    }
+
     [Fact]
     public void SelectReadToday_KeepsOnlyTodaysRead()
     {
         var today = new DateOnly(2026, 9, 6);
-        var todayRead = Item("t1", new DateTimeOffset(2026, 9, 6, 8, 0, 0, TimeSpan.FromHours(8)), isRead: true);
-        var todayUnread = Item("t2", new DateTimeOffset(2026, 9, 6, 9, 0, 0, TimeSpan.FromHours(8)), isRead: false);
-        var yesterdayRead = Item("y1", new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(8)), isRead: true);
+        var todayRead = Item("t1", LocalTime(2026, 9, 6, 8), isRead: true);
+        var todayUnread = Item("t2", LocalTime(2026, 9, 6, 9), isRead: false);
+        var yesterdayRead = Item("y1", LocalTime(2026, 9, 5, 20), isRead: true);
 
         var result = NoticeViewFilter.SelectReadToday([todayUnread, yesterdayRead, todayRead], today);
 
@@ -180,7 +187,7 @@ public sealed class OverlayListFilterTests
     public void SelectReadToday_EmptyWhenNothingReadToday()
     {
         var today = new DateOnly(2026, 9, 6);
-        var yesterdayRead = Item("y1", new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(8)), isRead: true);
+        var yesterdayRead = Item("y1", LocalTime(2026, 9, 5, 20), isRead: true);
 
         Assert.Empty(NoticeViewFilter.SelectReadToday([yesterdayRead], today));
     }
@@ -188,7 +195,7 @@ public sealed class OverlayListFilterTests
     [Fact]
     public void FormatTime_ReadViewShowsClockOnly_UnreadShowsDateAndClock()
     {
-        var item = Item("t1", new DateTimeOffset(2026, 9, 6, 8, 5, 0, TimeSpan.FromHours(8)), isRead: true);
+        var item = Item("t1", LocalTime(2026, 9, 6, 8, 5), isRead: true);
 
         Assert.Equal("08:05", NoticeViewFilter.FormatTime(item, NoticeListViewMode.Read));
         Assert.Equal("09-06 08:05", NoticeViewFilter.FormatTime(item, NoticeListViewMode.Unread));
@@ -205,9 +212,9 @@ public sealed class OverlayListFilterTests
             CreatedAt = createdAt
         };
 
-        var todayMorning = Homework("t1", new DateTimeOffset(2026, 9, 6, 7, 30, 0, TimeSpan.FromHours(8)));
-        var todayEvening = Homework("t2", new DateTimeOffset(2026, 9, 6, 21, 0, 0, TimeSpan.FromHours(8)));
-        var yesterday = Homework("y1", new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.FromHours(8)));
+        var todayMorning = Homework("t1", LocalTime(2026, 9, 6, 7, 30));
+        var todayEvening = Homework("t2", LocalTime(2026, 9, 6, 21));
+        var yesterday = Homework("y1", LocalTime(2026, 9, 5, 12));
 
         var result = HomeworkSuspensionWindow.FilterToday([yesterday, todayEvening, todayMorning], today);
 
@@ -218,15 +225,16 @@ public sealed class OverlayListFilterTests
     }
 
     [Fact]
-    public void HomeworkFilterToday_UtcCreatedBeforeLocalMidnight_IsExcluded()
+    public void UtcCreatedAt_LocalEarlyMorning_IsIncludedInToday()
     {
-        // CreatedAt 以 UTC 存储：本地 9-7 07:00 == UTC 9-6 23:00，应按本地日期归入 9-7
+        // CreatedAt 以 UTC 存储：构造「本地今天 07:00」的时间戳（在 UTC+8 下即 UTC 前一天 23:00，
+        // 晚于本地当日零点的 UTC 表示），应按本地日期归入今天；UTC 时区下同样成立。
         var today = new DateOnly(2026, 9, 7);
         var utcLastNight = new HomeworkItem
         {
             MessageId = "m1",
             Content = "m1",
-            CreatedAt = new DateTimeOffset(2026, 9, 6, 23, 0, 0, TimeSpan.Zero)
+            CreatedAt = LocalTime(2026, 9, 7, 7).ToUniversalTime()
         };
 
         Assert.Single(HomeworkSuspensionWindow.FilterToday([utcLastNight], today));
