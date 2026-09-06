@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:models="clr-namespace:ClassIng.Shared.Models;assembly=ClassIng.Shared"
+        xmlns:vm="clr-namespace:ClassIng.Plugin.Views"
         mc:Ignorable="d" d:DesignWidth="320" d:DesignHeight="480"
         x:Class="ClassIng.Plugin.Views.NoticeSuspensionWindow"
         x:CompileBindings="True"
@@ -13,13 +13,31 @@
   <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
     <Grid RowDefinitions="Auto,*,Auto">
 
-      <!-- 标题栏：拖拽区 + 关闭（隐藏，托盘/设置页可再唤出） -->
+      <!-- 标题栏：拖拽区 + 快捷设置菜单（右上角） + 关闭（隐藏，托盘/设置页可再唤出） -->
       <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
               PointerPressed="OnHeaderPointerPressed">
         <Grid ColumnDefinitions="*,Auto" Margin="12,8,8,8">
           <TextBlock Text="通知" FontWeight="SemiBold" VerticalAlignment="Center" />
-          <Button Grid.Column="1" Content="×" Click="OnHideClick"
-                  Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
+            <Button x:Name="QuickMenuButton" Content="⋯" Padding="6,0" MinWidth="28" Background="Transparent"
+                    BorderThickness="0" ToolTip.Tip="悬浮窗快捷设置">
+              <Button.Flyout>
+                <Flyout Placement="BottomEdgeAlignedRight"
+                        Opened="OnQuickMenuOpened">
+                  <StackPanel Width="236" Spacing="10" Margin="4">
+                    <ToggleSwitch x:Name="TopmostToggle" Content="置顶（浮在所有窗口之上）"
+                                  IsChecked="False" Click="OnQuickToggleClick" />
+                    <ToggleSwitch x:Name="PinnedToggle" Content="固定（禁用拖拽缩放）"
+                                  IsChecked="False" Click="OnQuickToggleClick" />
+                    <ToggleSwitch x:Name="ClickThroughToggle" Content="鼠标穿透（固定模式下生效）"
+                                  IsChecked="False" Click="OnQuickToggleClick" />
+                  </StackPanel>
+                </Flyout>
+              </Button.Flyout>
+            </Button>
+            <Button Content="×" Click="OnHideClick"
+                    Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+          </StackPanel>
         </Grid>
       </Border>
 
@@ -30,15 +48,16 @@
         <ScrollViewer Padding="8,4">
           <ItemsControl x:Name="NoticeList">
             <ItemsControl.ItemTemplate>
-              <DataTemplate DataType="{x:Type models:NoticeItem}">
+              <DataTemplate DataType="{x:Type vm:NoticeRow}">
                 <Border Margin="0,4" CornerRadius="6" Background="#FFFFFFFF" BorderBrush="#22000000"
                         BorderThickness="1" Padding="8">
                   <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
-                    <TextBlock Grid.Column="0" Grid.Row="0" Text="{Binding Content}"
+                    <TextBlock Grid.Column="0" Grid.Row="0" Text="{Binding Item.Content}"
                                TextWrapping="Wrap" VerticalAlignment="Center" />
-                    <Button Grid.Column="1" Grid.Row="0" Grid.RowSpan="2" Content="已读"
-                            Click="OnMarkReadClick" Margin="8,0,0,0" Padding="8,3" />
-                    <TextBlock Grid.Column="0" Grid.Row="1" Text="{Binding CreatedAt, StringFormat='{}{0:MM-dd HH:mm}'}"
+                    <Button Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
+                            Content="{Binding ButtonText}"
+                            Click="OnRowActionButtonClick" Margin="8,0,0,0" Padding="8,3" />
+                    <TextBlock Grid.Column="0" Grid.Row="1" Text="{Binding TimeText}"
                                FontSize="11" Opacity="0.5" Margin="0,4,0,0" />
                   </Grid>
                 </Border>
@@ -48,16 +67,26 @@
         </ScrollViewer>
       </Panel>
 
-      <!-- 角部缩放 Thumb -->
-      <Thumb Grid.Row="2" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
-             HorizontalAlignment="Right" VerticalAlignment="Bottom" Opacity="0.4"
-             DragDelta="OnResizeDragDelta">
-        <Thumb.Template>
-          <ControlTemplate>
-            <Border CornerRadius="2" Background="#40000000" />
-          </ControlTemplate>
-        </Thumb.Template>
-      </Thumb>
+      <!-- 底栏：未读/已读视图切换（左下角，会话内记忆） + 角部缩放 Thumb -->
+      <Grid Grid.Row="2" ColumnDefinitions="*,Auto">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="12"
+                    Margin="10,2,0,2" VerticalAlignment="Center">
+          <RadioButton x:Name="UnreadViewRadio" Content="未读" GroupName="ClassIngNoticeView"
+                       MinWidth="0" Padding="6,2" IsChecked="True"
+                       Checked="OnUnreadViewChecked" />
+          <RadioButton x:Name="ReadViewRadio" Content="已读" GroupName="ClassIngNoticeView"
+                       MinWidth="0" Padding="6,2"
+                       Checked="OnReadViewChecked" />
+        </StackPanel>
+        <Thumb Grid.Column="1" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
+               Opacity="0.4" DragDelta="OnResizeDragDelta">
+          <Thumb.Template>
+            <ControlTemplate>
+              <Border CornerRadius="2" Background="#40000000" />
+            </ControlTemplate>
+          </Thumb.Template>
+        </Thumb>
+      </Grid>
     </Grid>
   </Border>
 </Window>

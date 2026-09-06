@@ -30,6 +30,7 @@ public partial class OverlaySettingsPage : ClassIngSettingsPageBase
         OrientationBox.SelectedIndex = SubjectCircleOrder.IsVertical(Settings.Overlays.SubjectCircle.Orientation) ? 1 : 0;
         ViewModeBox.SelectedIndex = SubjectCircleOrder.IsDetailsView(Settings.Overlays.SubjectCircle.ViewMode) ? 1 : 0;
         OrderTextBox.Text = LinesToText(Settings.Overlays.SubjectCircle.Order);
+        HomeworkGroupOrderTextBox.Text = LinesToText(Settings.Overlays.HomeworkGroupOrder);
     }
 
     private void OnResetNoticeClicked(object? sender, RoutedEventArgs e)
@@ -46,7 +47,7 @@ public partial class OverlaySettingsPage : ClassIngSettingsPageBase
         => ResetWindow(SuspensionWindowController.CircleKey,
             () => Settings.Overlays.Circle = new OverlayWindowSettings { Visible = true, Width = 64, Height = 440, Opacity = 0.85 });
 
-    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow();
+    private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 
     private void OnOrientationChanged(object? sender, SelectionChangedEventArgs e)
     {
@@ -68,6 +69,12 @@ public partial class OverlaySettingsPage : ClassIngSettingsPageBase
     {
         // 多行编辑框 → 学科顺序（去空行与首尾空白）；页面关闭/保存时随之持久化并热生效
         Settings.Overlays.SubjectCircle.Order = TextToLines(OrderTextBox.Text);
+    }
+
+    private void OnHomeworkGroupOrderLostFocus(object? sender, RoutedEventArgs e)
+    {
+        // 多行编辑框 → 作业分组顺序（去空行与首尾空白）；保存后随 SettingsChanged 热生效
+        Settings.Overlays.HomeworkGroupOrder = TextToLines(HomeworkGroupOrderTextBox.Text);
     }
 
     private void ResetWindow(string overlayKey, Action applyDefaults)

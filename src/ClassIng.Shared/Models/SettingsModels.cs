@@ -123,6 +123,12 @@ public sealed class OverlaySettings
     /// <summary>学科圆圈栏/学科文件悬浮窗联动设置（排列方向/顺序/视图模式等）。</summary>
     public SubjectCircleBarSettings SubjectCircle { get; set; } = new();
 
+    /// <summary>
+    /// 作业悬浮窗学科分组顺序：配置顺序优先，未配置的学科按字母序追加在后。
+    /// 空列表（默认）= 保持现状（全部按字母序）。经 SettingsChanged 热生效。
+    /// </summary>
+    public IReadOnlyList<string> HomeworkGroupOrder { get; set; } = [];
+
     /// <summary>随宿主 ClassIsland 启动（跟随宿主自启机制）。</summary>
     public bool LaunchWithHost { get; set; } = true;
 }
@@ -236,4 +242,16 @@ public sealed class MaintenanceSettings
 
     /// <summary>重试上限次数（超出 GivenUp，需人工重放）。</summary>
     public int MaxRetryAttempts { get; set; } = 5;
+
+    /// <summary>
+    /// 通知保留天数（存储层按 CreatedAt 本地日期分桶，启动/跨天清理）：
+    /// 0=永久（默认，不清理）；&gt;0 时已读通知仅保留当天，未读通知不受保留期限制全部保留。
+    /// </summary>
+    public int NoticesRetentionDays { get; set; }
+
+    /// <summary>
+    /// 作业保留天数（存储层按 CreatedAt 本地日期分桶，启动/跨天清理）：
+    /// 0=永久（默认，不清理）；&gt;0 保留最近 N 天（含当天）。
+    /// </summary>
+    public int HomeworkRetentionDays { get; set; }
 }

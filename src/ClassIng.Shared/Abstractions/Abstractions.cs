@@ -122,9 +122,21 @@ public interface INoticeStore
 
     Task MarkReadAsync(Guid id, CancellationToken ct = default);
 
+    /// <summary>标记未读（已读视图「标记未读」入口；与 MarkReadAsync 对称，状态持久化）。</summary>
+    Task MarkUnreadAsync(Guid id, CancellationToken ct = default);
+
     Task<IReadOnlyList<NoticeItem>> GetUnreadAsync(CancellationToken ct = default);
 
     Task<IReadOnlyList<NoticeItem>> GetAllAsync(CancellationToken ct = default);
+
+    /// <summary>按归档桶（CreatedAt 本地日期）查询通知（时间倒序）。</summary>
+    Task<IReadOnlyList<NoticeItem>> GetByDateAsync(DateOnly date, CancellationToken ct = default);
+
+    /// <summary>
+    /// 按保留策略清理过期桶（NoticesRetentionDays=0 时不清理；未读通知绝不动，已读仅保留当天）。
+    /// 返回删除条数；删除后逐条触发 <see cref="Changed"/> 供悬浮窗刷新。
+    /// </summary>
+    Task<int> CleanupAsync(CancellationToken ct = default);
 }
 
 /// <summary>作业存储。</summary>
@@ -140,6 +152,15 @@ public interface IHomeworkStore
     Task<IReadOnlyList<HomeworkItem>> GetAllAsync(CancellationToken ct = default);
 
     Task<IReadOnlyList<HomeworkItem>> GetBySubjectAsync(string subject, CancellationToken ct = default);
+
+    /// <summary>按归档桶（CreatedAt 本地日期）查询作业（时间正序）。供作业悬浮窗「仅显示当天」等日期过滤使用。</summary>
+    Task<IReadOnlyList<HomeworkItem>> GetByDateAsync(DateOnly date, CancellationToken ct = default);
+
+    /// <summary>
+    /// 按保留策略清理过期桶（HomeworkRetentionDays=0 时不清理；&gt;0 保留最近 N 天含当天）。
+    /// 返回删除条数；删除后逐条触发 <see cref="Changed"/> 供悬浮窗刷新。
+    /// </summary>
+    Task<int> CleanupAsync(CancellationToken ct = default);
 }
 
 /// <summary>设置服务：五组配置的加载/保存/导入导出/恢复默认；敏感字段加密存取。</summary>

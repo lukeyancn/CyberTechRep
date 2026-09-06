@@ -120,11 +120,13 @@ public class ClassIngPlugin : PluginBase
             dataDir,
             userRules: sp.GetRequiredService<UserSubjectRuleStore>(),
             noticePrefixEnabled: () => settingsService.Current.Classification.NoticeSubjectPrefix,
+            noticesRetentionDays: () => settingsService.Current.Maintenance.NoticesRetentionDays,
             logger: sp.GetService<ILogger<NoticeStore>>()));
         services.AddSingleton<INoticeStore>(sp => sp.GetRequiredService<NoticeStore>());
         services.AddSingleton(sp => new HomeworkStore(
             dataDir,
             sp.GetService<ILogger<HomeworkStore>>(),
+            homeworkRetentionDays: () => settingsService.Current.Maintenance.HomeworkRetentionDays,
             userRules: sp.GetRequiredService<UserSubjectRuleStore>()));
         services.AddSingleton<IHomeworkStore>(sp => sp.GetRequiredService<HomeworkStore>());
 
@@ -156,10 +158,16 @@ public class ClassIngPlugin : PluginBase
                 sp.GetService<ILogger<SuspensionWindowController>>(),
                 overlayKey => overlayKey switch
                 {
+                    // 通知悬浮窗注入控制器与设置服务：右上角快捷菜单（置顶/固定/穿透）
+                    // 经控制器 ApplySettingsAsync 路径即时生效并回写 ISettingsService
                     SuspensionWindowController.NoticeKey => new NoticeSuspensionWindow(
-                        sp.GetRequiredService<INoticeStore>()),
+                        sp.GetRequiredService<INoticeStore>(),
+                        sp.GetRequiredService<ISuspensionWindowController>(),
+                        sp.GetRequiredService<ISettingsService>()),
                     SuspensionWindowController.HomeworkKey => new HomeworkSuspensionWindow(
-                        sp.GetRequiredService<IHomeworkStore>()),
+                        sp.GetRequiredService<IHomeworkStore>(),
+                        () => settingsService.Current.Overlays.HomeworkGroupOrder,
+                        sp.GetRequiredService<ISettingsService>()),
                     SuspensionWindowController.FilesKey => sp.GetRequiredService<SubjectFilesSuspensionWindow>(),
                     SuspensionWindowController.CircleKey => (Window?)sp.GetRequiredService<SubjectCircleBarWindow>(),
                     _ => (Window?)null
@@ -238,6 +246,9 @@ public class ClassIngPlugin : PluginBase
         // 并负责拉起 IMessageIngestService（此前无宿主启动点）。
         // 全流程 try/catch + 结构化日志，失败按类型进重试队列，任何一环失败不崩溃。
         services.AddHostedService<Services.Pipeline.MessageDispatchService>();
+
+        // ---- 模块 5：保留期清理任务（启动时 + 每日跨天 + 设置变更；只删过期桶，绝不动当天与未读）----
+        services.AddHostedService<Services.Pipeline.RetentionCleanupService>();
 
         // ---- 模块 10：上课自动弹出对应学科文件悬浮窗联动 ----
         // IHostedService：StartAsync（宿主容器构建完成后）才解析宿主 ILessonsService；

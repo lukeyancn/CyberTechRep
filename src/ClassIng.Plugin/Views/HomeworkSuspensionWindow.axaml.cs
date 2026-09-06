@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using ClassIng.Plugin.Services.Overlays;
 using ClassIng.Shared.Abstractions;
 using ClassIng.Shared.Models;
 
@@ -29,13 +30,16 @@ public sealed class HomeworkRow
 
     public string AttachmentText => $"附件 ×{Item.AttachmentIds.Count}";
 
-    public string CreatedAtText => Item.CreatedAt.ToString("MM-dd HH:mm");
+    /// <summary>时间展示：列表仅含当天作业（仅当天语义），组内显示 HH:mm 即可。</summary>
+    public string CreatedAtText => Item.CreatedAt.LocalDateTime.ToString("HH:mm");
 }
 
 /// <summary>
 /// 作业悬浮窗（Avalonia 无边框置顶窗）：
 /// 按学科分组（Expander 组头）展示，条目含正文、附件状态与「修正学科」下拉
 /// （选择已有学科 → SetSubjectAsync，SubjectSource=Manual）；Changed 触发 200ms debounce 刷新；
+/// 分组顺序按 <see cref="ClassIng.Shared.Models.OverlaySettings.HomeworkGroupOrder"/>（配置顺序优先，
+/// 未配置的按字母序追加，空 = 全字母序）；设置广播触发刷新（分组顺序热生效）；
 /// 标题栏 BeginMoveDrag 拖拽、角部 Thumb 缩放；位置/大小由 <see cref="SuspensionWindowController"/> 持久化。
 /// </summary>
 public partial class HomeworkSuspensionWindow : Window
@@ -44,6 +48,7 @@ public partial class HomeworkSuspensionWindow : Window
     internal static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(200);
 
     private readonly IHomeworkStore _store = null!;
+    private readonly Func<IReadOnlyList<string>?>? _groupOrderProvider;
     private readonly DispatcherTimer _debounceTimer = null!;
     private int _refreshing;
 
@@ -53,9 +58,13 @@ public partial class HomeworkSuspensionWindow : Window
         InitializeComponent();
     }
 
-    public HomeworkSuspensionWindow(IHomeworkStore store)
+    public HomeworkSuspensionWindow(
+        IHomeworkStore store,
+        Func<IReadOnlyList<string>?>? groupOrderProvider = null,
+        ISettingsService? settingsService = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _groupOrderProvider = groupOrderProvider;
         InitializeComponent();
         _debounceTimer = new DispatcherTimer { Interval = RefreshDebounce };
         _debounceTimer.Tick += (_, _) =>
@@ -64,6 +73,12 @@ public partial class HomeworkSuspensionWindow : Window
             _ = RefreshAsync();
         };
         _store.Changed += OnStoreChanged;
+        if (settingsService is not null)
+        {
+            // 设置变更（含分组顺序调整）→ debounce 刷新（SettingsChanged 可能在非 UI 线程触发）
+            settingsService.SettingsChanged += OnSettingsChanged;
+        }
+
         _ = RefreshAsync();
     }
 
@@ -81,6 +96,8 @@ public partial class HomeworkSuspensionWindow : Window
             Dispatcher.UIThread.Post(ScheduleRefresh);
         }
     }
+
+    private void OnSettingsChanged(object? sender, AppSettings e) => OnStoreChanged(sender, null!);
 
     private void ScheduleRefresh()
     {
@@ -100,7 +117,11 @@ public partial class HomeworkSuspensionWindow : Window
 
         try
         {
-            var all = await _store.GetAllAsync();
+            // 仅显示当天作业（按 CreatedAt 本地日期过滤）：
+            // 复用存储代理提供的按日期桶查询接口（GetByDateAsync，CreatedAt 本地日期分桶）。
+            var today = DateOnly.FromDateTime(DateTime.Now);
+            var all = FilterToday(await _store.GetByDateAsync(today), today);
+
             // 固定七学科之外，作业里出现过的其他学科也追加进候选（含历史遗留分类）
             var extraSubjects = all.Select(i => i.Subject)
                 .Where(s => !string.IsNullOrWhiteSpace(s) && !BaseSubjects.Contains(s, StringComparer.Ordinal))
@@ -121,9 +142,29 @@ public partial class HomeworkSuspensionWindow : Window
                         })
                         .ToList()
                 })
-                .OrderBy(g => g.Subject, StringComparer.CurrentCulture)
                 .ToList();
 
+            // 分组顺序：配置顺序优先（HomeworkGroupOrdering），未配置的按名称序追加；
+            // 配置里多余/未知条目已由排序器安全忽略，兜底再按名称序补齐漏网组
+            var ordered = HomeworkGroupOrdering.Sort(_groupOrderProvider?.Invoke(), groups.Select(g => g.Subject));
+            var orderedGroups = new List<HomeworkGroup>(groups.Count);
+            var remaining = new Dictionary<string, HomeworkGroup>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in groups)
+            {
+                remaining[g.Subject.Trim()] = g;
+            }
+
+            foreach (var subject in ordered)
+            {
+                if (remaining.Remove(subject, out var group))
+                {
+                    orderedGroups.Add(group);
+                }
+            }
+
+            orderedGroups.AddRange(remaining.Values.OrderBy(g => g.Subject, StringComparer.CurrentCulture));
+
+            EmptyText.Text = "今天还没有作业";
             EmptyText.IsVisible = all.Count == 0;
             GroupList.ItemsSource = groups;
         }
@@ -136,6 +177,17 @@ public partial class HomeworkSuspensionWindow : Window
             Interlocked.Exchange(ref _refreshing, 0);
         }
     }
+
+    /// <summary>当天过滤（纯逻辑，可单测）：Created 转本地日期等于 today 才保留。</summary>
+    internal static IReadOnlyList<HomeworkItem> FilterToday(IEnumerable<HomeworkItem> items, DateOnly today)
+    {
+        return items.Where(i => IsToday(i.CreatedAt, today))
+            .OrderBy(i => i.CreatedAt)
+            .ToList();
+    }
+
+    private static bool IsToday(DateTimeOffset createdAt, DateOnly today) =>
+        DateOnly.FromDateTime(createdAt.LocalDateTime) == today;
 
     /// <summary>候选顺序：本条当前学科（不在固定列表时置顶）→ 固定七学科 → 其他已出现学科。</summary>
     private static IReadOnlyList<string> BuildCandidates(string currentSubject, List<string> extraSubjects)

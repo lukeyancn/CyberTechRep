@@ -152,6 +152,17 @@
                 </StackPanel>
             </Expander>
 
+            <!-- 作业悬浮窗学科分组顺序（配置顺序优先，未配置的按字母序追加） -->
+            <Expander Header="作业悬浮窗学科分组顺序" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="作业悬浮窗按学科分组的展示顺序：每行一个学科名，按列出顺序展示；未列出的学科按名称序追加在后面。留空（默认）= 全部按名称序。保存后立即热生效。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <TextBox x:Name="HomeworkGroupOrderTextBox" AcceptsReturn="True" MinHeight="120" MaxHeight="260"
+                             Watermark="每行一个学科名，未列出的按名称序追加"
+                             LostFocus="OnHomeworkGroupOrderLostFocus"/>
+                </StackPanel>
+            </Expander>
+
             <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
                     Margin="0,10,0,0"/>
         </StackPanel>
