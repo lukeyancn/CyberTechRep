@@ -192,7 +192,7 @@ public sealed class HomeworkSendService : IHomeworkSendService
 
         var secret = _provider.SecretUnprotector(settings.AppSecretProtected);
         var invoker = _provider.HttpInvoker ?? CreateDefaultHttpInvoker();
-        _logger.LogInformation("请求 AccessToken（发送用）：{Url}（AppId={AppId}）", settings.TokenApiUrl, settings.AppId);
+        _logger.LogInformation("请求 AccessToken（发送用）：{Url}（AppId={AppId}）", settings.TokenApiUrl, MaskAppId(settings.AppId));
 
         using var req = new HttpRequestMessage(HttpMethod.Post, settings.TokenApiUrl);
         req.Content = new StringContent(
@@ -268,4 +268,9 @@ public sealed class HomeworkSendService : IHomeworkSendService
         };
         return new HttpMessageInvoker(handler);
     }
+
+    /// <summary>日志脱敏：AppId 只保留前 4 位，避免完整标识符进入日志（与 WsClient/Ingest 同规则）。</summary>
+    private static string MaskAppId(string appId)
+        => string.IsNullOrEmpty(appId) ? "(空)"
+            : appId.Length <= 4 ? appId : appId[..4] + "***";
 }
