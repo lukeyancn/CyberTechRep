@@ -79,6 +79,10 @@ public class SubjectChainTests : IDisposable
     {
         ClassificationSettings settings = new()
         {
+            ManualConfirmQueueEnabled = true
+        };
+        AiSettings aiSettings = new()
+        {
             ConfidenceThreshold = confidenceThreshold,
             PreferLocalModel = preferLocal,
             AiEnabled = aiEnabled
@@ -86,6 +90,7 @@ public class SubjectChainTests : IDisposable
         return new SubjectChainOptionsProvider
         {
             GetSettings = () => settings,
+            GetAiSettings = () => aiSettings,
             DataDirectory = _dataDir
         };
     }
@@ -325,10 +330,13 @@ public class SubjectChainTests : IDisposable
 
     private SubjectChainOptionsProvider CreateCloudProvider(
         int dailyLimit = 200,
-        Func<string, string>? unprotector = null)
+        Func<string, string>? unprotector = null,
+        CloudAiProvider cloudProvider = CloudAiProvider.OpenAiCompatible)
     {
-        ClassificationSettings settings = new()
+        ClassificationSettings settings = new();
+        AiSettings aiSettings = new()
         {
+            CloudProvider = cloudProvider,
             CloudEndpoint = "https://llm.example.com/v1",
             CloudApiKeyProtected = "protected-key",
             CloudModelName = "test-model",
@@ -337,6 +345,7 @@ public class SubjectChainTests : IDisposable
         return new SubjectChainOptionsProvider
         {
             GetSettings = () => settings,
+            GetAiSettings = () => aiSettings,
             DataDirectory = _dataDir,
             SecretUnprotector = unprotector ?? (_ => "plain-key")
         };
@@ -408,10 +417,11 @@ public class SubjectChainTests : IDisposable
             _ => throw new InvalidOperationException("不应发起请求"))));
         Assert.False(cloud.IsAvailable);
 
-        ClassificationSettings noEndpoint = new() { CloudEndpoint = "" };
+        AiSettings noEndpoint = new() { CloudEndpoint = "" };
         var provider2 = new SubjectChainOptionsProvider
         {
-            GetSettings = () => noEndpoint,
+            GetSettings = () => new ClassificationSettings(),
+            GetAiSettings = () => noEndpoint,
             DataDirectory = _dataDir
         };
         Assert.False(new CloudOpenAiProvider(provider2).IsAvailable);

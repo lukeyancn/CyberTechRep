@@ -92,9 +92,14 @@ public sealed class SettingsService : ISettingsService
         AppSettings merged;
         lock (_lock)
         {
+            // 需求 5：AI 字段旧位置（Classification）→ 新位置（Ai）兼容迁移。
+            // 必须先于「本地密文回填」执行：迁移按导入 JSON 的值判断，
+            // 否则回填进 Classification 的本地密文会被迁移当作旧值搬走并清空（导入丢失本地密钥）。
+            MigrateLegacyAiFields(imported);
             // 导入安全策略：Secret 字段保留本地加密值，防止恶意/误导入的密文或空值覆盖本机凭据。
             imported.Connection.AppSecretProtected = Current.Connection.AppSecretProtected;
             imported.Classification.CloudApiKeyProtected = Current.Classification.CloudApiKeyProtected;
+            imported.Ai.CloudApiKeyProtected = Current.Ai.CloudApiKeyProtected;
             merged = imported;
             Current = merged;
         }
@@ -113,6 +118,7 @@ public sealed class SettingsService : ISettingsService
             sanitized = DeepClone(Current);
             sanitized.Connection.AppSecretProtected = "";
             sanitized.Classification.CloudApiKeyProtected = "";
+            sanitized.Ai.CloudApiKeyProtected = "";
         }
 
         using var buffer = new MemoryStream();
@@ -164,6 +170,8 @@ public sealed class SettingsService : ISettingsService
                 return new AppSettings();
             }
 
+            // 需求 5：AI 字段旧位置（Classification）→ 新位置（Ai）一次性迁移
+            MigrateLegacyAiFields(loaded);
             return loaded;
         }
         catch (Exception ex)
@@ -209,6 +217,68 @@ public sealed class SettingsService : ISettingsService
         {
             // 广播订阅方异常不阻断设置服务本身
             _logger.LogError(ex, "SettingsChanged 订阅方处理异常");
+        }
+    }
+
+    /// <summary>
+    /// AI 设置一次性迁移（需求 5）：ClassificationSettings 中的旧 AI 字段 → AiSettings。
+    /// 旧位置有值而新位置为默认值时复制过去；迁移完成后旧字段复位为默认值，
+    /// 下次保存即从 settings.json 移除（避免「用户清空新位置 → 重启被旧值复活」的回写问题）。
+    /// 已配置密钥的用户升级后无需重新填写。
+    /// </summary>
+    internal static void MigrateLegacyAiFields(AppSettings settings)
+    {
+        var legacy = settings.Classification;
+        var ai = settings.Ai;
+
+        // AI 总开关：旧值 false（关闭）迁移；默认 true 无需迁移
+        if (!legacy.AiEnabled && ai.AiEnabled)
+        {
+            ai.AiEnabled = false;
+            legacy.AiEnabled = true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(legacy.CloudEndpoint) && string.IsNullOrWhiteSpace(ai.CloudEndpoint))
+        {
+            ai.CloudEndpoint = legacy.CloudEndpoint;
+            legacy.CloudEndpoint = "";
+        }
+
+        if (!string.IsNullOrWhiteSpace(legacy.CloudApiKeyProtected) && string.IsNullOrWhiteSpace(ai.CloudApiKeyProtected))
+        {
+            ai.CloudApiKeyProtected = legacy.CloudApiKeyProtected;
+            legacy.CloudApiKeyProtected = "";
+        }
+
+        if (!string.IsNullOrWhiteSpace(legacy.CloudModelName) && string.IsNullOrWhiteSpace(ai.CloudModelName))
+        {
+            ai.CloudModelName = legacy.CloudModelName;
+            legacy.CloudModelName = "";
+        }
+
+        if (legacy.CloudDailyCallLimit != 200 && ai.CloudDailyCallLimit == 200)
+        {
+            ai.CloudDailyCallLimit = legacy.CloudDailyCallLimit;
+            legacy.CloudDailyCallLimit = 200;
+        }
+
+        if (Math.Abs(legacy.ConfidenceThreshold - 0.7) > 0.0001 && Math.Abs(ai.ConfidenceThreshold - 0.7) < 0.0001)
+        {
+            ai.ConfidenceThreshold = legacy.ConfidenceThreshold;
+            legacy.ConfidenceThreshold = 0.7;
+        }
+
+        if (!legacy.PreferLocalModel && ai.PreferLocalModel)
+        {
+            ai.PreferLocalModel = false;
+            legacy.PreferLocalModel = true;
+        }
+
+        if (legacy.LocalModelPath != "models/subject-classifier.onnx"
+            && ai.LocalModelPath == "models/subject-classifier.onnx")
+        {
+            ai.LocalModelPath = legacy.LocalModelPath;
+            legacy.LocalModelPath = "models/subject-classifier.onnx";
         }
     }
 

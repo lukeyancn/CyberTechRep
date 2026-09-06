@@ -42,8 +42,10 @@ internal sealed class LlmSubjectVerdictDto
 
 /// <summary>
 /// 模块 3 第②级（云端）：OpenAI 兼容 API 学科识别器（HttpClient 注入，可测）。
-/// 含每日调用限额保护（超过 <see cref="ClassificationSettings.CloudDailyCallLimit"/> 后
+/// 含每日调用限额保护（超过 <see cref="AiSettings.CloudDailyCallLimit"/> 后
 /// <see cref="IsAvailable"/>=false 自动降级到人工队列）。
+/// 设置来源：AiSettings（需求 5 迁移）；AiSettings.CloudProvider != OpenAiCompatible 时
+/// 本提供者自动不可用，由 AnthropicCloudProvider 接管（路由层无感切换）。
 /// </summary>
 public sealed class CloudOpenAiProvider : IAiProvider
 {
@@ -56,8 +58,8 @@ public sealed class CloudOpenAiProvider : IAiProvider
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    /// <summary>请求序列化：不转义非 ASCII（中文原文直出，部分兼容端点对 \u 转义支持差）。</summary>
-    private static readonly JsonSerializerOptions RequestJsonOptions = new()
+    /// <summary>请求序列化：不转义非 ASCII（中文原文直出，部分兼容端点对 \u 转义支持差）。Anthropic 路径复用。</summary>
+    internal static readonly JsonSerializerOptions RequestJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
@@ -92,8 +94,10 @@ public sealed class CloudOpenAiProvider : IAiProvider
     {
         get
         {
-            var settings = _provider.SafeGetSettings();
-            if (!settings.AiEnabled || string.IsNullOrWhiteSpace(settings.CloudEndpoint))
+            var settings = _provider.SafeGetAiSettings();
+            if (!settings.AiEnabled
+                || settings.CloudProvider != CloudAiProvider.OpenAiCompatible
+                || string.IsNullOrWhiteSpace(settings.CloudEndpoint))
             {
                 return false;
             }
@@ -122,7 +126,7 @@ public sealed class CloudOpenAiProvider : IAiProvider
         {
             ct.ThrowIfCancellationRequested();
 
-            var settings = _provider.SafeGetSettings();
+            var settings = _provider.SafeGetAiSettings();
             if (!IsAvailable || string.IsNullOrWhiteSpace(text))
             {
                 return null;

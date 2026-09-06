@@ -6,8 +6,12 @@ using ClassIsland.Core.Attributes;
 namespace ClassIng.Plugin.Controls.SettingsPages;
 
 /// <summary>
-/// 分类设置页：通知/作业关键词表增删改、学科词表（路径 + 打开编辑）、
-/// AI 开关/本地路径/云端端点与 Key（脱敏）/每日限额/置信度阈值/人工队列开关。
+/// 分类设置页（需求 6 去重后）：人工确认队列开关与设置归属指引。
+/// <para>
+/// 此前本页承载的 AI 配置（总开关/本地模型/云端端点/Key/模型名/每日限额/置信度阈值）
+/// 已全部迁至「CyberTechRep AI」页；通知/作业关键词与学科词表（subjects.json）编辑
+/// 统一收口到「学科词表编辑」页（此前两处可改同一份配置，易混淆），本页不再重复。
+/// </para>
 /// </summary>
 [SettingsPageInfo("classing.settings.classification", "CyberTechRep 分类")]
 [Group("classing.settings")]
@@ -19,59 +23,5 @@ public partial class ClassificationSettingsPage : ClassIngSettingsPageBase
         InitializeComponent();
     }
 
-    /// <summary>通知关键词 ↔ 多行文本。</summary>
-    public string NoticeKeywordsText
-    {
-        get => LinesToText([.. Settings.Classification.NoticeKeywords]);
-        set => Settings.Classification.NoticeKeywords = TextToLines(value);
-    }
-
-    /// <summary>作业关键词 ↔ 多行文本。</summary>
-    public string HomeworkKeywordsText
-    {
-        get => LinesToText([.. Settings.Classification.HomeworkKeywords]);
-        set => Settings.Classification.HomeworkKeywords = TextToLines(value);
-    }
-
-    /// <summary>云端 API Key 明文（绑定视图；写入时 DPAPI 加密持久化）。</summary>
-    public string CloudApiKeyPlain
-    {
-        get => SettingsService.Unprotect(Settings.Classification.CloudApiKeyProtected);
-        set => Settings.Classification.CloudApiKeyProtected = SettingsService.Protect(value ?? "");
-    }
-
-    /// <summary>置信度阈值显示。</summary>
-    public string ConfidenceThresholdText => $"当前阈值：{Settings.Classification.ConfidenceThreshold:0.00}";
-
     private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
-
-    private void OnOpenSubjectRulesClicked(object? sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var path = ResolveSubjectRulesPath();
-            if (!File.Exists(path))
-            {
-                // 文件缺失时先落一份空模板（关键词数组），避免打开失败
-                File.WriteAllText(path, "[]");
-            }
-
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = path,
-                UseShellExecute = true
-            });
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"打开学科词表失败：{ex.Message}");
-        }
-    }
-
-    /// <summary>解析学科词表绝对路径（相对路径 → 插件数据目录）。</summary>
-    private string ResolveSubjectRulesPath()
-    {
-        var path = Settings.Classification.SubjectRulesPath;
-        return Path.IsPathRooted(path) ? path : Path.Combine(DataDirectory, path);
-    }
 }

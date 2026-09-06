@@ -40,8 +40,10 @@ internal sealed class MessageKindVerdictDto
 /// 「通知/作业二分类」用途的云端 OpenAI 兼容识别器（需求 6 用途②）。
 /// <para>
 /// 纪律与 <see cref="CloudOpenAiProvider"/> 一致：HttpClient 超时 20 秒、单次尝试无链内重试、
-/// 异常吞掉返回 null 降级；每日调用限额复用 <see cref="ClassificationSettings.CloudDailyCallLimit"/>
+/// 异常吞掉返回 null 降级；每日调用限额复用 <see cref="AiSettings.CloudDailyCallLimit"/>
 /// （本提供者独立计数，与学科识别的云端提供者各算一份）；密钥绝不写入日志。
+/// 设置来源 AiSettings；CloudProvider != OpenAiCompatible 时不可用（Anthropic 由
+/// <see cref="AnthropicMessageKindProvider"/> 接管，经 CompositeMessageKindProvider 选择）。
 /// </para>
 /// </summary>
 public sealed class CloudMessageKindProvider : IMessageKindAiProvider
@@ -91,8 +93,10 @@ public sealed class CloudMessageKindProvider : IMessageKindAiProvider
     {
         get
         {
-            var settings = _provider.SafeGetSettings();
-            if (!settings.AiEnabled || string.IsNullOrWhiteSpace(settings.CloudEndpoint))
+            var settings = _provider.SafeGetAiSettings();
+            if (!settings.AiEnabled
+                || settings.CloudProvider != CloudAiProvider.OpenAiCompatible
+                || string.IsNullOrWhiteSpace(settings.CloudEndpoint))
             {
                 return false;
             }
@@ -121,7 +125,7 @@ public sealed class CloudMessageKindProvider : IMessageKindAiProvider
         {
             ct.ThrowIfCancellationRequested();
 
-            var settings = _provider.SafeGetSettings();
+            var settings = _provider.SafeGetAiSettings();
             if (!IsAvailable || string.IsNullOrWhiteSpace(text))
             {
                 return null;

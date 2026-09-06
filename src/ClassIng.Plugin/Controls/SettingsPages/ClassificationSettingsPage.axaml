@@ -5,51 +5,36 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:local="clr-namespace:ClassIng.Plugin.Controls.SettingsPages"
-    mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="900">
+    mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="700">
 
     <ScrollViewer>
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
             <TextBlock Text="分类设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
 
-            <!-- 通知/作业关键词 -->
-            <TextBlock Text="通知关键词（一行一个，保存后热生效）" FontWeight="SemiBold"/>
-            <TextBox Text="{Binding NoticeKeywordsText, Mode=TwoWay}" AcceptsReturn="True" Height="80"/>
-            <TextBlock Text="作业关键词（一行一个，保存后热生效；两侧同时命中时作业优先）" FontWeight="SemiBold"/>
-            <TextBox Text="{Binding HomeworkKeywordsText, Mode=TwoWay}" AcceptsReturn="True" Height="80"/>
+            <!-- 设置归属说明（需求 6 去重：每项设置单一入口） -->
+            <TextBlock Text="设置归属：通知/作业关键词与学科词表在「学科词表编辑」页编辑；AI 相关配置（总开关、云端 API、置信度阈值等）已全部集中到「CyberTechRep AI」页，本页不再重复。"
+                       TextWrapping="Wrap" Opacity="0.75"/>
 
-            <!-- 学科词表 -->
-            <TextBlock Text="学科词表文件（subjects.json，相对插件数据目录）" FontWeight="SemiBold"/>
-            <TextBox Text="{Binding Settings.Classification.SubjectRulesPath}"/>
-            <Button Content="打开学科词表编辑" Click="OnOpenSubjectRulesClicked" HorizontalAlignment="Left"/>
-
-            <!-- AI 识别 -->
-            <Expander Header="AI 识别（本地 ONNX / 云端 LLM）" IsExpanded="False">
-                <StackPanel Spacing="10" Margin="0,6">
-                    <ToggleSwitch Content="启用 AI 识别" IsChecked="{Binding Settings.Classification.AiEnabled}"/>
-                    <ToggleSwitch Content="本地模型优先（关闭则云端优先）"
-                                  IsChecked="{Binding Settings.Classification.PreferLocalModel}"/>
-                    <TextBlock Text="本地模型路径（相对插件数据目录）"/>
-                    <TextBox Text="{Binding Settings.Classification.LocalModelPath}"/>
-                    <TextBlock Text="云端 OpenAI 兼容端点"/>
-                    <TextBox Text="{Binding Settings.Classification.CloudEndpoint}"/>
-                    <TextBlock Text="云端 API Key（DPAPI 加密存储，脱敏显示）"/>
-                    <TextBox Text="{Binding CloudApiKeyPlain, Mode=TwoWay}" PasswordChar="●"/>
-                    <TextBlock Text="云端模型名称"/>
-                    <TextBox Text="{Binding Settings.Classification.CloudModelName}"/>
-                    <TextBlock Text="云端每日调用上限（费用/频率保护）"/>
-                    <NumericUpDown Value="{Binding Settings.Classification.CloudDailyCallLimit}" Minimum="0"
-                                   Maximum="100000" Increment="10"/>
+            <!-- 人工确认队列 -->
+            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="人工确认队列" FontWeight="SemiBold"/>
+                    <TextBlock Text="学科识别（关键词/AI）低置信或失败时，消息进入待确认队列等待人工指定学科。置信度阈值在「CyberTechRep AI」页调整。"
+                               TextWrapping="Wrap" Opacity="0.8"/>
+                    <ToggleSwitch Content="启用人工确认队列"
+                                  IsChecked="{Binding Settings.Classification.ManualConfirmQueueEnabled}"/>
                 </StackPanel>
-            </Expander>
+            </Border>
 
-            <!-- 置信度与人工队列 -->
-            <TextBlock Text="置信度阈值（低于此值进入人工确认队列）"/>
-            <Slider Minimum="0" Maximum="1" Value="{Binding Settings.Classification.ConfidenceThreshold}"
-                    TickFrequency="0.05"/>
-            <TextBlock Text="{Binding ConfidenceThresholdText}" Opacity="0.8"/>
-            <ToggleSwitch Content="启用人工确认队列"
-                          IsChecked="{Binding Settings.Classification.ManualConfirmQueueEnabled}"/>
+            <!-- 学科词表入口指向（去重：编辑统一在「学科词表编辑」页） -->
+            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="学科词表" FontWeight="SemiBold"/>
+                    <TextBlock Text="学科关键词规则（subjects.json）与消息分类关键词（classification-keywords.json）统一在「学科词表编辑」页可视化编辑（含导入/导出/恢复默认），本页不再提供重复编辑入口。"
+                               TextWrapping="Wrap" Opacity="0.8"/>
+                </StackPanel>
+            </Border>
 
             <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
                     Margin="0,10,0,0"/>

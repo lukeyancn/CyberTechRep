@@ -194,12 +194,12 @@ public sealed class SubjectClassifierChain : ISubjectClassifierChain, ISubjectCh
     }
 
     private bool IsConfident(SubjectResult result) =>
-        result.Confidence >= _provider.SafeGetSettings().ConfidenceThreshold;
+        result.Confidence >= _provider.SafeGetAiSettings().ConfidenceThreshold;
 
     /// <summary>按 PreferLocalModel 排序 AI 提供商（本地 = 实现 ILocalAiProvider 标记者）。</summary>
     internal IReadOnlyList<IAiProvider> OrderAiProviders()
     {
-        var preferLocal = _provider.SafeGetSettings().PreferLocalModel;
+        var preferLocal = _provider.SafeGetAiSettings().PreferLocalModel;
         var locals = _aiProviders.OfType<ILocalAiProvider>().ToArray();
         var clouds = _aiProviders.Where(p => p is not ILocalAiProvider).ToArray();
         return preferLocal

@@ -18,7 +18,7 @@ public interface ILocalAiProvider
 /// 当前为<strong>可运行骨架</strong>：模型文件存在性检查与降级链路完整；
 /// 推理调用以占位实现（模型缺失时 <see cref="IsAvailable"/>=false 自动跳到云端/人工）。
 /// 接入真实推理仅需替换 <see cref="ClassifyAsync"/> 中「占位」段（Microsoft.ML.OnnxRuntime InferenceSession），
-/// 模型路径走 <see cref="ClassificationSettings.LocalModelPath"/> 配置。
+/// 模型路径走 <see cref="AiSettings.LocalModelPath"/> 配置。
 /// </para>
 /// </summary>
 public sealed class LocalOnnxAiProvider : IAiProvider, ILocalAiProvider
@@ -40,7 +40,7 @@ public sealed class LocalOnnxAiProvider : IAiProvider, ILocalAiProvider
     {
         get
         {
-            var settings = _provider.SafeGetSettings();
+            var settings = _provider.SafeGetAiSettings();
             if (!settings.AiEnabled)
             {
                 return false;
@@ -69,7 +69,7 @@ public sealed class LocalOnnxAiProvider : IAiProvider, ILocalAiProvider
                 return Task.FromResult<SubjectResult?>(null);
             }
 
-            var settings = _provider.SafeGetSettings();
+            var settings = _provider.SafeGetAiSettings();
             // —— 推理占位：真实 ONNX 会话加载与 tokenizer 接入见交付报告「已知缺口」 ——
             _logger.LogWarning(
                 "本地 ONNX 推理为占位实现（modelPath={ModelPath}），返回 null 交给下一级",
@@ -87,7 +87,7 @@ public sealed class LocalOnnxAiProvider : IAiProvider, ILocalAiProvider
         }
     }
 
-    private string ResolveModelPath(ClassificationSettings settings)
+    private string ResolveModelPath(AiSettings settings)
     {
         var path = string.IsNullOrWhiteSpace(settings.LocalModelPath)
             ? "models/subject-classifier.onnx"

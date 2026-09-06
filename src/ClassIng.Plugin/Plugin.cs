@@ -88,6 +88,13 @@ public class ClassIngPlugin : PluginBase
                 sp.GetRequiredService<SubjectChainOptionsProvider>(),
                 logger: sp.GetService<ILogger<CloudOpenAiProvider>>()));
         services.AddSingleton<IAiProvider>(sp => sp.GetRequiredService<CloudOpenAiProvider>());
+        // 需求 5+6：Anthropic Messages API 云端提供者（AiSettings.CloudProvider 切换；
+        // 两个云端提供者各自按 Provider 类型门控 IsAvailable，链组合器自动跳过不可用者）
+        services.AddSingleton<AnthropicCloudProvider>(sp =>
+            new AnthropicCloudProvider(
+                sp.GetRequiredService<SubjectChainOptionsProvider>(),
+                logger: sp.GetService<ILogger<AnthropicCloudProvider>>()));
+        services.AddSingleton<IAiProvider>(sp => sp.GetRequiredService<AnthropicCloudProvider>());
         services.AddSingleton<JsonPendingConfirmStore>(sp =>
             new JsonPendingConfirmStore(
                 sp.GetRequiredService<SubjectChainOptionsProvider>(),
@@ -117,11 +124,21 @@ public class ClassIngPlugin : PluginBase
                 sp.GetService<ILogger<NoKeywordFallbackClassifier>>()));
 
         // 需求 6 用途②：通知/作业二分类 AI 路由（AiMessageKindRouter 包装关键词分类器；
-        // AiSettings.MessageClassifyMode 默认 Off 时行为与纯关键词分类完全一致）
-        services.AddSingleton<IMessageKindAiProvider>(sp =>
+        // AiSettings.MessageClassifyMode 默认 Off 时行为与纯关键词分类完全一致）。
+        // 需求 5+6：二分类云端提供者按 AiSettings.CloudProvider 在 OpenAI 兼容 / Anthropic 之间选择
+        //（CompositeMessageKindProvider 依赖各自 IsAvailable 门控，路由层 AiMessageKindRouter 无感切换）。
+        services.AddSingleton(sp =>
             new CloudMessageKindProvider(
                 sp.GetRequiredService<SubjectChainOptionsProvider>(),
                 logger: sp.GetService<ILogger<CloudMessageKindProvider>>()));
+        services.AddSingleton(sp =>
+            new AnthropicMessageKindProvider(
+                sp.GetRequiredService<SubjectChainOptionsProvider>(),
+                logger: sp.GetService<ILogger<AnthropicMessageKindProvider>>()));
+        services.AddSingleton<IMessageKindAiProvider>(sp =>
+            new CompositeMessageKindProvider(
+                sp.GetRequiredService<CloudMessageKindProvider>(),
+                sp.GetRequiredService<AnthropicMessageKindProvider>()));
         services.AddSingleton<IMessageClassifier>(sp =>
             new AiMessageKindRouter(
                 sp.GetRequiredService<KeywordMessageClassifier>(),
@@ -150,6 +167,10 @@ public class ClassIngPlugin : PluginBase
         // NoticeStore（通知学科前缀）共用同一份「发送者→学科」映射。
         services.AddSingleton(sp => new UserSubjectRuleStore(
             dataDir, sp.GetService<ILogger<UserSubjectRuleStore>>()));
+        // 需求 2：成员学科显式绑定存储（member-subject-bindings.json）：消息管道（MemberSelection 模式）
+        // 与词表编辑页管理 UI、未绑定学科选择悬浮窗共用同一单例（进程内缓存即时生效）。
+        services.AddSingleton(sp => new MemberSubjectBindingStore(
+            dataDir, sp.GetService<ILogger<MemberSubjectBindingStore>>()));
         services.AddSingleton(sp => new NoticeStore(
             dataDir,
             userRules: sp.GetRequiredService<UserSubjectRuleStore>(),
@@ -187,7 +208,10 @@ public class ClassIngPlugin : PluginBase
             sp.GetRequiredService<IFilePipelineService>(),
             () => settingsService.Current.Overlays.SubjectCircle,
             relative => ResolveArchivePath(settingsService.Current.Files, dataDir, relative),
-            sp.GetService<ILogger<SubjectFilesSuspensionWindow>>()));
+            sp.GetService<ILogger<SubjectFilesSuspensionWindow>>(),
+            // 注入控制器与设置服务：右上角「⋯」快捷菜单（置顶/固定/穿透）与通知窗共用 OverlayQuickMenu
+            overlays: sp.GetRequiredService<ISuspensionWindowController>(),
+            settingsService: settingsService));
         services.AddSingleton(sp => new SubjectFilesController(
             sp.GetRequiredService<ISuspensionWindowController>(),
             sp.GetRequiredService<ISettingsService>(),
@@ -198,7 +222,9 @@ public class ClassIngPlugin : PluginBase
             sp.GetRequiredService<IFilePipelineService>(),
             () => settingsService.Current.Overlays.SubjectCircle,
             sp.GetService<ILogger<SubjectCircleBarWindow>>(),
-            settingsService));
+            settingsService,
+            // 注入控制器：底部「⋯」快捷菜单（置顶/固定/穿透）与其他悬浮窗共用 OverlayQuickMenu
+            overlays: sp.GetRequiredService<ISuspensionWindowController>()));
         services.AddSingleton(sp =>
             new SuspensionWindowController(
                 dataDir,
@@ -215,9 +241,12 @@ public class ClassIngPlugin : PluginBase
                         sp.GetRequiredService<IHomeworkStore>(),
                         () => settingsService.Current.Overlays.HomeworkGroupOrder,
                         sp.GetRequiredService<ISettingsService>(),
-                        sp.GetRequiredService<IHomeworkSendService>()),
+                        sp.GetRequiredService<IHomeworkSendService>(),
+                        sp.GetRequiredService<ISuspensionWindowController>()),
                     SuspensionWindowController.FilesKey => sp.GetRequiredService<SubjectFilesSuspensionWindow>(),
                     SuspensionWindowController.CircleKey => (Window?)sp.GetRequiredService<SubjectCircleBarWindow>(),
+                    // 第五悬浮窗（未绑定学科选择，需求 3）：单例窗，协调器触发时装载请求并经控制器显示
+                    SuspensionWindowController.SubjectSelectionKey => (Window?)sp.GetRequiredService<SubjectSelectionSuspensionWindow>(),
                     _ => (Window?)null
                 },
                 sp.GetRequiredService<ISettingsService>()));
@@ -305,7 +334,52 @@ public class ClassIngPlugin : PluginBase
         // UpdateDetected → 通知；FileDownload/SubjectClassify/StoreWrite 重试执行器注册；
         // 并负责拉起 IMessageIngestService（此前无宿主启动点）。
         // 全流程 try/catch + 结构化日志，失败按类型进重试队列，任何一环失败不崩溃。
-        services.AddHostedService<Services.Pipeline.MessageDispatchService>();
+        // 需求 2/4：MemberSelection 模式下消费成员显式绑定存储（Keyword 模式不读取，现状不变），
+        // 学科识别模式经委托热读取 settings.json（SubjectRecognitionSettings）。
+        services.AddSingleton(sp => new Services.Pipeline.MessageDispatchService(
+            sp.GetRequiredService<IMessageIngestService>(),
+            sp.GetRequiredService<IMessageClassifier>(),
+            sp.GetRequiredService<ISubjectClassifierChain>(),
+            sp.GetRequiredService<INoticeStore>(),
+            sp.GetRequiredService<IHomeworkStore>(),
+            sp.GetRequiredService<IFilePipelineService>(),
+            sp.GetRequiredService<Services.Maintenance.RetryQueueService>(),
+            sp.GetRequiredService<IUpdateNotifyService>(),
+            sp.GetRequiredService<JsonPendingConfirmStore>(),
+            sp.GetRequiredService<INoKeywordFallbackClassifier>(),
+            sp.GetRequiredService<MemberSubjectBindingStore>(),
+            () => settingsService.Current.SubjectRecognition,
+            sp.GetService<ILogger<Services.Pipeline.MessageDispatchService>>()));
+        services.AddHostedService(sp =>
+        {
+            // 强制创建协调器完成 SubjectSelectionRequired 事件接线（早于首条消息）
+            sp.GetRequiredService<Services.Overlays.SubjectSelectionCoordinator>();
+            return sp.GetRequiredService<Services.Pipeline.MessageDispatchService>();
+        });
+
+        // ---- 需求 3：未绑定学科选择悬浮窗协调器 ----
+        // 订阅 dispatch 的 SubjectSelectionRequired：装载触发请求到单例选择窗并经控制器显示；
+        // 用户点选学科 → 写回成员绑定存储 + 该消息作业人工修正 + 文件二次归档。
+        services.AddSingleton(sp =>
+        {
+            var coordinator = new Services.Overlays.SubjectSelectionCoordinator(
+                sp.GetRequiredService<Services.Pipeline.MessageDispatchService>(),
+                sp.GetRequiredService<ISuspensionWindowController>(),
+                () => sp.GetRequiredService<SubjectSelectionSuspensionWindow>(),
+                sp.GetRequiredService<MemberSubjectBindingStore>(),
+                sp.GetRequiredService<IHomeworkStore>(),
+                sp.GetRequiredService<IFilePipelineService>(),
+                sp.GetService<ILogger<Services.Overlays.SubjectSelectionCoordinator>>());
+            // 事件接线：创建即订阅（均早于首条消息到达）
+            coordinator.Attach();
+            return coordinator;
+        });
+        services.AddSingleton<SubjectSelectionSuspensionWindow>(sp => new SubjectSelectionSuspensionWindow(
+            (request, subject) => sp.GetRequiredService<Services.Overlays.SubjectSelectionCoordinator>()
+                .ApplySelectionAsync(request, subject),
+            () => ClassIng.Plugin.Services.SubjectChain.SubjectRuleFile
+                .LoadOrSeed(sp.GetRequiredService<SubjectChainOptionsProvider>()).Rules
+                .Select(r => r.Subject).ToList()));
 
         // ---- 模块 5：保留期清理任务（启动时 + 每日跨天 + 设置变更；只删过期桶，绝不动当天与未读）----
         services.AddHostedService<Services.Pipeline.RetentionCleanupService>();
