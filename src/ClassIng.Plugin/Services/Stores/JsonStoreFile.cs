@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using ClassIng.Plugin.Services.SubjectChain;
 using Microsoft.Extensions.Logging;
 
@@ -16,7 +17,10 @@ internal static class JsonStoreFile
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // 枚举以名称字符串读写（如 "subjectSource": "Manual"）：文件人类可读；
+        // 读取同时兼容旧版本写入的数字枚举值，向后兼容不丢数据。
+        Converters = { new JsonStringEnumConverter() }
     };
 
     public static string Serialize<T>(T dto) => JsonSerializer.Serialize(dto, JsonOptions);

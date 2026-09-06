@@ -114,8 +114,11 @@ public interface INoticeStore
     /// <summary>幂等写入变化通知：悬浮窗据此合并刷新（限流由悬浮窗侧负责）。</summary>
     event EventHandler<NoticeItem>? Changed;
 
-    /// <summary>按消息 id 幂等添加或更新。</summary>
-    Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, CancellationToken ct = default);
+    /// <summary>按消息 id 幂等添加或更新。
+    /// <paramref name="memberOpenId"/>：发送者成员 OpenID——该发送者已绑定学科映射且
+    /// ClassificationSettings.NoticeSubjectPrefix 开启时，写入内容前附加「学科：」前缀
+    /// （无映射不加，已有前缀不重复添加）；更新提示等无发送者场景传 null。</summary>
+    Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null, CancellationToken ct = default);
 
     Task MarkReadAsync(Guid id, CancellationToken ct = default);
 

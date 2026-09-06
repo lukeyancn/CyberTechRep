@@ -227,7 +227,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         switch (classified.Kind)
         {
             case MessageKind.Notice:
-                await WriteNoticeAsync(message.MessageId, text, ct).ConfigureAwait(false);
+                await WriteNoticeAsync(message.MessageId, message.MemberOpenId, text, ct).ConfigureAwait(false);
                 break;
 
             case MessageKind.Homework:
@@ -301,11 +301,12 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
     }
 
     /// <summary>通知：写 NoticeStore（悬浮窗经 Changed 自动刷新）。</summary>
-    private async Task WriteNoticeAsync(string messageId, string text, CancellationToken ct)
+    /// <summary>通知：写 NoticeStore（悬浮窗经 Changed 自动刷新）。memberOpenId 用于学科前缀（有映射时写入内容前附加「学科：」）。</summary>
+    private async Task WriteNoticeAsync(string messageId, string memberOpenId, string text, CancellationToken ct)
     {
         try
         {
-            await _noticeStore!.AddOrUpdateAsync(messageId, text, ct).ConfigureAwait(false);
+            await _noticeStore!.AddOrUpdateAsync(messageId, text, memberOpenId, ct).ConfigureAwait(false);
             _logger.LogInformation("通知已写入存储（MessageId={MessageId}, Length={Length}）", messageId, text.Length);
         }
         catch (OperationCanceledException)
@@ -317,7 +318,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             _logger.LogError(ex, "通知写入存储失败（MessageId={MessageId}），投递 StoreWrite 重试", messageId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
-                new StoreWritePayload(StoreWriteKind.NoticeUpsert, messageId, text, null),
+                // 携带 MemberOpenId：重放时学科前缀语义与首次写入一致
+                new StoreWritePayload(StoreWriteKind.NoticeUpsert, messageId, text, null, memberOpenId),
                 messageId).ConfigureAwait(false);
         }
     }
@@ -468,7 +470,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         try
         {
             // 幂等键：同版本只产生一条通知
-            await _noticeStore.AddOrUpdateAsync($"update:{info.LatestVersion}", content, ct).ConfigureAwait(false);
+            await _noticeStore.AddOrUpdateAsync($"update:{info.LatestVersion}", content, null, ct).ConfigureAwait(false);
             _logger.LogInformation("更新提示已写入通知（Version={Version}）", info.LatestVersion);
         }
         catch (Exception ex)
@@ -598,7 +600,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             switch (payload.Kind)
             {
                 case StoreWriteKind.NoticeUpsert when _noticeStore is not null:
-                    await _noticeStore.AddOrUpdateAsync(payload.MessageId, payload.Content ?? "", ct)
+                    await _noticeStore.AddOrUpdateAsync(payload.MessageId, payload.Content ?? "", payload.MemberOpenId, ct)
                         .ConfigureAwait(false);
                     break;
 

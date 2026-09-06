@@ -30,7 +30,7 @@ internal sealed class UserSubjectRuleDto
 /// 某成员发送的「未分类」作业被人工指定学科后，记录 成员OpenID → 学科 的永久规则；
 /// 该成员之后的所有作业（重启后同样生效）自动套用该学科，再次人工修正时覆盖。
 /// </summary>
-internal sealed class UserSubjectRuleStore
+public sealed class UserSubjectRuleStore
 {
     private readonly string _filePath;
     private readonly ILogger _logger;

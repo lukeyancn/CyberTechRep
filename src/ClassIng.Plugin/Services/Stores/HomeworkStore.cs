@@ -20,21 +20,34 @@ internal sealed class HomeworkFileDto
 /// 幂等：同 MessageId 重复 Upsert 合并为单条（保留原 Id/CreatedAt，更新学科与正文）；
 /// <see cref="IHomeworkStore.SetSubjectAsync"/> 人工修正写回（SubjectSource=Manual），
 /// 人工修正永不回退（协议端重投不覆盖）；「未分类」作业被人工指定学科后，
-/// 记录按发送者的永久学科规则（<see cref="UserSubjectRuleStore"/>）并同步该成员全部历史作业。
+/// 记录按发送者的永久学科规则（<see cref="UserSubjectRuleStore"/>）。
 /// </para>
+/// <para>
+/// 学科判定优先级矩阵（<see cref="HomeworkSubjectResolver"/>）：
+/// ①显式人工修正永不回退；②识别链正常命中 → 采用识别链结果，<b>不用映射覆盖</b>；
+/// ③识别链「未分类」且发送者有映射 → 套用映射（SubjectSource=Manual 语义保留）；④映射只在
+/// 「人工修正未分类作业」这一个入口学习（SetSubjectAsync 门控保持）。
+/// </para>
+/// <para>按天归档与保留期清理见 <see cref="RetentionPolicies"/>（逻辑分桶，启动/跨天清理）。</para>
 /// </summary>
 public sealed class HomeworkStore : IHomeworkStore
 {
     private readonly string _filePath;
     private readonly UserSubjectRuleStore _userRules;
     private readonly ILogger _logger;
+    private readonly Func<int>? _homeworkRetentionDays;
     private readonly object _lock = new();
     private List<HomeworkItem>? _items;
 
-    public HomeworkStore(string dataDirectory, ILogger? logger = null)
+    public HomeworkStore(
+        string dataDirectory,
+        ILogger? logger = null,
+        Func<int>? homeworkRetentionDays = null,
+        UserSubjectRuleStore? userRules = null)
     {
         _filePath = Path.Combine(dataDirectory, "homework.json");
-        _userRules = new UserSubjectRuleStore(dataDirectory, logger);
+        _userRules = userRules ?? new UserSubjectRuleStore(dataDirectory, logger);
+        _homeworkRetentionDays = homeworkRetentionDays;
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -127,18 +140,28 @@ public sealed class HomeworkStore : IHomeworkStore
             };
             _items[index] = updated;
 
-            // 「无法分类（未分类）→ 人工指定」触发按发送者规则：
-            // 该成员的全部历史作业都改为该学科，并永久记住（后续作业自动套用）
+            // 「无法分类（未分类）→ 人工指定」触发按发送者规则学习（唯一学习入口，门控保持），
+            // 并同步该成员历史作业。同步范围限定：仅「未分类」条目与此前按旧映射归类的条目
+            // （识别链正常命中的历史作业不覆盖——与优先级矩阵②一致）。
             var propagated = 0;
             var wasUnclassified = string.IsNullOrWhiteSpace(existing.Subject)
                 || string.Equals(existing.Subject, "未分类", StringComparison.Ordinal);
             if (wasUnclassified && !string.IsNullOrWhiteSpace(existing.MemberOpenId))
             {
+                var previousRule = _userRules.Get(existing.MemberOpenId);
                 _userRules.Set(existing.MemberOpenId, updated.Subject);
                 for (var i = 0; i < _items.Count; i++)
                 {
                     if (i == index
                         || !string.Equals(_items[i].MemberOpenId, existing.MemberOpenId, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var overwrite = HomeworkSubjectResolver.IsUnclassified(_items[i].Subject)
+                        || (previousRule is not null
+                            && string.Equals(_items[i].Subject, previousRule, StringComparison.Ordinal));
+                    if (!overwrite)
                     {
                         continue;
                     }
@@ -193,40 +216,97 @@ public sealed class HomeworkStore : IHomeworkStore
         }
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<HomeworkItem>> GetByDateAsync(DateOnly date, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            IReadOnlyList<HomeworkItem> matched = _items!
+                .Where(i => RetentionPolicies.BucketOf(i.CreatedAt) == date)
+                .OrderBy(i => i.CreatedAt)
+                .ToList();
+            return Task.FromResult(matched);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<int> CleanupAsync(CancellationToken ct = default)
+    {
+        List<HomeworkItem> removed = [];
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            var retention = _homeworkRetentionDays?.Invoke() ?? 0;
+            var today = DateOnly.FromDateTime(DateTime.Now);
+            List<HomeworkItem> kept = [];
+            foreach (var i in _items!)
+            {
+                if (RetentionPolicies.ShouldKeepHomework(i, today, retention))
+                {
+                    kept.Add(i);
+                }
+                else
+                {
+                    removed.Add(i);
+                }
+            }
+
+            if (removed.Count > 0)
+            {
+                _items = kept;
+                Save();
+                _logger.LogInformation(
+                    "作业保留期清理完成：删除 {Count} 条过期桶（当天条目不受影响）", removed.Count);
+            }
+        }
+
+        // 锁外逐条触发：悬浮窗合并刷新（删除条目从视图移除）
+        foreach (var r in removed)
+        {
+            RaiseChanged(r);
+        }
+
+        return Task.FromResult(removed.Count);
+    }
+
     /// <summary>
-    /// 幂等合并：保留原 Id/CreatedAt/IsResolved，更新正文/附件。学科取值优先级：
-    /// 原条目已人工修正（永不回退）＞ 新条目人工修正 ＞ 按发送者永久规则 ＞ 新条目识别结果。
+    /// 幂等合并：保留原 Id/CreatedAt/IsResolved，更新正文/附件。学科取值优先级
+    /// （<see cref="HomeworkSubjectResolver"/>）：
+    /// 原条目已人工修正（永不回退）＞ 新条目人工修正 ＞ 优先级矩阵（识别链正常命中不被映射覆盖；
+    /// 识别链「未分类」且发送者有映射 → 套用映射）。
     /// </summary>
     private HomeworkItem Merge(HomeworkItem existing, HomeworkItem incoming)
     {
         string subject;
         double confidence;
-        var source = SubjectSource.Manual;
-        if (existing.SubjectSource == SubjectSource.Manual)
+        SubjectSource source;
+        if (existing.SubjectSource == SubjectSource.Manual
+            && !HomeworkSubjectResolver.IsUnclassified(existing.Subject))
         {
-            // 人工修正永不回退：协议端重投/重试重放不覆盖人工结果
+            // ①显式人工修正（已有具体学科）永不回退：协议端重投/重试重放不覆盖人工结果
             subject = existing.Subject;
             confidence = existing.SubjectConfidence;
+            source = existing.SubjectSource;
         }
-        else if (incoming.SubjectSource == SubjectSource.Manual)
+        else if (incoming.SubjectSource == SubjectSource.Manual
+            && !HomeworkSubjectResolver.IsUnclassified(incoming.Subject))
         {
+            // 写入方人工修正（具体学科）直接采用
             subject = incoming.Subject;
             confidence = incoming.SubjectConfidence;
+            source = incoming.SubjectSource;
         }
         else
         {
+            // ②③④优先级矩阵（既有条目为「未分类」可被识别链重新命中/映射修正；
+            // 识别链命中优先于映射；映射只在识别链「未分类」时套用）
             var rule = _userRules.Get(incoming.MemberOpenId);
-            if (rule is not null)
-            {
-                subject = rule;
-                confidence = 1.0;
-            }
-            else
-            {
-                subject = incoming.Subject;
-                confidence = incoming.SubjectConfidence;
-                source = incoming.SubjectSource;
-            }
+            var resolved = HomeworkSubjectResolver.Resolve(
+                incoming.Subject, incoming.SubjectConfidence, incoming.SubjectSource, rule);
+            subject = resolved.Subject;
+            confidence = resolved.Confidence;
+            source = resolved.Source;
         }
 
         return new HomeworkItem
@@ -244,24 +324,33 @@ public sealed class HomeworkStore : IHomeworkStore
         };
     }
 
-    /// <summary>新作业套用「按发送者记住学科」永久规则（人工修正来源的条目不受影响）。</summary>
+    /// <summary>
+    /// 新作业套用优先级矩阵（人工修正来源的条目不受影响）：
+    /// 识别链正常命中 → 保留识别链结果（不用映射覆盖）；识别链「未分类」且有映射 → 套用映射。
+    /// </summary>
     private HomeworkItem ApplyUserRule(HomeworkItem item)
     {
-        if (item.SubjectSource == SubjectSource.Manual)
+        // 已带具体学科的人工修正条目不参与矩阵；
+        // 「未分类」条目（含识别链兜底返回的 Source=Manual）→ 进入矩阵（③有映射时套用映射）
+        if (item.SubjectSource == SubjectSource.Manual
+            && !HomeworkSubjectResolver.IsUnclassified(item.Subject))
         {
             return item;
         }
 
         var rule = _userRules.Get(item.MemberOpenId);
-        if (rule is null)
+        var resolved = HomeworkSubjectResolver.Resolve(
+            item.Subject, item.SubjectConfidence, item.SubjectSource, rule);
+        if (!resolved.RuleApplied)
         {
             return item;
         }
 
-        item.Subject = rule;
-        item.SubjectConfidence = 1.0;
-        item.SubjectSource = SubjectSource.Manual;
-        _logger.LogInformation("作业按发送者学科规则归类 Member={Member}, Subject={Subject}", item.MemberOpenId, rule);
+        item.Subject = resolved.Subject;
+        item.SubjectConfidence = resolved.Confidence;
+        item.SubjectSource = resolved.Source;
+        _logger.LogInformation("识别链未分类，作业按发送者学科映射归类 Member={Member}, Subject={Subject}",
+            item.MemberOpenId, rule);
         return item;
     }
 

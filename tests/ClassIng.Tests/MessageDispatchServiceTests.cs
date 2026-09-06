@@ -1,6 +1,7 @@
 using System.Runtime.Versioning;
 using ClassIng.Plugin.Services.Maintenance;
 using ClassIng.Plugin.Services.Pipeline;
+using ClassIng.Plugin.Services.Stores;
 using ClassIng.Plugin.Services.SubjectChain;
 using ClassIng.Shared.Abstractions;
 using ClassIng.Shared.Models;
@@ -108,17 +109,21 @@ public sealed class MessageDispatchServiceTests : IDisposable
     {
         public List<NoticeItem> Items { get; } = [];
 
+        /// <summary>每次 AddOrUpdateAsync 收到的 memberOpenId（验证发送者链路接线）。</summary>
+        public List<string?> MemberOpenIds { get; } = [];
+
         public Func<string, string, Task>? OnAddOrUpdate { get; set; }
 
         public event EventHandler<NoticeItem>? Changed;
 
-        public async Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, CancellationToken ct = default)
+        public async Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null, CancellationToken ct = default)
         {
             if (OnAddOrUpdate is not null)
             {
                 await OnAddOrUpdate(messageId, content);
             }
 
+            MemberOpenIds.Add(memberOpenId);
             var existing = Items.Find(i => i.MessageId == messageId);
             if (existing is not null)
             {
@@ -144,11 +149,19 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
         public Task MarkReadAsync(Guid id, CancellationToken ct = default) => Task.CompletedTask;
 
+        public Task MarkUnreadAsync(Guid id, CancellationToken ct = default) => Task.CompletedTask;
+
         public Task<IReadOnlyList<NoticeItem>> GetUnreadAsync(CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<NoticeItem>>(Items.Where(i => !i.IsRead).ToList());
 
         public Task<IReadOnlyList<NoticeItem>> GetAllAsync(CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<NoticeItem>>(Items.ToList());
+
+        public Task<IReadOnlyList<NoticeItem>> GetByDateAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<NoticeItem>>(
+                Items.Where(i => DateOnly.FromDateTime(i.CreatedAt.LocalDateTime) == date).ToList());
+
+        public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
     }
 
     private sealed class FakeHomeworkStore : IHomeworkStore
@@ -197,6 +210,12 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
         public Task<IReadOnlyList<HomeworkItem>> GetBySubjectAsync(string subject, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<HomeworkItem>>(Items.Where(i => i.Subject == subject).ToList());
+
+        public Task<IReadOnlyList<HomeworkItem>> GetByDateAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<HomeworkItem>>(
+                Items.Where(i => DateOnly.FromDateTime(i.CreatedAt.LocalDateTime) == date).ToList());
+
+        public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
     }
 
     private sealed class FakeFilePipeline : IFilePipelineService
@@ -272,13 +291,14 @@ public sealed class MessageDispatchServiceTests : IDisposable
         FakeFilePipeline? files = null,
         RetryQueueService? retryQueue = null,
         FakeUpdateNotify? update = null,
-        JsonPendingConfirmStore? pending = null)
+        JsonPendingConfirmStore? pending = null,
+        INoticeStore? noticesOverride = null)
     {
         return new MessageDispatchService(
             ingest ?? new FakeIngestService(),
             classifier ?? new FakeClassifier(),
             chain ?? new FakeSubjectChain(),
-            notices ?? new FakeNoticeStore(),
+            (INoticeStore?)noticesOverride ?? notices ?? new FakeNoticeStore(),
             homework ?? new FakeHomeworkStore(),
             files ?? new FakeFilePipeline(),
             retryQueue,
@@ -483,6 +503,45 @@ public sealed class MessageDispatchServiceTests : IDisposable
         var stored = Assert.Single(notices.Items);
         Assert.Equal("m8", stored.MessageId);
         Assert.Equal("重放的通知", stored.Content);
+        dispatch.Dispose();
+    }
+
+    [Fact]
+    public async Task StoreWriteRetryExecutor_ReplaysNoticeWrite_WithMemberOpenId()
+    {
+        var retry = CreateRetryQueue();
+        var notices = new FakeNoticeStore();
+        var dispatch = CreateDispatch(notices: notices, retryQueue: retry);
+        await dispatch.StartAsync(CancellationToken.None);
+
+        var payload = new MessageDispatchService.StoreWritePayload(
+            MessageDispatchService.StoreWriteKind.NoticeUpsert, "m9", "重放的通知", null, MemberOpenId: "u1");
+        await retry.EnqueueAsync(RetryOperationType.StoreWrite, payload);
+        await retry.TickAsync(forceDue: true);
+
+        Assert.Single(notices.Items);
+        Assert.Equal("u1", Assert.Single(notices.MemberOpenIds));
+        dispatch.Dispose();
+    }
+
+    [Fact]
+    public async Task StoreWriteRetryExecutor_ReplaysMappedSenderNotice_WithSubjectPrefix()
+    {
+        // 端到端：StoreWrite 重放链路也套用「发送者→学科」前缀（真实 NoticeStore）
+        var rules = new UserSubjectRuleStore(_dir);
+        rules.Set("u1", "英语");
+        var notices = new NoticeStore(_dir, userRules: rules);
+        var retry = CreateRetryQueue();
+        var dispatch = CreateDispatch(retryQueue: retry, noticesOverride: notices);
+        await dispatch.StartAsync(CancellationToken.None);
+
+        var payload = new MessageDispatchService.StoreWritePayload(
+            MessageDispatchService.StoreWriteKind.NoticeUpsert, "m10", "明天交作业", null, MemberOpenId: "u1");
+        await retry.EnqueueAsync(RetryOperationType.StoreWrite, payload);
+        await retry.TickAsync(forceDue: true);
+
+        var stored = Assert.Single(await notices.GetAllAsync());
+        Assert.Equal("英语：明天交作业", stored.Content);
         dispatch.Dispose();
     }
 

@@ -112,11 +112,20 @@ public class ClassIngPlugin : PluginBase
         services.AddSingleton<IFilePipelineService>(sp => sp.GetRequiredService<FilePipelineService>());
 
         // ---- 模块 5：持久化层（通知/作业存储，JSON 原子写入 + .bak 损坏恢复）----
-        services.AddSingleton(sp =>
-            new NoticeStore(dataDir, sp.GetService<ILogger<NoticeStore>>()));
+        // UserSubjectRuleStore 共享单例：HomeworkStore（学科优先级矩阵）与
+        // NoticeStore（通知学科前缀）共用同一份「发送者→学科」映射。
+        services.AddSingleton(sp => new UserSubjectRuleStore(
+            dataDir, sp.GetService<ILogger<UserSubjectRuleStore>>()));
+        services.AddSingleton(sp => new NoticeStore(
+            dataDir,
+            userRules: sp.GetRequiredService<UserSubjectRuleStore>(),
+            noticePrefixEnabled: () => settingsService.Current.Classification.NoticeSubjectPrefix,
+            logger: sp.GetService<ILogger<NoticeStore>>()));
         services.AddSingleton<INoticeStore>(sp => sp.GetRequiredService<NoticeStore>());
-        services.AddSingleton(sp =>
-            new HomeworkStore(dataDir, sp.GetService<ILogger<HomeworkStore>>()));
+        services.AddSingleton(sp => new HomeworkStore(
+            dataDir,
+            sp.GetService<ILogger<HomeworkStore>>(),
+            userRules: sp.GetRequiredService<UserSubjectRuleStore>()));
         services.AddSingleton<IHomeworkStore>(sp => sp.GetRequiredService<HomeworkStore>());
 
         // ---- 模块 6：悬浮窗（Avalonia 无边框置顶窗 + 共享控制器）----

@@ -57,6 +57,12 @@ public sealed class ClassificationSettings
 {
     public IReadOnlyList<string> NoticeKeywords { get; set; } = ["通知", "注意", "提醒", "广播"];
 
+    /// <summary>
+    /// 通知学科前缀：已绑定「发送者→学科」映射的发送者发出通知时，
+    /// 通知内容前附加「学科名称：」前缀（NoticeStore 写入时生效，默认开）。
+    /// </summary>
+    public bool NoticeSubjectPrefix { get; set; } = true;
+
     public IReadOnlyList<string> HomeworkKeywords { get; set; } = ["作业", "练习", "提交", "完成"];
 
     /// <summary>学科关键词表外置文件相对路径（subjects.json）。</summary>
