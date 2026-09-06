@@ -28,8 +28,14 @@
             <TextBox Text="{Binding GroupWhitelistText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
                      Watermark="每一行一个群 OpenID"/>
 
-            <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗展示发送入口，确认后发送当天作业清单到白名单群）"
+            <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗展示发送入口，确认后发送当天作业清单到目标群）"
                           IsChecked="{Binding Settings.Connection.HomeworkSendEnabled}"/>
+
+            <TextBlock Text="作业清单发送目标群（群 OpenID，一行一个；与消息接管白名单相互独立，需单独填写）" FontWeight="SemiBold"/>
+            <TextBox Text="{Binding TargetGroupsText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
+                     Watermark="每一行一个群 OpenID（整理并发送专用）"/>
+            <TextBlock Text="说明：发送目标群与消息接管白名单相互独立——此处列表仅决定「整理并发送」发送到哪些群，修改白名单不影响发送目标；列表为空时点发送会明确提示未配置目标群。"
+                       FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
 
             <Expander Header="断线重连参数" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">

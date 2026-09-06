@@ -192,7 +192,7 @@ public class ClassIngPlugin : PluginBase
         services.AddSingleton<IHomeworkStore>(sp => sp.GetRequiredService<HomeworkStore>());
 
         // ---- 需求 2：作业清单「整理并发送」（QQ 官方机器人开放平台群消息 REST 发送）----
-        // 目标群 = 连接设置群白名单（GroupWhitelist）；发送开关 = 连接设置 HomeworkSendEnabled（默认 true，热生效）
+        // 目标群 = 连接设置 TargetGroupOpenIds（独立于消息接管白名单 GroupWhitelist）；发送开关 = 连接设置 HomeworkSendEnabled（默认 true，热生效）
         services.AddSingleton(_ => new HomeworkSendOptionsProvider
         {
             GetSettings = () => settingsService.Current.Connection,

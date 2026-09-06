@@ -331,7 +331,7 @@ public partial class HomeworkSuspensionWindow : Window
         try
         {
             var digest = HomeworkDigestFormatter.Format(_currentItems);
-            var results = await _sendService.SendTextToWhitelistedGroupsAsync(digest);
+            var results = await _sendService.SendTextToTargetGroupsAsync(digest);
             var okCount = results.Count(r => r.Success);
             var lines = new List<string> { $"发送完成：成功 {okCount}/{results.Count} 群" };
             lines.AddRange(results.Where(r => !r.Success)

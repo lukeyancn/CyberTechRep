@@ -167,7 +167,7 @@ public sealed class HomeworkDigestSendTests : IDisposable
         AppSecretProtected = "secret-plain",
         ApiBase = "http://test.local/api",
         TokenApiUrl = "http://test.local/token",
-        GroupWhitelist = groups
+        TargetGroupOpenIds = groups
     };
 
     private static HttpResponseMessage Json(object body, HttpStatusCode status = HttpStatusCode.OK) => new(status)
@@ -216,7 +216,7 @@ public sealed class HomeworkDigestSendTests : IDisposable
         };
         var service = CreateService(Settings("G1", "G2"), handler);
 
-        var results = await service.SendTextToWhitelistedGroupsAsync("清单" + HomeworkDigestFormatter.TailNote);
+        var results = await service.SendTextToTargetGroupsAsync("清单" + HomeworkDigestFormatter.TailNote);
 
         // 逐群汇总：G1 成功、G2 失败（含平台错误码，不静默）
         Assert.Equal(2, results.Count);
@@ -248,7 +248,7 @@ public sealed class HomeworkDigestSendTests : IDisposable
         };
         var service = CreateService(Settings("G1"), handler);
 
-        var results = await service.SendTextToWhitelistedGroupsAsync("内容", msgId: "EVENT-MSG-1");
+        var results = await service.SendTextToTargetGroupsAsync("内容", msgId: "EVENT-MSG-1");
 
         Assert.True(results.Single().Success);
         var send = handler.Requests.Single(r => r.Path.Contains("/v2/groups/"));
@@ -256,7 +256,7 @@ public sealed class HomeworkDigestSendTests : IDisposable
     }
 
     [Fact]
-    public async Task Send_EmptyWhitelist_ReturnsSingleFailure()
+    public async Task Send_EmptyTargetGroups_ReturnsSingleFailure()
     {
         var handler = new StubHttpHandler
         {
@@ -264,11 +264,11 @@ public sealed class HomeworkDigestSendTests : IDisposable
         };
         var service = CreateService(Settings(), handler);
 
-        var results = await service.SendTextToWhitelistedGroupsAsync("内容");
+        var results = await service.SendTextToTargetGroupsAsync("内容");
 
         var failure = Assert.Single(results);
         Assert.False(failure.Success);
-        Assert.Contains("白名单", failure.Error);
+        Assert.Contains("目标群", failure.Error);
         Assert.Empty(handler.Requests); // 未发起任何 HTTP 请求
     }
 
@@ -281,7 +281,7 @@ public sealed class HomeworkDigestSendTests : IDisposable
         };
         var service = CreateService(Settings("G1"), handler, enabled: () => false);
 
-        var results = await service.SendTextToWhitelistedGroupsAsync("内容");
+        var results = await service.SendTextToTargetGroupsAsync("内容");
 
         var failure = Assert.Single(results);
         Assert.False(failure.Success);
@@ -310,6 +310,79 @@ public sealed class HomeworkDigestSendTests : IDisposable
         Assert.True(restored.Connection.HomeworkSendEnabled);
     }
 
+    // ---------- 需求 4：发送目标群独立于消息接管白名单 ----------
+
+    [Fact]
+    public void TargetGroupOpenIds_DefaultEmpty_AndRoundTripsThroughJson()
+    {
+        // 默认空列表（不迁移旧白名单数据，需用户显式填写目标群）
+        Assert.Empty(new AppSettings().Connection.TargetGroupOpenIds);
+
+        // 序列化往返：多群列表持久化后原样恢复，空列表仍为空
+        var settings = new AppSettings();
+        settings.Connection.TargetGroupOpenIds = ["G-A", "G-B"];
+        var json = System.Text.Json.JsonSerializer.Serialize(settings);
+        var restored = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(json)!;
+        Assert.Equal(["G-A", "G-B"], restored.Connection.TargetGroupOpenIds);
+
+        settings.Connection.TargetGroupOpenIds = [];
+        json = System.Text.Json.JsonSerializer.Serialize(settings);
+        restored = System.Text.Json.JsonSerializer.Deserialize<AppSettings>(json)!;
+        Assert.Empty(restored.Connection.TargetGroupOpenIds);
+    }
+
+    [Fact]
+    public async Task Send_UsesIndependentTargetList_IgnoringWhitelist()
+    {
+        // 发送目标 = TargetGroupOpenIds；消息接管白名单 GroupWhitelist 完全不参与发送（解耦）
+        var handler = new StubHttpHandler
+        {
+            Responder = (req, _) => Task.FromResult(
+                req.RequestUri!.AbsolutePath.EndsWith("/token")
+                    ? Json(new { access_token = "tok123" })
+                    : Json(new { id = "ok" }))
+        };
+        var settings = Settings("T1", "T2");
+        settings.GroupWhitelist = ["W1", "W2"]; // 白名单与目标群不同集合
+        var service = CreateService(settings, handler);
+
+        var results = await service.SendTextToTargetGroupsAsync("内容");
+
+        // 只发到目标群 T1/T2，绝不发到白名单群 W1/W2
+        Assert.Equal(2, results.Count);
+        Assert.Equal(["T1", "T2"], results.Select(r => r.GroupOpenId).ToArray());
+        var sentGroups = handler.Requests
+            .Where(r => r.Path.Contains("/v2/groups/"))
+            .Select(r => r.Path.Split('/')[4])
+            .ToList();
+        Assert.Equal(["T1", "T2"], sentGroups);
+        Assert.DoesNotContain(sentGroups, g => g.StartsWith('W'));
+
+        // 白名单变化不影响发送目标（热读取同一设置对象，仅改白名单字段）
+        settings.GroupWhitelist = ["W9"];
+        var results2 = await service.SendTextToTargetGroupsAsync("内容");
+        Assert.Equal(["T1", "T2"], results2.Select(r => r.GroupOpenId).ToArray());
+    }
+
+    [Fact]
+    public async Task Send_BlankOrDuplicateTargetEntries_AreFiltered()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = (req, _) => Task.FromResult(
+                req.RequestUri!.AbsolutePath.EndsWith("/token")
+                    ? Json(new { access_token = "tok123" })
+                    : Json(new { id = "ok" }))
+        };
+        var service = CreateService(Settings("T1", "  ", "", "T1", "T2"), handler);
+
+        var results = await service.SendTextToTargetGroupsAsync("内容");
+
+        // 空白条目剔除、重复群去重（Ordinal）：实际只发 T1、T2 各一次
+        Assert.Equal(["T1", "T2"], results.Select(r => r.GroupOpenId).ToArray());
+        Assert.All(results, r => Assert.True(r.Success));
+    }
+
     [Fact]
     public void SendEntryVisibility_HidesWhenServiceMissingOrSwitchOff()
     {
@@ -323,7 +396,7 @@ public sealed class HomeworkDigestSendTests : IDisposable
     {
         public bool IsEnabled { get; } = enabled;
 
-        public Task<IReadOnlyList<GroupSendResult>> SendTextToWhitelistedGroupsAsync(
+        public Task<IReadOnlyList<GroupSendResult>> SendTextToTargetGroupsAsync(
             string content, string? msgId = null, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyList<GroupSendResult>>([]);
     }

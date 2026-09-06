@@ -47,6 +47,13 @@ public sealed class ConnectionSettings
     /// <summary>群白名单（群 OpenID；空 = 接收全部已接入群，仅建议调试期使用）。</summary>
     public IReadOnlyList<string> GroupWhitelist { get; set; } = [];
 
+    /// <summary>
+    /// 作业清单「整理并发送」目标群（群 OpenID）：发送目标独立列表，与 <see cref="GroupWhitelist"/>
+    /// （消息接管白名单）相互独立，白名单变化不影响发送目标。
+    /// 默认空列表 = 未配置目标群（不迁移旧白名单数据，需用户显式填写）；空时发送明确报错回 UI（不静默）。
+    /// </summary>
+    public IReadOnlyList<string> TargetGroupOpenIds { get; set; } = [];
+
     /// <summary>断线重连：初始延迟（秒）/倍增系数/上限（秒）。</summary>
     public int ReconnectInitialDelaySec { get; set; } = 2;
 

@@ -25,11 +25,18 @@ public partial class ConnectionSettingsPage : ClassIngSettingsPageBase
         set => Settings.Connection.AppSecretProtected = SettingsService.Protect(value ?? "");
     }
 
-    /// <summary>群白名单 ↔ 多行文本。</summary>
+    /// <summary>群白名单 ↔ 多行文本（消息接管白名单，与发送目标群相互独立）。</summary>
     public string GroupWhitelistText
     {
         get => LinesToText([.. Settings.Connection.GroupWhitelist]);
         set => Settings.Connection.GroupWhitelist = TextToLines(value);
+    }
+
+    /// <summary>作业清单发送目标群 ↔ 多行文本（独立于消息接管白名单，需求 4）。</summary>
+    public string TargetGroupsText
+    {
+        get => LinesToText([.. Settings.Connection.TargetGroupOpenIds]);
+        set => Settings.Connection.TargetGroupOpenIds = TextToLines(value);
     }
 
     private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);

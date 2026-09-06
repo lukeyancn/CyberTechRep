@@ -11,7 +11,7 @@ namespace ClassIng.Plugin.Services.MessageAccess;
 /// <summary>发送服务依赖提供者（解耦设置服务，便于单元测试）。</summary>
 public sealed class HomeworkSendOptionsProvider
 {
-    /// <summary>提供当前连接设置（AppId/AppSecret/ApiBase/群白名单；设置页修改后热生效）。</summary>
+    /// <summary>提供当前连接设置（AppId/AppSecret/ApiBase/目标群列表；设置页修改后热生效）。</summary>
     public required Func<ConnectionSettings> GetSettings { get; init; }
 
     /// <summary>解密 AppSecretProtected → 明文（默认直接返回原值，供测试使用；宿主注入 DPAPI 实现）。</summary>
@@ -29,7 +29,8 @@ public sealed class HomeworkSendOptionsProvider
 /// <summary>
 /// 作业清单整理并发送服务（QQ 官方机器人开放平台群消息 REST API）。
 /// <para>
-/// 发送目标 = 连接设置群白名单（GroupWhitelist，群 OpenID），多群逐一发送并逐群汇总结果；
+/// 发送目标 = 连接设置 TargetGroupOpenIds（作业清单发送目标群，群 OpenID），
+/// 与消息接管白名单 GroupWhitelist 相互独立；多群逐一发送并逐群汇总结果；
 /// 单群失败（HTTP 错误 / 平台业务错误码 / 网络异常）不中断其余群，失败原因原样带回 UI（不静默）。
 /// </para>
 /// <para>
@@ -64,7 +65,7 @@ public sealed class HomeworkSendService : IHomeworkSendService
     /// <summary>发送功能是否开启（开关接线连接设置 HomeworkSendEnabled，默认开）。</summary>
     public bool IsEnabled => _provider.GetEnabled?.Invoke() ?? true;
 
-    public async Task<IReadOnlyList<GroupSendResult>> SendTextToWhitelistedGroupsAsync(
+    public async Task<IReadOnlyList<GroupSendResult>> SendTextToTargetGroupsAsync(
         string content, string? msgId = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(content);
@@ -76,14 +77,14 @@ public sealed class HomeworkSendService : IHomeworkSendService
         }
 
         var settings = _provider.GetSettings();
-        var groups = settings.GroupWhitelist
+        var groups = settings.TargetGroupOpenIds
             .Where(g => !string.IsNullOrWhiteSpace(g))
             .Distinct(StringComparer.Ordinal)
             .ToList();
         if (groups.Count == 0)
         {
-            _logger.LogWarning("群白名单为空，作业清单未发送");
-            return [new GroupSendResult("", false, "群白名单为空（连接设置中未配置目标群），未发送")];
+            _logger.LogWarning("发送目标群列表为空，作业清单未发送");
+            return [new GroupSendResult("", false, "发送目标群为空（连接设置中未配置目标群，与消息接管白名单相互独立），未发送")];
         }
 
         var results = new List<GroupSendResult>(groups.Count);

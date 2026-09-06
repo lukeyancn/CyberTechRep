@@ -177,20 +177,21 @@ public interface IHomeworkStore
 /// <summary>单群发送结果（逐群汇总，供 UI 反馈失败清单）。</summary>
 public sealed record GroupSendResult(string GroupOpenId, bool Success, string? Error);
 
-/// <summary>作业清单整理并发送（QQ 官方机器人开放平台群消息，目标 = 连接设置群白名单）。</summary>
+/// <summary>作业清单整理并发送（QQ 官方机器人开放平台群消息，目标 = 连接设置 TargetGroupOpenIds，与消息接管白名单独立）。</summary>
 public interface IHomeworkSendService
 {
     /// <summary>发送功能是否开启（防误发开关经构造注入，默认开）。</summary>
     bool IsEnabled { get; }
 
     /// <summary>
-    /// 向白名单群逐一发送文本消息（msg_type=0）。默认主动消息（不带 msg_id，受平台频控），
+    /// 向目标群（连接设置 TargetGroupOpenIds，独立于消息接管白名单）逐一发送文本消息（msg_type=0）。
+    /// 默认主动消息（不带 msg_id，受平台频控），
     /// 传入 <paramref name="msgId"/> 则按被动回复发送（5 分钟有效期、同 msg_id 最多回复 5 次）。
     /// 逐群独立尝试、互不影响；单群失败不中断其余群，结果逐群汇总由调用方反馈到 UI（不静默）。
     /// </summary>
     /// <param name="content">文本内容（已含整理后的清单与尾注）。</param>
     /// <param name="msgId">被动回复来源消息 id；null = 主动消息。</param>
-    Task<IReadOnlyList<GroupSendResult>> SendTextToWhitelistedGroupsAsync(
+    Task<IReadOnlyList<GroupSendResult>> SendTextToTargetGroupsAsync(
         string content, string? msgId = null, CancellationToken ct = default);
 }
 
