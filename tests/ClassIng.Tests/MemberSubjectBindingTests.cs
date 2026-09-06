@@ -181,6 +181,61 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         }
     }
 
+    /// <summary>通知分类替身：选择窗通知触发路径用。</summary>
+    private sealed class FakeNoticeClassifier : IMessageClassifier
+    {
+        public Task<ClassifiedMessage> ClassifyAsync(MessageRecord message, CancellationToken ct = default) =>
+            Task.FromResult(new ClassifiedMessage
+            {
+                Source = message,
+                Kind = MessageKind.Notice,
+                Confidence = 1.0,
+                MatchReason = "notice-keyword"
+            });
+
+        public void ReloadRules()
+        {
+        }
+    }
+
+    /// <summary>最小通知存储替身。</summary>
+    private sealed class FakeNoticeStore : INoticeStore
+    {
+        public List<NoticeItem> Items { get; } = [];
+
+#pragma warning disable CS0067
+        public event EventHandler<NoticeItem>? Changed;
+#pragma warning restore CS0067
+
+        public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null, CancellationToken ct = default)
+        {
+            var existing = Items.Find(i => i.MessageId == messageId);
+            if (existing is not null)
+            {
+                return Task.FromResult(existing);
+            }
+
+            var item = new NoticeItem { MessageId = messageId, Content = content, CreatedAt = DateTimeOffset.Now };
+            Items.Add(item);
+            return Task.FromResult(item);
+        }
+
+        public Task MarkReadAsync(Guid id, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task MarkUnreadAsync(Guid id, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<NoticeItem>> GetUnreadAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<NoticeItem>>([.. Items]);
+
+        public Task<IReadOnlyList<NoticeItem>> GetAllAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<NoticeItem>>([.. Items]);
+
+        public Task<IReadOnlyList<NoticeItem>> GetByDateAsync(DateOnly date, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<NoticeItem>>([.. Items]);
+
+        public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
+    }
+
     private sealed class FakeHomeworkStore : IHomeworkStore
     {
         public List<HomeworkItem> Items { get; } = [];
@@ -326,7 +381,7 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
     }
 
     [Fact]
-    public async Task MemberSelection_NoBinding_ChainRuns()
+    public async Task MemberSelection_NoBinding_ChainRuns_AndStillRaisesSelection()
     {
         var (dispatch, chain, homework, _, requests) = Create(Settings(SubjectRecognitionMode.MemberSelection));
 
@@ -335,7 +390,76 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         Assert.Equal(1, chain.CallCount);
         var item = Assert.Single(homework.Items);
         Assert.Equal("数学", item.Subject);
-        Assert.Empty(requests); // 识别链正常命中：不触发选择窗
+        // 2026-09-06 语义修正：即使关键词链已识别出学科，未绑定也触发选择窗
+        //（候选把已识别结果放首位），点选写回绑定后该成员消息走绑定直达。
+        var request = Assert.Single(requests);
+        Assert.Equal("数学", request.ChainSubject);
+        Assert.Equal(0.95, request.ChainConfidence);
+    }
+
+    [Fact]
+    public async Task MemberSelection_Notice_Unbound_RaisesSelection()
+    {
+        var bindings = new MemberSubjectBindingStore(_dir);
+        var noticeStore = new FakeNoticeStore();
+        var requests = new List<SubjectSelectionRequest>();
+        var dispatch = new MessageDispatchService(
+            classifier: new FakeNoticeClassifier(),
+            noticeStore: noticeStore,
+            homeworkStore: new FakeHomeworkStore(),
+            memberBindings: bindings,
+            getSubjectRecognitionSettings: () => Settings(SubjectRecognitionMode.MemberSelection));
+        dispatch.SubjectSelectionRequired += (_, r) => requests.Add(r);
+
+        await dispatch.ProcessMessageAsync(Message());
+
+        // 真机缺陷场景（2026-09-06 日志 22:16:09）：通知从不触发选择窗 → 已修复
+        var request = Assert.Single(requests);
+        Assert.Equal("msg-member-1", request.MessageId);
+        Assert.Equal("member-1", request.MemberOpenId);
+        Assert.Single(noticeStore.Items); // 主流程不阻塞：通知照常入库
+    }
+
+    [Fact]
+    public async Task MemberSelection_Notice_Bound_DoesNotRaiseSelection()
+    {
+        var bindings = new MemberSubjectBindingStore(_dir);
+        bindings.Set("member-1", "物理");
+        var noticeStore = new FakeNoticeStore();
+        var requests = new List<SubjectSelectionRequest>();
+        var dispatch = new MessageDispatchService(
+            classifier: new FakeNoticeClassifier(),
+            noticeStore: noticeStore,
+            homeworkStore: new FakeHomeworkStore(),
+            memberBindings: bindings,
+            getSubjectRecognitionSettings: () => Settings(SubjectRecognitionMode.MemberSelection));
+        dispatch.SubjectSelectionRequired += (_, r) => requests.Add(r);
+
+        await dispatch.ProcessMessageAsync(Message());
+
+        Assert.Empty(requests);
+    }
+
+    [Fact]
+    public async Task MemberSelection_Cooldown_SecondMessageWithinWindow_DoesNotRaiseAgain()
+    {
+        var (dispatch, _, _, _, requests) = Create(Settings(SubjectRecognitionMode.MemberSelection));
+
+        await dispatch.ProcessMessageAsync(Message());
+        // 同一成员的第二条消息（不同 MessageId）在冷却窗口内 → 不重复弹
+        var second = Message();
+        second = new MessageRecord
+        {
+            MessageId = "msg-second",
+            GroupOpenId = second.GroupOpenId,
+            MemberOpenId = second.MemberOpenId,
+            SenderNickname = second.SenderNickname,
+            Segments = second.Segments
+        };
+        await dispatch.ProcessMessageAsync(second);
+
+        Assert.Single(requests);
+        Assert.Equal("msg-member-1", requests[0].MessageId);
     }
 
     [Fact]
@@ -399,34 +523,58 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
     [Fact]
     public void ShouldRaiseSubjectSelection_TruthTable()
     {
-        var unclassified = new SubjectResult
-        {
-            Subject = HomeworkSubjectResolver.Unclassified, Confidence = 0,
-            Source = SubjectSource.Manual, NeedsManualConfirm = true
-        };
-        var confident = new SubjectResult
-        {
-            Subject = "数学", Confidence = 0.95, Source = SubjectSource.KeywordRule
-        };
-
-        // MemberSelection + 开 + 有发送者 + 未分类 + 未绑定 → 触发
+        // MemberSelection + 开 + 作业 + 有发送者 + 未绑定 → 触发（与识别链结果无关）
         Assert.True(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, "m1", unclassified, memberBound: false));
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework, "m1", memberBound: false));
+        // MemberSelection + 开 + 通知 + 未绑定 → 触发
+        Assert.True(MessageDispatchService.ShouldRaiseSubjectSelection(
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Notice, "m1", memberBound: false));
         // Keyword 模式 → 永不触发
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.Keyword, true, "m1", unclassified, memberBound: false));
+            SubjectRecognitionMode.Keyword, true, MessageKind.Homework, "m1", memberBound: false));
         // 开关关闭 → 不触发
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, false, "m1", unclassified, memberBound: false));
+            SubjectRecognitionMode.MemberSelection, false, MessageKind.Homework, "m1", memberBound: false));
         // 已绑定 → 不触发
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, "m1", unclassified, memberBound: true));
-        // 识别链正常命中 → 不触发
-        Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, "m1", confident, memberBound: false));
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework, "m1", memberBound: true));
         // 无发送者（OpenID 为空）→ 不触发
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, "", unclassified, memberBound: false));
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework, "", memberBound: false));
+        // 未分类消息（Unknown）→ 不触发
+        Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Unknown, "m1", memberBound: false));
+    }
+
+    // ============ 触发语义对齐需求（2026-09-06 修正）：关键词已识别 + 未绑定也触发 ============
+
+    [Fact]
+    public void CooldownSlot_WithinWindow_Blocks_SameMemberOnly()
+    {
+        var dispatch = new MessageDispatchService();
+        var now = DateTimeOffset.Now;
+
+        Assert.True(dispatch.TryTakeSelectionTriggerSlot("m1", "g1", now));
+        // 同一「群+成员」冷却窗口内 → 拒绝
+        Assert.False(dispatch.TryTakeSelectionTriggerSlot("m1", "g1", now.AddMinutes(9)));
+        // 其他成员 / 其他群 → 不受影响
+        Assert.True(dispatch.TryTakeSelectionTriggerSlot("m2", "g1", now));
+        Assert.True(dispatch.TryTakeSelectionTriggerSlot("m1", "g2", now));
+        // 冷却窗口过后 → 放行
+        Assert.True(dispatch.TryTakeSelectionTriggerSlot(
+            "m1", "g1", now + MessageDispatchService.SelectionCooldownWindow + TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
+    public void MaskMember_NeverContainsOpenIdPlaintext()
+    {
+        var masked = MessageDispatchService.MaskMember("张老师", "OPENID-SECRET-12345");
+
+        Assert.StartsWith("张老师#", masked);
+        Assert.DoesNotContain("OPENID-SECRET", masked);
+        // 同一 OpenID 哈希稳定（日志可对比）；昵称缺失有占位
+        Assert.Equal(masked, MessageDispatchService.MaskMember("张老师", "OPENID-SECRET-12345"));
+        Assert.StartsWith("成员#", MessageDispatchService.MaskMember("", "OPENID-2"));
     }
 }
 
@@ -449,6 +597,15 @@ public sealed class SubjectSelectionLogicTests
     {
         var choices = SubjectSelectionLogic.BuildSubjectChoices(
             ["数学", "语文"], HomeworkSubjectResolver.Unclassified);
+
+        Assert.Equal(["数学", "语文"], choices);
+    }
+
+    [Fact]
+    public void BuildSubjectChoices_EmptyChainSubject_NoticePath_Excluded()
+    {
+        // 通知不经识别链：空链候选不得混入点选列表
+        var choices = SubjectSelectionLogic.BuildSubjectChoices(["数学", "语文"], chainSubject: "");
 
         Assert.Equal(["数学", "语文"], choices);
     }
@@ -573,6 +730,70 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
         await coordinator.ApplySelectionAsync(request, "  ");
 
         Assert.False(bindings.TryGetSubject("member-1", null, out _));
+    }
+
+    // ============ ShowAsync UI 线程接线（2026-09-06 真机缺陷：后台线程构造窗口异常被静默吞掉）============
+
+    private static SubjectSelectionRequest MakeRequest() => new(
+        "msg-1", "member-1", "数学老师", "group-1", "作业内容",
+        "数学", 0.95, SubjectSource.KeywordRule, DateTimeOffset.Now);
+
+    [Fact]
+    public async Task ShowAsync_WindowAccessorThrows_IsSwallowedAndLogged()
+    {
+        // 此前 windowAccessor() 位于 try 之外：后台线程抛异常 → fire-and-forget 静默失败，窗口永不显示
+        var coordinator = new SubjectSelectionCoordinator(
+            windowAccessor: () => throw new InvalidOperationException("Call from invalid thread"),
+            uiMarshal: action => { action(); return Task.CompletedTask; });
+
+        await coordinator.ShowAsync(MakeRequest()); // 不抛：失败只留日志
+    }
+
+    [Fact]
+    public async Task ShowAsync_LoadsRequestViaUiMarshal_AndShowsThroughController()
+    {
+        var shownKeys = new List<string>();
+        var controller = new ControllerStub(k => shownKeys.Add(k));
+        await AvaloniaTestSetup.Session.Dispatch(async () =>
+        {
+            var window = new SubjectSelectionSuspensionWindow(null, () => ["数学", "语文"]);
+            var marshalCalls = 0;
+            var coordinator = new SubjectSelectionCoordinator(
+                controller: controller,
+                windowAccessor: () => window,
+                uiMarshal: action =>
+                {
+                    marshalCalls++;
+                    action();
+                    return Task.CompletedTask;
+                });
+
+            await coordinator.ShowAsync(MakeRequest());
+
+            // 请求内容已装载（经 UI 线程），控制器按 subjectSelection key 显示
+            Assert.Equal(1, marshalCalls);
+            Assert.Contains("作业内容", window.CaptureView().DigestText);
+        }, CancellationToken.None);
+        Assert.Equal(["subjectSelection"], shownKeys);
+    }
+
+    /// <summary>控制器替身：记录 ShowAsync 调用的 overlayKey。</summary>
+    private sealed class ControllerStub(Action<string> onShow) : ISuspensionWindowController
+    {
+        public Task ShowAsync(string overlayKey, CancellationToken ct = default)
+        {
+            onShow(overlayKey);
+            return Task.CompletedTask;
+        }
+
+        public Task HideAsync(string overlayKey, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task ResetPositionAsync(string overlayKey, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task ApplySettingsAsync(string overlayKey, ClassIng.Shared.Models.OverlayWindowSettings settings, CancellationToken ct = default) =>
+            Task.CompletedTask;
+
+        public bool IsOnScreen(string overlayKey) => true;
     }
 
     /// <summary>带 SetSubjectAsync 的最小作业存储替身（复用 SubjectRecognitionRoutingTests 的 FakeHomeworkStore 不可见，此处独立实现）。</summary>

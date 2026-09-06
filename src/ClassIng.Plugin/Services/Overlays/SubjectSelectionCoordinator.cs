@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using Avalonia.Threading;
 using ClassIng.Plugin.Services.Files;
 using ClassIng.Plugin.Services.Pipeline;
 using ClassIng.Plugin.Services.Stores;
@@ -29,6 +30,9 @@ public sealed class SubjectSelectionCoordinator : IDisposable
     private readonly MemberSubjectBindingStore? _memberBindings;
     private readonly IHomeworkStore? _homeworkStore;
     private readonly IFilePipelineService? _filePipeline;
+
+    /// <summary>UI 线程调度器（窗口实例与控件属性均为 UI 线程亲和对象；注入以便单测同步执行）。</summary>
+    private readonly Func<Action, Task> _uiMarshal;
     private readonly ILogger _logger;
     private EventHandler<SubjectSelectionRequest>? _handler;
 
@@ -39,7 +43,8 @@ public sealed class SubjectSelectionCoordinator : IDisposable
         MemberSubjectBindingStore? memberBindings = null,
         IHomeworkStore? homeworkStore = null,
         IFilePipelineService? filePipeline = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        Func<Action, Task>? uiMarshal = null)
     {
         _dispatch = dispatch;
         _controller = controller;
@@ -47,6 +52,7 @@ public sealed class SubjectSelectionCoordinator : IDisposable
         _memberBindings = memberBindings;
         _homeworkStore = homeworkStore;
         _filePipeline = filePipeline;
+        _uiMarshal = uiMarshal ?? (action => Dispatcher.UIThread.InvokeAsync(action).GetTask());
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -77,23 +83,37 @@ public sealed class SubjectSelectionCoordinator : IDisposable
         }
     }
 
-    /// <summary>展示选择悬浮窗（窗口实例转交请求内容；显示失败只记日志）。</summary>
+    /// <summary>
+    /// 展示选择悬浮窗（窗口实例转交请求内容；显示失败只记日志）。
+    /// <para>
+    /// 窗口实例（DI 首次解析 <see cref="SubjectSelectionSuspensionWindow"/>）与控件属性均为
+    /// UI 线程亲和对象：真机上消息处理在后台线程触发本方法，此前 <c>_windowAccessor()</c>
+    /// 直接在后台线程构造 Avalonia Window 且位于 try 之外——抛出的「Call from invalid thread」
+    /// 被 fire-and-forget 调用静默吞掉，表现为日志「已触发选择悬浮窗」但窗口永不显示
+    /// （2026-09-06 真机日志缺陷）。统一经 UI 线程调度装载 + try/catch 留痕。
+    /// 窗口为单例：重复触发时 ShowRequest 覆盖最新请求内容，天然只存在一个实例。
+    /// </para>
+    /// </summary>
     public async Task ShowAsync(SubjectSelectionRequest request, CancellationToken ct = default)
     {
-        var window = _windowAccessor();
-        if (window is null)
-        {
-            _logger.LogWarning("未绑定学科选择悬浮窗实例不可用，本次触发跳过（MessageId={MessageId}）", request.MessageId);
-            return;
-        }
-
         try
         {
-            window.ShowRequest(request);
+            await _uiMarshal(() =>
+            {
+                var window = _windowAccessor();
+                if (window is null)
+                {
+                    _logger.LogWarning("未绑定学科选择悬浮窗实例不可用，本次触发跳过（MessageId={MessageId}）", request.MessageId);
+                    return;
+                }
+
+                window.ShowRequest(request);
+            }).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "选择悬浮窗装载请求失败（MessageId={MessageId}）", request.MessageId);
+            return;
         }
 
         if (_controller is not null)

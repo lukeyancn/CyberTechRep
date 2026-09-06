@@ -246,6 +246,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         {
             case MessageKind.Notice:
                 await WriteNoticeAsync(message, text, ct).ConfigureAwait(false);
+                // 需求 3：通知同样需要学科分类（按发送者绑定加「学科：」前缀）→ 未绑定时也触发
+                // 选择悬浮窗。通知不经学科识别链，链候选为空（悬浮窗仅展示 subjects.json 全部学科）。
+                RaiseSubjectSelectionIfNeeded(message, text, MessageKind.Notice, EmptyChainResult);
                 break;
 
             case MessageKind.Homework:
@@ -349,9 +352,10 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
 
         await ReassignFilesSafeAsync(messageId, subject.Subject, ct).ConfigureAwait(false);
 
-        // 需求 3/4：MemberSelection 模式下链仍未得出可信学科（未分类/需人工确认）且成员未绑定 →
-        // 触发选择悬浮窗（补充交互，不改变已按现有降级语义写入的结果）。
-        RaiseSubjectSelectionIfNeeded(message, text, subject);
+        // 需求 3/4：MemberSelection 模式下成员未绑定 → 触发选择悬浮窗（补充交互，不改变
+        // 已按现有降级语义写入的结果）。触发与链结果无关：即使关键词链已识别出学科也触发，
+        // 让用户点选一次写回绑定，之后该成员消息走绑定直达（这正是绑定功能的意义）。
+        RaiseSubjectSelectionIfNeeded(message, text, MessageKind.Homework, subject);
     }
 
     /// <summary>作业写入 HomeworkStore（成员绑定路径与识别链路径共用；失败抛给调用方按 StoreWrite 重试处理）。</summary>
@@ -401,20 +405,23 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
 
     /// <summary>
     /// 选择悬浮窗触发判定（internal 纯逻辑拆出供单测）：
-    /// MemberSelection 模式 + 显示开关开启 + 消息有发送者 + 链结果需人工确认（未分类）+ 成员未绑定。
+    /// MemberSelection 模式 + 显示开关开启 + 消息为作业或通知（需要学科分类）+ 有发送者 + 成员未绑定。
+    /// 与学科识别链结果无关：关键词链已识别出学科时同样触发（悬浮窗把已识别结果放候选首位），
+    /// 点选一次写回绑定后，该成员后续消息走绑定直达。
     /// </summary>
     internal static bool ShouldRaiseSubjectSelection(
-        SubjectRecognitionMode mode, bool selectionWindowEnabled, string memberOpenId,
-        SubjectResult chainResult, bool memberBound)
+        SubjectRecognitionMode mode, bool selectionWindowEnabled, MessageKind kind,
+        string memberOpenId, bool memberBound)
     {
         return mode == SubjectRecognitionMode.MemberSelection
             && selectionWindowEnabled
+            && kind is MessageKind.Homework or MessageKind.Notice
             && !string.IsNullOrWhiteSpace(memberOpenId)
-            && (chainResult.NeedsManualConfirm || HomeworkSubjectResolver.IsUnclassified(chainResult.Subject))
             && !memberBound;
     }
 
-    private void RaiseSubjectSelectionIfNeeded(MessageRecord message, string text, SubjectResult chainResult)
+    private void RaiseSubjectSelectionIfNeeded(
+        MessageRecord message, string text, MessageKind kind, SubjectResult chainResult)
     {
         try
         {
@@ -422,8 +429,23 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             var enabled = _getSubjectRecognitionSettings?.Invoke().SelectionWindowEnabled ?? true;
             var bound = _memberBindings is not null
                 && _memberBindings.TryGetSubject(message.MemberOpenId, message.GroupOpenId, out _);
-            if (!ShouldRaiseSubjectSelection(mode, enabled, message.MemberOpenId, chainResult, bound))
+            var member = MaskMember(message.SenderNickname, message.MemberOpenId);
+
+            // 触发判定打点：为何不触发（模式/开关/消息类型/已绑定/无发送者）。Debug 级防刷屏。
+            if (!ShouldRaiseSubjectSelection(mode, enabled, kind, message.MemberOpenId, bound))
             {
+                _logger.LogDebug(
+                    "选择悬浮窗触发判定：不触发（Member={Member}, Kind={Kind}, Mode={Mode}, WindowEnabled={Enabled}, Bound={Bound}）",
+                    member, kind, mode, enabled, bound);
+                return;
+            }
+
+            // 防骚扰：同一「群+成员」在冷却窗口内不重复弹窗（用户关掉窗口未点选的场景尤甚）。
+            if (!TryTakeSelectionTriggerSlot(message.MemberOpenId, message.GroupOpenId, DateTimeOffset.Now))
+            {
+                _logger.LogInformation(
+                    "选择悬浮窗触发判定：冷却窗口内跳过（Member={Member}, CooldownSeconds={Seconds}），避免重复弹窗骚扰",
+                    member, SelectionCooldownWindow.TotalSeconds);
                 return;
             }
 
@@ -439,8 +461,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 DateTimeOffset.Now);
             SubjectSelectionRequired?.Invoke(this, request);
             _logger.LogInformation(
-                "发送者未绑定学科，已触发选择悬浮窗（MessageId={MessageId}, Member={Member}, ChainSubject={ChainSubject}）",
-                message.MessageId, message.MemberOpenId, chainResult.Subject);
+                "选择悬浮窗已弹出（Member={Member}, Kind={Kind}, ChainSubject={ChainSubject}, ChainSource={Source}；发送者未绑定学科，等待点选写回）",
+                member, kind, chainResult.Subject, chainResult.Source);
         }
         catch (Exception ex)
         {
@@ -448,6 +470,60 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             _logger.LogError(ex, "触发未绑定学科选择悬浮窗失败（MessageId={MessageId}）", message.MessageId);
         }
     }
+
+    /// <summary>选择窗触发冷却窗口（同一成员该窗口内不重复弹窗，防骚扰）。</summary>
+    internal static readonly TimeSpan SelectionCooldownWindow = TimeSpan.FromMinutes(10);
+
+    /// <summary>同一「群+成员」的冷却截止时间（仅内存状态，重启即清零）。</summary>
+    private readonly Dictionary<string, DateTimeOffset> _selectionCooldownUntil = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 冷却占位（防骚扰）：同一「群+成员」在 <see cref="SelectionCooldownWindow"/> 内已触发过
+    /// 返回 false；否则登记本次触发时间并返回 true。消息主流程经 <see cref="_processingGate"/>
+    /// 串行化，加锁仅兜底防外部并发。
+    /// </summary>
+    internal bool TryTakeSelectionTriggerSlot(string memberOpenId, string groupOpenId, DateTimeOffset now)
+    {
+        if (string.IsNullOrWhiteSpace(memberOpenId))
+        {
+            return false;
+        }
+
+        var key = $"{groupOpenId}\n{memberOpenId}";
+        lock (_selectionCooldownUntil)
+        {
+            if (_selectionCooldownUntil.TryGetValue(key, out var until) && now < until)
+            {
+                return false;
+            }
+
+            _selectionCooldownUntil[key] = now + SelectionCooldownWindow;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 日志脱敏口径：发送者以「昵称+短哈希」呈现（SHA-256 前 4 字节的 8 个十六进制字符），
+    /// 绝不输出成员 OpenID 明文；同一 OpenID 哈希稳定可对比，昵称缺失时以「成员」占位。
+    /// </summary>
+    internal static string MaskMember(string? senderNickname, string? memberOpenId)
+    {
+        var name = string.IsNullOrWhiteSpace(senderNickname) ? "成员" : senderNickname.Trim();
+        if (string.IsNullOrWhiteSpace(memberOpenId))
+        {
+            return $"{name}#（无OpenID）";
+        }
+
+        var hash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(memberOpenId)), 0, 4);
+        return $"{name}#{hash}";
+    }
+
+    /// <summary>通知消息不经学科识别链：选择窗触发请求携带空链候选（悬浮窗仅展示 subjects.json 全部学科）。</summary>
+    private static readonly SubjectResult EmptyChainResult = new()
+    {
+        Subject = "", Confidence = 0, Source = SubjectSource.Manual
+    };
 
     /// <summary>
     /// 需求 6 用途③：无关键词消息兜底识别。AI/学科链给出可信结果时按作业归档（含文件二次归档），

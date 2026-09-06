@@ -42,8 +42,13 @@ public static class SubjectSelectionLogic
     public static string FormatDigest(string? text) =>
         string.IsNullOrWhiteSpace(text) ? "（消息无文本内容）" : Truncate(text.ReplaceLineEndings(" "), DigestMaxLength);
 
-    public static string FormatChain(string chainSubject, double chainConfidence) =>
-        $"识别链候选：{chainSubject}（置信度 {chainConfidence:0.00}，未达可信阈值）";
+    public static string FormatChain(string chainSubject, double chainConfidence)
+    {
+        // 通知消息不经学科识别链（链候选为空）；作业消息即使链已命中也弹窗（未绑定时）。
+        return string.IsNullOrWhiteSpace(chainSubject)
+            ? "识别链候选：无（本消息不经学科识别链）"
+            : $"识别链候选：{chainSubject}（置信度 {chainConfidence:0.00}）";
+    }
 
     /// <summary>
     /// 点选学科列表：识别链候选（非未分类）置顶并标注，其余按 subjects.json 规则顺序去重追加。
@@ -52,7 +57,8 @@ public static class SubjectSelectionLogic
         IEnumerable<string> ruleSubjects, string chainSubject)
     {
         var choices = new List<string>();
-        if (!HomeworkSubjectResolver.IsUnclassified(chainSubject))
+        if (!string.IsNullOrWhiteSpace(chainSubject)
+            && !HomeworkSubjectResolver.IsUnclassified(chainSubject))
         {
             choices.Add(chainSubject);
         }
