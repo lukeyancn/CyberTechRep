@@ -23,6 +23,8 @@ namespace ClassIng.Plugin.Services.Overlays;
 /// <see cref="SubjectCircleBarSettings.AutoOpenWithClass"/> 开启 → 弹出/切换文件悬浮窗到该学科；
 /// 无文件 → 不弹，且若此前由联动打开过窗则收起（避免残留上一节课的过期内容；
 /// 用户手动打开的窗不受影响，以联动来源标记区分）。下课/放学/查不到当前课 → 收起联动窗。
+/// 另监听文件管道 <see cref="IFilePipelineService.FileUpdated"/>（仅 Archived 记录触发评估）：
+/// 课中学生把文件发进群归档后，当前这节课立即补弹，不必等到下一次状态迁移。
 /// </para>
 /// <para>
 /// 时序约束：宿主服务必须在 <see cref="StartAsync"/>（宿主容器构建完成后）解析，
@@ -41,8 +43,12 @@ public sealed class ClassAutoOpenService(
     private ILessonsService? _lessons;
     private bool _subscribed;
 
-    /// <summary>去重标记：最近一次已评估的上课科目名（同一节课重复事件不再反复查询/弹窗）。</summary>
-    private string? _lastHandledSubject;
+    /// <summary>去重标记：最近一次已成功弹出联动窗的科目名（同科目重复事件不再反复查询/弹窗）。
+    /// 仅在真正弹窗后设置；「无归档文件不弹」不算已处理——课中文件归档到达后须允许同科目重评估补弹。</summary>
+    private string? _lastOpenedSubject;
+
+    /// <summary>防刷屏标记：最近一次记过「无归档文件不弹」日志的科目名（同一科目课中不重复打这条日志）。</summary>
+    private string? _lastNoArchiveSubject;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -60,6 +66,8 @@ public sealed class ClassAutoOpenService(
         lessons.OnAfterSchool += OnLessonsEvent;
         // 覆盖连堂/无课间直接切课：CurrentSubject 变化时同样评估（宿主仅在实际变化时触发）
         lessons.PropertyChanged += OnLessonsPropertyChanged;
+        // 课中文件归档到达（群里发来附件并下载完成）立即重评估：当前这节课马上补弹，不等下一次状态迁移
+        pipeline.FileUpdated += OnPipelineFileUpdated;
         // 设置变更（含上课中途打开 AutoOpenWithClass 开关）立即重新评估，
         // 否则开关在课中打开要等到下一次状态迁移才生效，用户感知为「开了也不弹」
         settingsService.SettingsChanged += OnSettingsChanged;
@@ -82,6 +90,7 @@ public sealed class ClassAutoOpenService(
             _lessons.PropertyChanged -= OnLessonsPropertyChanged;
         }
 
+        pipeline.FileUpdated -= OnPipelineFileUpdated;
         settingsService.SettingsChanged -= OnSettingsChanged;
         _lessons = null;
         _subscribed = false;
@@ -91,6 +100,16 @@ public sealed class ClassAutoOpenService(
     private void OnLessonsEvent(object? sender, EventArgs e) => EvaluateOnUi("时间状态迁移");
 
     private void OnSettingsChanged(object? sender, AppSettings e) => EvaluateOnUi("设置变更");
+
+    private void OnPipelineFileUpdated(object? sender, FileRecord e)
+    {
+        // 只有真正归档落盘的记录才可能改变「当前学科有无文件」的判定结果；
+        // 下载中/失败/重复的中间态不值得一次评估
+        if (e.Status == FileStatus.Archived)
+        {
+            EvaluateOnUi("文件归档更新");
+        }
+    }
 
     private void OnLessonsPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -131,8 +150,10 @@ public sealed class ClassAutoOpenService(
             if (!ClassAutoOpenDecider.IsInClassState(
                     state == TimeState.OnClass, confirmed, subject?.Name))
             {
-                // 下课/放学/空档/查不到当前课：只收联动窗（手动打开的不动），哨兵科目不弹窗
-                _lastHandledSubject = null;
+                // 下课/放学/空档/查不到当前课：只收联动窗（手动打开的不动），哨兵科目不弹窗；
+                // 两个去重标记一并复位，下一节课重新评估
+                _lastOpenedSubject = null;
+                _lastNoArchiveSubject = null;
                 await filesController.HideIfAutoOpenedAsync(reason);
                 return;
             }
@@ -147,12 +168,10 @@ public sealed class ClassAutoOpenService(
                 return;
             }
 
-            if (string.Equals(_lastHandledSubject, name, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_lastOpenedSubject, name, StringComparison.OrdinalIgnoreCase))
             {
-                return; // 同一节课的重复事件（状态迁移 + 科目变更），去重
+                return; // 本节课已弹过窗的重复事件（状态迁移 + 科目变更 + 文件归档），去重
             }
-
-            _lastHandledSubject = name;
 
             var records = await pipeline.GetRecordsAsync();
             var archivedSubjects = records
@@ -164,13 +183,32 @@ public sealed class ClassAutoOpenService(
                 // 该学科没有已归档文件：不弹；若联动窗开着（上一节课留下的）则收起。
                 // 取舍：不保留旧学科内容展示，避免悬浮窗与当前课不一致造成误导；
                 // 用户手动打开的窗仍保持不动。
-                _logger.LogInformation(
-                    "上课联动：学科 {Subject} 没有已归档文件，不弹出悬浮窗（文件记录 {Count} 条，归档学科段 [{Segments}]）",
-                    name, records.Count, string.Join(", ", archivedSubjects.Distinct()));
+                // 「无归档文件」不算已处理（不设 _lastOpenedSubject）：课中文件归档到达后
+                // 同科目可重评估补弹。日志按科目去重防刷屏，并为空库/不匹配两种情况给出可行动提示。
+                if (!string.Equals(_lastNoArchiveSubject, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    _lastNoArchiveSubject = name;
+                    if (records.Count == 0)
+                    {
+                        _logger.LogInformation(
+                            "上课联动：学科 {Subject} 不弹窗——归档库为空（文件记录 0 条）。" +
+                            "群里发附件归档后（见文件设置页归档根目录），本节课内或下一节课会自动弹出",
+                            name);
+                    }
+                    else
+                    {
+                        _logger.LogInformation(
+                            "上课联动：学科 {Subject} 不弹窗——归档库有 {Count} 条记录但无该学科文件" +
+                            "（归档学科段 [{Segments}]，检查文件设置页学科目录名是否与课表科目名一致）",
+                            name, records.Count, string.Join(", ", archivedSubjects.Distinct()));
+                    }
+                }
                 await filesController.HideIfAutoOpenedAsync("当前学科无已归档文件");
                 return;
             }
 
+            _lastOpenedSubject = name;
+            _lastNoArchiveSubject = null;
             _logger.LogInformation(
                 "上课联动：学科 {Subject} 归档命中 {Matched}，弹出文件悬浮窗（文件记录 {Count} 条）",
                 name, matched, records.Count);

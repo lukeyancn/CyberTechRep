@@ -57,6 +57,12 @@ public sealed class FilePipelineService : IFilePipelineService
         Directory.CreateDirectory(provider.DataDirectory);
         _storePath = Path.Combine(provider.DataDirectory, "files.json");
         Load();
+
+        // Information 级启动自检：归档库位置与记录数全程可见（归档库为空时上课联动不弹窗，
+        // 用户须能从日志一眼看出「库是空的、文件在哪」，否则表现为「自动弹窗失效」无从排查）
+        _logger.LogInformation(
+            "文件管道就绪：记录 {Count} 条，归档库 {StorePath}，归档根目录 {Root}",
+            _records.Count, _storePath, GetDownloadRoot());
     }
 
     /// <inheritdoc />
