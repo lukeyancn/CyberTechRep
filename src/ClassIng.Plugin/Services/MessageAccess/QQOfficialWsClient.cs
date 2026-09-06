@@ -345,7 +345,7 @@ public sealed class QQOfficialWsClient : IAsyncDisposable
 
         var invoker = _options.HttpInvoker ?? CreateDefaultHttpInvoker();
         var url = _options.TokenApiUrl;
-        _logger?.LogInformation("请求 AccessToken：{Url}（AppId={AppId}）", url, _options.AppId);
+        _logger?.LogInformation("请求 AccessToken：{Url}（AppId={AppId}）", url, MaskAppId(_options.AppId));
 
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
         // QQ 官方接口要求 JSON 请求体；用表单格式会返回误导性的 {"code":100007,"message":"appid invalid"}
@@ -425,6 +425,11 @@ public sealed class QQOfficialWsClient : IAsyncDisposable
         };
         return new HttpMessageInvoker(handler);
     }
+
+    /// <summary>日志脱敏：AppId 只保留前 4 位，避免完整标识符进入日志。</summary>
+    private static string MaskAppId(string appId)
+        => string.IsNullOrEmpty(appId) ? "(空)"
+            : appId.Length <= 4 ? appId : appId[..4] + "***";
 
     // ---------- WebSocket 收发工具 ----------
 

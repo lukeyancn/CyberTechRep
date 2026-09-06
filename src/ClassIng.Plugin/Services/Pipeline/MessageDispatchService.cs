@@ -218,7 +218,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "消息分类失败（MessageId={MessageId}），本条消息跳过", message.MessageId);
+            _logger.LogError(ex, "消息分类失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}），本条消息跳过",
+                message.MessageId, message.GroupOpenId);
             return;
         }
 
@@ -230,22 +231,22 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         switch (classified.Kind)
         {
             case MessageKind.Notice:
-                await WriteNoticeAsync(message.MessageId, message.MemberOpenId, text, ct).ConfigureAwait(false);
+                await WriteNoticeAsync(message, text, ct).ConfigureAwait(false);
                 break;
 
             case MessageKind.Homework:
-                await ProcessHomeworkAsync(message.MessageId, message.MemberOpenId, text, attachmentIds, ct)
+                await ProcessHomeworkAsync(message, text, attachmentIds, ct)
                     .ConfigureAwait(false);
                 break;
 
             default:
                 // 需求 6 用途③：无关键词消息兜底识别（AiSettings.NoKeywordFallbackMode，默认 Off = 现状忽略）
                 if (!await TryNoKeywordFallbackAsync(
-                        message.MessageId, message.MemberOpenId, text, attachmentIds, ct).ConfigureAwait(false))
+                        message, text, attachmentIds, ct).ConfigureAwait(false))
                 {
                     _logger.LogDebug(
-                        "消息未分类，忽略（MessageId={MessageId}, Reason={Reason}）",
-                        message.MessageId, classified.MatchReason);
+                        "消息未分类，忽略（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Reason={Reason}）",
+                        message.MessageId, message.GroupOpenId, classified.MatchReason);
                 }
 
                 break;
@@ -254,8 +255,10 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
 
     /// <summary>作业：学科链识别 → HomeworkStore 写入 → 文件二次归档到学科目录。</summary>
     private async Task ProcessHomeworkAsync(
-        string messageId, string memberOpenId, string text, IReadOnlyList<Guid> attachmentIds, CancellationToken ct)
+        MessageRecord message, string text, IReadOnlyList<Guid> attachmentIds, CancellationToken ct)
     {
+        var messageId = message.MessageId;
+        var memberOpenId = message.MemberOpenId;
         SubjectResult subject;
         try
         {
@@ -267,7 +270,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "学科识别链失败（MessageId={MessageId}），投递 SubjectClassify 重试", messageId);
+            _logger.LogError(ex,
+                "学科识别链失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}），投递 SubjectClassify 重试",
+                messageId, message.GroupOpenId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.SubjectClassify,
                 BuildSubjectClassifyPayload(messageId, text, memberOpenId),
@@ -290,8 +295,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             };
             await _homeworkStore!.UpsertAsync(item, ct).ConfigureAwait(false);
             _logger.LogInformation(
-                "作业已写入存储（MessageId={MessageId}, Subject={Subject}, Source={Source}, Confidence={Confidence}, Attachments={Count}）",
-                messageId, subject.Subject, subject.Source, subject.Confidence, attachmentIds.Count);
+                "作业已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Subject={Subject}, Source={Source}, Confidence={Confidence}, Attachments={Count}）",
+                messageId, message.GroupOpenId, subject.Subject, subject.Source, subject.Confidence, attachmentIds.Count);
         }
         catch (OperationCanceledException)
         {
@@ -299,7 +304,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "作业写入存储失败（MessageId={MessageId}），投递 StoreWrite 重试", messageId);
+            _logger.LogError(ex,
+                "作业写入存储失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}），投递 StoreWrite 重试",
+                messageId, message.GroupOpenId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
                 new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject, memberOpenId),
@@ -315,8 +322,10 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
     /// 「消息被忽略」的现状语义，避免对同一条无关键词消息无限重试。
     /// </summary>
     private async Task<bool> TryNoKeywordFallbackAsync(
-        string messageId, string memberOpenId, string text, IReadOnlyList<Guid> attachmentIds, CancellationToken ct)
+        MessageRecord message, string text, IReadOnlyList<Guid> attachmentIds, CancellationToken ct)
     {
+        var messageId = message.MessageId;
+        var memberOpenId = message.MemberOpenId;
         if (_noKeywordFallback is null || _homeworkStore is null || string.IsNullOrWhiteSpace(text))
         {
             return false;
@@ -333,7 +342,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "无关键词兜底识别异常（MessageId={MessageId}），保持现状忽略该消息", messageId);
+            _logger.LogError(ex,
+                "无关键词兜底识别异常（MessageId={MessageId}, GroupOpenId={GroupOpenId}），保持现状忽略该消息",
+                messageId, message.GroupOpenId);
             return false;
         }
 
@@ -356,8 +367,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 CreatedAt = DateTimeOffset.Now
             }, ct).ConfigureAwait(false);
             _logger.LogInformation(
-                "无关键词兜底作业已写入存储（MessageId={MessageId}, Subject={Subject}, Source={Source}, Confidence={Confidence}）",
-                messageId, subject.Subject, subject.Source, subject.Confidence);
+                "无关键词兜底作业已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Subject={Subject}, Source={Source}, Confidence={Confidence}）",
+                messageId, message.GroupOpenId, subject.Subject, subject.Source, subject.Confidence);
         }
         catch (OperationCanceledException)
         {
@@ -365,7 +376,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "无关键词兜底作业写入存储失败（MessageId={MessageId}），投递 StoreWrite 重试", messageId);
+            _logger.LogError(ex,
+                "无关键词兜底作业写入存储失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}），投递 StoreWrite 重试",
+                messageId, message.GroupOpenId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
                 new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject, memberOpenId),
@@ -376,14 +389,17 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         return true;
     }
 
-    /// <summary>通知：写 NoticeStore（悬浮窗经 Changed 自动刷新）。</summary>
     /// <summary>通知：写 NoticeStore（悬浮窗经 Changed 自动刷新）。memberOpenId 用于学科前缀（有映射时写入内容前附加「学科：」）。</summary>
-    private async Task WriteNoticeAsync(string messageId, string memberOpenId, string text, CancellationToken ct)
+    private async Task WriteNoticeAsync(MessageRecord message, string text, CancellationToken ct)
     {
+        var messageId = message.MessageId;
+        var memberOpenId = message.MemberOpenId;
         try
         {
             await _noticeStore!.AddOrUpdateAsync(messageId, text, memberOpenId, ct).ConfigureAwait(false);
-            _logger.LogInformation("通知已写入存储（MessageId={MessageId}, Length={Length}）", messageId, text.Length);
+            _logger.LogInformation(
+                "通知已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Length={Length}）",
+                messageId, message.GroupOpenId, text.Length);
         }
         catch (OperationCanceledException)
         {
@@ -391,7 +407,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "通知写入存储失败（MessageId={MessageId}），投递 StoreWrite 重试", messageId);
+            _logger.LogError(ex,
+                "通知写入存储失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}），投递 StoreWrite 重试",
+                messageId, message.GroupOpenId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
                 // 携带 MemberOpenId：重放时学科前缀语义与首次写入一致
@@ -426,8 +444,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                     .ConfigureAwait(false);
                 ids.Add(record.Id);
                 _logger.LogInformation(
-                    "附件已入队文件管道（MessageId={MessageId}, File={File}, RecordId={RecordId}, Status={Status}）",
-                    message.MessageId, fileName, record.Id, record.Status);
+                    "附件已入队文件管道（MessageId={MessageId}, GroupOpenId={GroupOpenId}, File={File}, RecordId={RecordId}, Status={Status}）",
+                    message.MessageId, message.GroupOpenId, fileName, record.Id, record.Status);
             }
             catch (OperationCanceledException)
             {
@@ -436,8 +454,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             catch (Exception ex)
             {
                 _logger.LogError(ex,
-                    "附件入队失败（MessageId={MessageId}, File={File}），投递 FileDownload 重试",
-                    message.MessageId, fileName);
+                    "附件入队失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}, File={File}），投递 FileDownload 重试",
+                    message.MessageId, message.GroupOpenId, fileName);
                 await EnqueueRetrySafeAsync(
                     RetryOperationType.FileDownload,
                     BuildFileDownloadPayload(message.MessageId, fileName, segment.Url),

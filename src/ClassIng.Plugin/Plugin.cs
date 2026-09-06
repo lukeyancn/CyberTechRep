@@ -255,6 +255,16 @@ public class ClassIngPlugin : PluginBase
             sp.GetService<ILogger<Services.Maintenance.DiagnosticsService>>()));
         services.AddSingleton<IDiagnosticsService>(sp => sp.GetRequiredService<Services.Maintenance.DiagnosticsService>());
 
+        // ---- 消息日志 dump 导出（维护页入口）：订阅 MessageReceived 维护环形缓冲，
+        // 导出 JSONL（每行一条全字段结构化数据，按 MessageId 关联分类/学科/文件结果）----
+        services.AddSingleton(sp => new Services.Maintenance.MessageDumpService(
+            sp.GetService<IMessageIngestService>(),
+            sp.GetService<IHomeworkStore>(),
+            sp.GetService<INoticeStore>(),
+            sp.GetService<IFilePipelineService>(),
+            sp.GetService<ILogger<Services.Maintenance.MessageDumpService>>()));
+        services.AddSingleton<IMessageDumpService>(sp => sp.GetRequiredService<Services.Maintenance.MessageDumpService>());
+
         // ---- 模块 7：设置变更热生效接线（ReloadRules / 悬浮窗 ApplySettingsAsync）----
         services.AddHostedService<Services.Maintenance.SettingsChangeApplier>();
 

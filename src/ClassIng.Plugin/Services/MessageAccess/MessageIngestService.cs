@@ -81,7 +81,7 @@ public sealed class MessageIngestService : IMessageIngestService
 
             _logger?.LogInformation(
                 "消息接入服务已启动：AppId={AppId} ApiBase={ApiBase} 白名单={Whitelist} 幂等记录={Seen}条",
-                settings.AppId, settings.ApiBase, settings.GroupWhitelist.Count, _store.Count);
+                MaskAppId(settings.AppId), settings.ApiBase, settings.GroupWhitelist.Count, _store.Count);
         }
 
         return Task.CompletedTask;
@@ -197,6 +197,11 @@ public sealed class MessageIngestService : IMessageIngestService
     private ILogger CreateClientLogger() => ((ILogger?)_logger) ?? NullLogger.Instance;
     private ILogger CreatePipelineLogger() => ((ILogger?)_logger) ?? NullLogger.Instance;
     private ILogger CreateStoreLogger() => ((ILogger?)_logger) ?? NullLogger.Instance;
+
+    /// <summary>日志脱敏：AppId 只保留前 4 位，避免完整标识符进入日志。</summary>
+    private static string MaskAppId(string appId)
+        => string.IsNullOrEmpty(appId) ? "(空)"
+            : appId.Length <= 4 ? appId : appId[..4] + "***";
 
     public async ValueTask DisposeAsync()
     {

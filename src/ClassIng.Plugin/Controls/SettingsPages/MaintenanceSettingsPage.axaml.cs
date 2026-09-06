@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.Versioning;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
 using ClassIng.Plugin.Services.FirstRun;
 using ClassIng.Plugin.Services.Maintenance;
 using ClassIng.Shared.Abstractions;
@@ -12,6 +13,7 @@ namespace ClassIng.Plugin.Controls.SettingsPages;
 /// <summary>
 /// 维护设置页：日志级别、失败重试队列查看/重放（联动模块 8）、排错面板
 /// （连接状态/最近消息快照/手动重连，联动 <see cref="IDiagnosticsService"/>）、
+/// 消息日志 dump 导出（联动 <see cref="IMessageDumpService"/>）、
 /// 配置导入导出（剪贴板通道，导出脱敏/导入保留本地 Secret）/恢复默认。
 /// </summary>
 [SettingsPageInfo("classing.settings.maintenance", "CyberTechRep 维护")]
@@ -25,19 +27,22 @@ public partial class MaintenanceSettingsPage : ClassIngSettingsPageBase
 
     private readonly IDiagnosticsService? _diagnostics;
     private readonly IFirstRunService? _firstRun;
+    private readonly IMessageDumpService? _messageDump;
 
     private string _diagnosticsSummaryText = "尚未加载（点击「刷新」）";
     private IReadOnlyList<string> _recentMessages = [];
     private IReadOnlyList<RetryLine> _retryQueueLines = [];
     private RetryLine? _selectedRetryLine;
     private string _transferFeedback = "";
+    private string _dumpFeedback = "";
 
     public MaintenanceSettingsPage(ISettingsService settingsService, IDiagnosticsService? diagnostics = null,
-        IFirstRunService? firstRun = null)
+        IFirstRunService? firstRun = null, IMessageDumpService? messageDump = null)
         : base(settingsService, PluginRuntime.DataDirectory)
     {
         _diagnostics = diagnostics;
         _firstRun = firstRun;
+        _messageDump = messageDump;
         InitializeComponent();
     }
 
@@ -78,6 +83,17 @@ public partial class MaintenanceSettingsPage : ClassIngSettingsPageBase
         {
             _recentMessages = value;
             RaisePropertyChanged(nameof(RecentMessages));
+        }
+    }
+
+    /// <summary>消息日志 dump 导出反馈（成功时含导出路径与行数）。</summary>
+    public string DumpFeedback
+    {
+        get => _dumpFeedback;
+        private set
+        {
+            _dumpFeedback = value;
+            RaisePropertyChanged(nameof(DumpFeedback));
         }
     }
 
@@ -136,7 +152,7 @@ public partial class MaintenanceSettingsPage : ClassIngSettingsPageBase
                 $"重试队列：{snapshot.RetryQueue.Count} 条";
 
             RecentMessages = snapshot.RecentMessages
-                .Select(m => $"[{m.ReceivedAt:MM-dd HH:mm:ss}] {m.SenderNickname}：{m.Preview}")
+                .Select(m => $"[{m.ReceivedAt:MM-dd HH:mm:ss}] group={m.GroupOpenId} {m.SenderNickname}：{m.Preview}")
                 .ToList();
 
             RetryQueueLines = snapshot.RetryQueue
@@ -192,6 +208,60 @@ public partial class MaintenanceSettingsPage : ClassIngSettingsPageBase
         catch (Exception ex)
         {
             TransferFeedback = $"重放失败：{ex.Message}";
+        }
+    }
+
+    private async void OnExportDumpClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_messageDump is null)
+        {
+            DumpFeedback = "消息日志 dump 服务未注册。";
+            return;
+        }
+
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel is null)
+        {
+            DumpFeedback = "无法获取窗口句柄，导出取消。";
+            return;
+        }
+
+        string? filePath = null;
+        try
+        {
+            // 用户可选保存路径；选择器不可用时兜底导出到桌面
+            var picker = topLevel.StorageProvider;
+            var file = await picker.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = "导出消息日志 dump（JSONL）",
+                SuggestedFileName = $"CyberTechRep-消息dump-{DateTime.Now:yyyyMMdd-HHmmss}",
+                DefaultExtension = "jsonl",
+                FileTypeChoices = [new FilePickerFileType("JSONL（每行一条 JSON）")
+                {
+                    Patterns = ["*.jsonl"]
+                }]
+            }).ConfigureAwait(true);
+            filePath = file?.Path.LocalPath;
+        }
+        catch
+        {
+            // 选择器异常（部分宿主环境不可用）→ 回退桌面路径，不阻断导出
+        }
+
+        try
+        {
+            filePath ??= Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                $"CyberTechRep-消息dump-{DateTime.Now:yyyyMMdd-HHmmss}.jsonl");
+
+            var count = await _messageDump.ExportAsync(filePath).ConfigureAwait(true);
+            DumpFeedback = count == 0
+                ? $"缓冲为空（尚未收到消息），已导出空文件：{filePath}"
+                : $"已导出 {count} 条消息 → {filePath}";
+        }
+        catch (Exception ex)
+        {
+            DumpFeedback = $"导出失败：{ex.Message}";
         }
     }
 

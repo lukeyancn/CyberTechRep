@@ -45,7 +45,7 @@
                         <Button Content="手动重连" Click="OnReconnectClicked"/>
                     </StackPanel>
 
-                    <TextBlock Text="最近消息（最多 50 条，预览已截断）" FontWeight="SemiBold"/>
+                    <TextBlock Text="最近消息（最多 50 条，预览已截断，含群 OpenID）" FontWeight="SemiBold"/>
                     <ListBox ItemsSource="{Binding RecentMessages}" Height="140" FontSize="12">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
@@ -53,6 +53,15 @@
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
+
+                    <TextBlock Text="消息日志 dump 导出" FontWeight="SemiBold"/>
+                    <TextBlock Text="把最近收到的消息（最多 1000 条）导出为 JSONL 文件：每行一条消息的全字段结构化数据，含消息 id、群 OpenID、成员 OpenID、昵称、时间、消息段、分类结果、学科识别结果与文件关联。导出内容不含 AppSecret/Token/ApiKey。"
+                               FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="导出消息日志 dump" Click="OnExportDumpClicked"/>
+                        <TextBox Text="{Binding DumpFeedback, Mode=OneWay}" IsReadOnly="True"
+                                 AcceptsReturn="False" MinWidth="320"/>
+                    </StackPanel>
 
                     <TextBlock Text="重试队列" FontWeight="SemiBold"/>
                     <ListBox ItemsSource="{Binding RetryQueueLines}" Height="140" FontSize="12"
