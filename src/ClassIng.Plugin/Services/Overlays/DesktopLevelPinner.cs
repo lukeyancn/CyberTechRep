@@ -69,6 +69,16 @@ internal sealed class DesktopLevelPinner
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _timer.Tick += (_, _) => PushToBottom();
+
+        // Win+D 还原瞬间立即压底：兜底计时器最长要等 1 秒，期间非置顶窗会浮在所有窗口之上
+        //（违背「钉在桌面层」不变量）；WindowState 回到 Normal 时马上补一次压底。
+        _window.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == Window.WindowStateProperty && e.NewValue is WindowState.Normal)
+            {
+                PushToBottom();
+            }
+        };
     }
 
     /// <summary>WndProc 钩子：仅记录进入/退出系统移动缩放循环，不吞任何消息。</summary>

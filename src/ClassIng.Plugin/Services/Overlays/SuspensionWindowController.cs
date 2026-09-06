@@ -44,6 +44,10 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
 
     internal const double DefaultY = 40;
 
+    /// <summary>拖拽/缩放回写的落盘防抖间隔：拖动期间 PositionChanged/Bounds 高频触发，
+    /// 内存即时更新、落盘合并为最后一次（避免每帧写盘 + 广播风暴，且广播回放不会与拖拽会话打架）。</summary>
+    internal const int GeometrySaveDebounceMs = 300;
+
     private static readonly string[] KnownKeys = [NoticeKey, HomeworkKey, FilesKey, CircleKey];
 
     private readonly string _filePath;
@@ -54,6 +58,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     private readonly Dictionary<string, Window> _windows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DesktopLevelPinner> _pinners = new(StringComparer.OrdinalIgnoreCase);
     private OverlaySettings _settings;
+    private System.Threading.Timer? _geometrySaveTimer;
 
     /// <summary>
     /// <paramref name="settingsService"/> 提供时以其为设置单一来源（推荐）；
@@ -106,6 +111,10 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
 
             ApplyToWindow(overlayKey, window, GetWindowSettings(overlayKey));
             window.Show();
+            // 可见性同步回设置（Visible=true）：圆圈栏唤出文件悬浮窗等不经设置页的显示路径，
+            // 必须让 settings.json 与实际一致，否则任一次设置广播都会按 Visible=false 把窗隐藏
+            //（用户实测缺陷 a：文件悬浮窗拖动时自动消失的直接根源）。
+            SyncVisible(overlayKey, visible: true);
             _logger.LogInformation("悬浮窗已显示 Key={Key}", overlayKey);
         }).GetTask();
     }
@@ -124,6 +133,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
             if (_windows.TryGetValue(overlayKey, out var window))
             {
                 window.Hide();
+                SyncVisible(overlayKey, visible: false);
                 _logger.LogInformation("悬浮窗已隐藏 Key={Key}", overlayKey);
             }
         }).GetTask();
@@ -246,20 +256,48 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         // 层级由「置顶」开关决定：开 → 浮在所有窗口之上（Avalonia Topmost）；
         // 关 → 钉在桌面层最底（钉底器 HWND_BOTTOM，任何窗口都会遮挡悬浮窗）。
         // 固定/穿透只影响交互方式。
-        window.Topmost = settings.Topmost;
+        // 逐字段值变化守卫：设置广播（如拖拽回写回放）到达时未变化的属性不再重复赋值，
+        // 避免平台窗口无谓的尺寸/位置回放与拖拽会话打架（用户实测缺陷 b 的成因之一）。
+        if (window.Topmost != settings.Topmost)
+        {
+            window.Topmost = settings.Topmost;
+        }
+
         // 永不激活抢焦点——否则一次点击就会把悬浮窗抬到所有窗口之上
         window.ShowActivated = false;
         var pinned = settings.Pinned;
         // 固定模式禁止系统级缩放
-        window.CanResize = !pinned;
-        window.Opacity = Math.Clamp(settings.Opacity, 0.1, 1.0);
-        window.FontSize = settings.FontSize;
-        window.Width = settings.Width;
-        window.Height = settings.Height;
+        if (window.CanResize != !pinned)
+        {
+            window.CanResize = !pinned;
+        }
 
-        // 固定模式：禁用窗口内拖拽/缩放手势（手势处理器读该附加属性）；穿透由钉底器处理
+        var clampedOpacity = Math.Clamp(settings.Opacity, 0.1, 1.0);
+        if (window.Opacity != clampedOpacity)
+        {
+            window.Opacity = clampedOpacity;
+        }
+
+        if (window.FontSize != settings.FontSize)
+        {
+            window.FontSize = settings.FontSize;
+        }
+
+        if (window.Width != settings.Width)
+        {
+            window.Width = settings.Width;
+        }
+
+        if (window.Height != settings.Height)
+        {
+            window.Height = settings.Height;
+        }
+
+        // 固定模式：禁用窗口内拖拽/缩放手势（手势处理器读该附加属性）；
+        // 穿透由钉底器处理。穿透按契约「仅固定模式下生效」：未固定时即便开了穿透也
+        // 不生效——否则悬浮窗既不能点也不能拖，只能去设置页才能救回来。
         Views.OverlayBehaviors.SetFixed(window, pinned);
-        GetOrCreatePinner(overlayKey, window).Apply(settings.ClickThrough, settings.Topmost);
+        GetOrCreatePinner(overlayKey, window).Apply(settings.ClickThrough && pinned, settings.Topmost);
 
         // DPI 适配：持久化的是逻辑坐标（DIP），落地时按窗口缩放系数换算为像素。
         // 值未变化时跳过赋值，避免 PositionChanged → CaptureBounds → Save → SettingsChanged →
@@ -322,11 +360,23 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
             {
                 CaptureBounds(overlayKey, window);
             }
+            else if (e.Property == Visual.IsVisibleProperty && e.NewValue is false)
+            {
+                // 窗口经 × 按钮/窗口自身 Hide()（不经控制器）隐藏时，同样把 Visible=false
+                // 同步回设置：否则下一次任意设置广播会按残留的 Visible=true 把窗意外复活。
+                SyncVisible(overlayKey, visible: false);
+            }
         };
     }
 
     private void CaptureBounds(string overlayKey, Window window)
     {
+        // 隐藏/关闭中的窗口不回写：避免关闭瞬间或隐藏期间的过渡 Bounds 污染持久化值
+        if (!window.IsVisible)
+        {
+            return;
+        }
+
         var scaling = window.RenderScaling;
         var settings = GetWindowSettings(overlayKey);
         settings.X = window.Position.X / scaling;
@@ -350,10 +400,54 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                     _settings.Circle = settings;
                     break;
             }
-
-            SaveSettings();
         }
 
+        // 落盘防抖：内存已即时更新（IsOnScreen/回放路径读到的是最新值），写盘与广播合并到
+        // 静默后一次。拖动期间高频事件间隔远小于防抖窗口，天然不触发中途回放。
+        ScheduleGeometrySave();
+    }
+
+    /// <summary>调度拖拽/缩放回写的防抖落盘（最后一次变更后 <see cref="GeometrySaveDebounceMs"/> 毫秒）。</summary>
+    private void ScheduleGeometrySave()
+    {
+        if (_geometrySaveTimer is null)
+        {
+            _geometrySaveTimer = new System.Threading.Timer(
+                _ => OnGeometrySaveDue(), null, Timeout.Infinite, Timeout.Infinite);
+        }
+
+        _geometrySaveTimer.Change(GeometrySaveDebounceMs, Timeout.Infinite);
+    }
+
+    private void OnGeometrySaveDue()
+    {
+        try
+        {
+            SaveSettings();
+            RaiseSettingsPersisted();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "悬浮窗位置大小回写落盘失败（内存中状态保留）");
+        }
+    }
+
+    /// <summary>把窗口实际可见性同步回设置 Visible 并持久化（仅真实变化时写盘，防广播回环）。</summary>
+    private void SyncVisible(string overlayKey, bool visible)
+    {
+        lock (_lock)
+        {
+            var settings = GetWindowSettings(overlayKey);
+            if (settings.Visible == visible)
+            {
+                return;
+            }
+
+            settings.Visible = visible;
+        }
+
+        _logger.LogInformation("悬浮窗可见性已同步 Key={Key}, Visible={Visible}", overlayKey, visible);
+        SaveSettings();
         RaiseSettingsPersisted();
     }
 
@@ -397,6 +491,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                     container.Files = legacy.Files;
                     container.Circle = legacy.Circle;
                     container.SubjectCircle = legacy.SubjectCircle;
+                    container.HomeworkGroupOrder = legacy.HomeworkGroupOrder;
                     container.LaunchWithHost = legacy.LaunchWithHost;
                     _ = PersistViaSettingsServiceAsync();
                     _logger.LogInformation("已将旧 overlays.json 的悬浮窗设置导入 ISettingsService（settings.json），悬浮窗设置统一为单一来源");
@@ -513,7 +608,8 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
             Homework = CloneWindowSettings(source.Homework),
             Files = CloneWindowSettings(source.Files),
             Circle = CloneWindowSettings(source.Circle),
-            SubjectCircle = CloneSubjectCircleSettings(source.SubjectCircle)
+            SubjectCircle = CloneSubjectCircleSettings(source.SubjectCircle),
+            HomeworkGroupOrder = [.. source.HomeworkGroupOrder]
         };
     }
 

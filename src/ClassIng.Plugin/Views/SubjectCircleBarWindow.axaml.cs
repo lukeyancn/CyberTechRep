@@ -1,6 +1,9 @@
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using ClassIng.Plugin.Services.Overlays;
 using ClassIng.Shared.Abstractions;
 using ClassIng.Shared.Models;
@@ -118,6 +121,45 @@ public partial class SubjectCircleBarWindow : Window
         {
             await _controller.ToggleOrSwitchAsync(subject);
         }
+    }
+
+    /// <summary>
+    /// 空白处按住拖动整个圆圈栏（BeginMoveDrag，与另三窗标题栏同款）。
+    /// 缺陷 c 修复：此前圆圈栏完全没有拖拽处理器，窗口位置只能经设置页 X/Y 调整。
+    /// 按在圆圈按钮/右键菜单上时不拖拽（保留点击与菜单交互）；固定模式下禁用（门控与另窗一致）。
+    /// </summary>
+    private void OnBarPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        // 固定模式下禁用拖拽（位置只能经设置页调整）
+        if (OverlayBehaviors.GetFixed(this))
+        {
+            return;
+        }
+
+        // 按在圆圈按钮（或其内部元素）上时交给按钮的 Click/ContextMenu，不启动拖拽
+        if (IsOverInteractive(e.Source as Visual))
+        {
+            return;
+        }
+
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            BeginMoveDrag(e);
+        }
+    }
+
+    /// <summary>指针源是否位于可交互控件（Button 等）内：沿可视树向上找。</summary>
+    private static bool IsOverInteractive(Visual? source)
+    {
+        for (Visual? node = source; node is not null; node = node.GetVisualParent())
+        {
+            if (node is Button)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>右键菜单展开时记录所属圆圈的学科（MenuItem 不在可视树内，经 ContextMenu 的 PlacementTarget 取）。</summary>
