@@ -18,8 +18,10 @@ namespace ClassIng.Plugin.Views;
 /// <see cref="SubjectCircleBarSettings.Order"/>，未配置的按固定顺序追加）；
 /// 横竖排列由 Orientation 驱动；点击圆圈 → 经 <see cref="SubjectFilesController"/>
 /// 打开/切换/隐藏（toggle）学科文件悬浮窗；右键圆圈弹出「上移/下移」菜单调整顺序
-/// （持久化回设置并热生效）；层级/穿透/固定/位置由 <see cref="SuspensionWindowController"/>
-/// 钉底器路径统一处理（与另两窗行为一致）。
+/// （持久化回设置并热生效）；底部控件条：「⋯」快捷菜单（与其他悬浮窗共用
+/// <see cref="OverlayQuickMenu"/>：置顶/固定/穿透）+「×」隐藏（设置页可再唤出）；
+/// 层级/穿透/固定/位置由 <see cref="SuspensionWindowController"/>
+/// 钉底器路径统一处理（与另三窗行为一致）。
 /// </summary>
 public partial class SubjectCircleBarWindow : Window
 {
@@ -28,6 +30,7 @@ public partial class SubjectCircleBarWindow : Window
     private readonly Func<SubjectCircleBarSettings> _getSettings = null!;
     private readonly ISettingsService? _settingsService;
     private readonly ILogger _logger;
+    private readonly OverlayQuickMenu _quickMenu = null!;
     private EventHandler<ClassIng.Shared.Models.AppSettings>? _settingsChangedHandler;
     private string? _pendingSubject;
 
@@ -42,7 +45,8 @@ public partial class SubjectCircleBarWindow : Window
         IFilePipelineService pipeline,
         Func<SubjectCircleBarSettings> getSettings,
         ILogger? logger = null,
-        ISettingsService? settingsService = null)
+        ISettingsService? settingsService = null,
+        ISuspensionWindowController? overlays = null)
     {
         _controller = controller ?? throw new ArgumentNullException(nameof(controller));
         _pipeline = pipeline ?? throw new ArgumentNullException(nameof(pipeline));
@@ -50,6 +54,12 @@ public partial class SubjectCircleBarWindow : Window
         _settingsService = settingsService;
         _logger = logger ?? NullLogger.Instance;
         InitializeComponent();
+        // 底部「⋯」快捷菜单（与其他悬浮窗共用 OverlayQuickMenu：置顶/固定/穿透，即时生效并
+        // 回写设置；控件在底部 → 菜单向上展开）
+        _quickMenu = new OverlayQuickMenu(
+            settingsService, overlays, SuspensionWindowController.CircleKey,
+            () => settingsService!.Current.Overlays.Circle, this, openAbove: true);
+        QuickMenuButton.Flyout = _quickMenu.Flyout;
         _ = RefreshAsync();
 
         // 可视树加载完成后再补一次方向应用：构造期 RefreshAsync 时 ItemsPanelRoot 可能尚未
@@ -173,6 +183,9 @@ public partial class SubjectCircleBarWindow : Window
     private async void OnMoveUpClick(object? sender, RoutedEventArgs e) => await MoveAsync(-1);
 
     private async void OnMoveDownClick(object? sender, RoutedEventArgs e) => await MoveAsync(1);
+
+    /// <summary>底部「×」：隐藏圆圈栏（Visible=false 由控制器可见性钩子同步回设置，设置页可再唤出）。</summary>
+    private void OnHideClick(object? sender, RoutedEventArgs e) => Hide();
 
     /// <summary>上移/下移：以当前展示顺序为基准重排，持久化后刷新（顺序在设置间共享）。</summary>
     private async Task MoveAsync(int delta)

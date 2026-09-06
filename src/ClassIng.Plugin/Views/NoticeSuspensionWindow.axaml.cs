@@ -66,13 +66,10 @@ public partial class NoticeSuspensionWindow : Window
     internal static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(200);
 
     private readonly INoticeStore _store = null!;
-    private readonly ISuspensionWindowController? _overlays;
-    private readonly ISettingsService? _settingsService;
     private readonly DispatcherTimer _debounceTimer = null!;
-    private EventHandler<ClassIng.Shared.Models.AppSettings>? _settingsChangedHandler;
+    private readonly OverlayQuickMenu _quickMenu = null!;
     private int _refreshing;
     private NoticeListViewMode _viewMode = NoticeListViewMode.Unread;
-    private bool _syncingQuickMenu;
 
     public NoticeSuspensionWindow()
     {
@@ -86,8 +83,6 @@ public partial class NoticeSuspensionWindow : Window
         ISettingsService? settingsService = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
-        _overlays = overlays;
-        _settingsService = settingsService;
         InitializeComponent();
         _debounceTimer = new DispatcherTimer { Interval = RefreshDebounce };
         _debounceTimer.Tick += (_, _) =>
@@ -97,13 +92,13 @@ public partial class NoticeSuspensionWindow : Window
         };
         _store.Changed += OnStoreChanged;
 
-        // 设置页修改悬浮窗开关后双向同步快捷菜单勾选态（经 SettingsChanged；控制器回写也走该广播）
-        if (_settingsService is not null)
-        {
-            _settingsChangedHandler = (_, _) => Dispatcher.UIThread.Post(SyncQuickMenuFromSettings);
-            _settingsService.SettingsChanged += _settingsChangedHandler;
-            Closed += (_, _) => _settingsService.SettingsChanged -= _settingsChangedHandler;
-        }
+        // 右上角「⋯」快捷菜单：置顶/固定/鼠标穿透开关与设置页等价（共享 OverlayQuickMenu），
+        // 切换即时生效并回写 ISettingsService（经控制器的 ApplySettingsAsync 路径应用），
+        // 设置页修改后经 SettingsChanged 双向同步勾选态
+        _quickMenu = new OverlayQuickMenu(
+            settingsService, overlays, SuspensionWindowController.NoticeKey,
+            () => settingsService!.Current.Overlays.Notice, this);
+        QuickMenuButton.Flyout = _quickMenu.Flyout;
 
         _ = RefreshAsync();
     }
@@ -223,60 +218,8 @@ public partial class NoticeSuspensionWindow : Window
     }
 
     // ---- 右上角快捷菜单（与设置页等价的开关，即时生效 + 回写 ISettingsService）----
-
-    private void OnQuickMenuOpened(object? sender, EventArgs e) => SyncQuickMenuFromSettings();
-
-    /// <summary>快捷菜单勾选态 ← 设置（设置页修改后经 SettingsChanged 到达，双向同步）。</summary>
-    private void SyncQuickMenuFromSettings()
-    {
-        if (_settingsService is null)
-        {
-            return;
-        }
-
-        var notice = _settingsService.Current.Overlays.Notice;
-        _syncingQuickMenu = true;
-        try
-        {
-            TopmostToggle.IsChecked = notice.Topmost;
-            PinnedToggle.IsChecked = notice.Pinned;
-            ClickThroughToggle.IsChecked = notice.ClickThrough;
-        }
-        finally
-        {
-            _syncingQuickMenu = false;
-        }
-    }
-
-    private void OnQuickToggleClick(object? sender, RoutedEventArgs e)
-    {
-        if (_syncingQuickMenu || _settingsService is null || _overlays is null)
-        {
-            return;
-        }
-
-        // 回写单一来源（ISettingsService.Current.Overlays.Notice），再经控制器 ApplySettingsAsync
-        // 路径即时应用到窗口，最后 SaveAsync 持久化并广播（设置页勾选态随 SettingsChanged 刷新）。
-        var notice = _settingsService.Current.Overlays.Notice;
-        notice.Topmost = TopmostToggle.IsChecked == true;
-        notice.Pinned = PinnedToggle.IsChecked == true;
-        notice.ClickThrough = ClickThroughToggle.IsChecked == true;
-        _ = ApplyQuickSettingsAsync();
-    }
-
-    private async Task ApplyQuickSettingsAsync()
-    {
-        try
-        {
-            await _overlays!.ApplySettingsAsync(
-                SuspensionWindowController.NoticeKey, _settingsService!.Current.Overlays.Notice);
-            await _settingsService!.SaveAsync();
-        }
-        catch
-        {
-            // 快捷菜单应用失败不中断悬浮窗（内存中状态保留，设置页可再改）
-        }
-    }
+    // 构建与同步/回写逻辑统一在共享的 OverlayQuickMenu（与作业/学科文件/圆圈栏同款），
+    // 通知窗此处仅负责把 Flyout 挂到「⋯」按钮上。
 
     private void OnHeaderPointerPressed(object? sender, PointerPressedEventArgs e)
     {

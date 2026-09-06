@@ -11,7 +11,7 @@
   <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
     <Grid RowDefinitions="Auto,*,Auto">
 
-      <!-- 标题栏：学科名 + 隐藏按钮（圆圈栏点击可再次唤出） -->
+      <!-- 标题栏：学科名 + 快捷设置菜单（右上角，与通知窗共用 OverlayQuickMenu）+ 隐藏按钮（圆圈栏点击可再次唤出） -->
       <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
               PointerPressed="OnHeaderPointerPressed">
         <Grid ColumnDefinitions="*,Auto" Margin="12,8,8,8">
@@ -19,8 +19,12 @@
             <TextBlock Text="学科文件" FontWeight="SemiBold" />
             <TextBlock x:Name="SubjectTitle" FontWeight="SemiBold" Opacity="0.7" />
           </StackPanel>
-          <Button Grid.Column="1" Content="×" Click="OnHideClick"
-                  Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
+            <Button x:Name="QuickMenuButton" Content="⋯" Padding="6,0" MinWidth="28" Background="Transparent"
+                    BorderThickness="0" ToolTip.Tip="悬浮窗快捷设置" />
+            <Button Content="×" Click="OnHideClick"
+                    Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+          </StackPanel>
         </Grid>
       </Border>
 

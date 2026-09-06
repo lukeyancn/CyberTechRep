@@ -51,6 +51,7 @@ public partial class SubjectFilesSuspensionWindow : Window
     private readonly Func<string, string?> _resolveAbsolutePath = null!;
     private readonly ILogger _logger;
     private readonly DispatcherTimer _debounceTimer = null!;
+    private readonly OverlayQuickMenu _quickMenu = null!;
     private int _refreshing;
     private string _subject = "未分类";
 
@@ -64,13 +65,20 @@ public partial class SubjectFilesSuspensionWindow : Window
         IFilePipelineService pipeline,
         Func<SubjectCircleBarSettings> getCircleSettings,
         Func<string, string?> resolveAbsolutePath,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        ISuspensionWindowController? overlays = null,
+        ISettingsService? settingsService = null)
     {
         _pipeline = pipeline ?? throw new ArgumentNullException(nameof(pipeline));
         _getCircleSettings = getCircleSettings ?? throw new ArgumentNullException(nameof(getCircleSettings));
         _resolveAbsolutePath = resolveAbsolutePath ?? throw new ArgumentNullException(nameof(resolveAbsolutePath));
         _logger = logger ?? NullLogger.Instance;
         InitializeComponent();
+        // 右上角「⋯」快捷菜单（与通知窗共用 OverlayQuickMenu：置顶/固定/穿透，即时生效并回写设置）
+        _quickMenu = new OverlayQuickMenu(
+            settingsService, overlays, SuspensionWindowController.FilesKey,
+            () => settingsService!.Current.Overlays.Files, this);
+        QuickMenuButton.Flyout = _quickMenu.Flyout;
         _debounceTimer = new DispatcherTimer { Interval = RefreshDebounce };
         _debounceTimer.Tick += (_, _) =>
         {

@@ -13,13 +13,17 @@
   <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
     <Grid RowDefinitions="Auto,*,Auto">
 
-      <!-- 标题栏：拖拽区 + 关闭 -->
+      <!-- 标题栏：拖拽区 + 快捷设置菜单（右上角，与通知窗共用 OverlayQuickMenu） + 关闭 -->
       <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
               PointerPressed="OnHeaderPointerPressed">
         <Grid ColumnDefinitions="*,Auto" Margin="12,8,8,8">
           <TextBlock Text="作业" FontWeight="SemiBold" VerticalAlignment="Center" />
-          <Button Grid.Column="1" Content="×" Click="OnHideClick"
-                  Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
+            <Button x:Name="QuickMenuButton" Content="⋯" Padding="6,0" MinWidth="28" Background="Transparent"
+                    BorderThickness="0" ToolTip.Tip="悬浮窗快捷设置" />
+            <Button Content="×" Click="OnHideClick"
+                    Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+          </StackPanel>
         </Grid>
       </Border>
 
@@ -40,11 +44,8 @@
                           <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto">
                             <TextBlock Grid.Column="0" Grid.Row="0" Text="{Binding Item.Content}"
                                        TextWrapping="Wrap" />
-                            <ComboBox Grid.Column="1" Grid.Row="0" MinWidth="96"
-                                      ItemsSource="{Binding AvailableSubjects}"
-                                      SelectedItem="{Binding SelectedSubject, Mode=OneWay}"
-                                      SelectionChanged="OnSubjectSelectionChanged"
-                                      ToolTip.Tip="修正学科" />
+                            <!-- 学科修正/切换下拉已从 UI 移除（需求 1）：底层 SetSubjectAsync 修正
+                                 逻辑与 HomeworkRow.AvailableSubjects 候选构建保留，后续可从别处进入 -->
                             <TextBlock Grid.Column="0" Grid.Row="1"
                                        Text="{Binding AttachmentText}"
                                        IsVisible="{Binding HasAttachments}"

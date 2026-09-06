@@ -20,21 +20,7 @@
           <TextBlock Text="通知" FontWeight="SemiBold" VerticalAlignment="Center" />
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
             <Button x:Name="QuickMenuButton" Content="⋯" Padding="6,0" MinWidth="28" Background="Transparent"
-                    BorderThickness="0" ToolTip.Tip="悬浮窗快捷设置">
-              <Button.Flyout>
-                <Flyout Placement="BottomEdgeAlignedRight"
-                        Opened="OnQuickMenuOpened">
-                  <StackPanel Width="236" Spacing="10" Margin="4">
-                    <ToggleSwitch x:Name="TopmostToggle" Content="置顶（浮在所有窗口之上）"
-                                  IsChecked="False" Click="OnQuickToggleClick" />
-                    <ToggleSwitch x:Name="PinnedToggle" Content="固定（禁用拖拽缩放）"
-                                  IsChecked="False" Click="OnQuickToggleClick" />
-                    <ToggleSwitch x:Name="ClickThroughToggle" Content="鼠标穿透（固定模式下生效）"
-                                  IsChecked="False" Click="OnQuickToggleClick" />
-                  </StackPanel>
-                </Flyout>
-              </Button.Flyout>
-            </Button>
+                    BorderThickness="0" ToolTip.Tip="悬浮窗快捷设置" />
             <Button Content="×" Click="OnHideClick"
                     Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
           </StackPanel>

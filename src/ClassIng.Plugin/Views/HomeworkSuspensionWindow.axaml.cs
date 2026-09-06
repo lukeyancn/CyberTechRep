@@ -17,7 +17,7 @@ public sealed class HomeworkGroup
     public required IReadOnlyList<HomeworkRow> Items { get; init; }
 }
 
-/// <summary>作业悬浮窗条目视图（正文 + 附件状态 + 修正学科下拉）。</summary>
+/// <summary>作业悬浮窗条目视图（正文 + 附件状态；学科修正候选保留供非 UI 入口复用）。</summary>
 public sealed class HomeworkRow
 {
     public required HomeworkItem Item { get; init; }
@@ -37,10 +37,12 @@ public sealed class HomeworkRow
 
 /// <summary>
 /// 作业悬浮窗（Avalonia 无边框置顶窗）：
-/// 按学科分组（Expander 组头）展示，条目含正文、附件状态与「修正学科」下拉
-/// （选择已有学科 → SetSubjectAsync，SubjectSource=Manual）；Changed 触发 200ms debounce 刷新；
+/// 按学科分组（Expander 组头）展示，条目含正文与附件状态（学科修正下拉已从 UI 移除，
+/// 底层 SetSubjectAsync 修正逻辑与候选构建保留）；Changed 触发 200ms debounce 刷新；
 /// 分组顺序按 <see cref="ClassIng.Shared.Models.OverlaySettings.HomeworkGroupOrder"/>（配置顺序优先，
 /// 未配置的按字母序追加，空 = 全字母序）；设置广播触发刷新（分组顺序热生效）；
+/// 右上角「⋯」快捷菜单（与通知窗共用 <see cref="OverlayQuickMenu"/>）：
+/// 置顶/固定/鼠标穿透开关即时生效并回写 ISettingsService；
 /// 标题栏 BeginMoveDrag 拖拽、角部 Thumb 缩放；位置/大小由 <see cref="SuspensionWindowController"/> 持久化。
 /// </summary>
 public partial class HomeworkSuspensionWindow : Window
@@ -53,6 +55,7 @@ public partial class HomeworkSuspensionWindow : Window
     private readonly ISettingsService? _settingsService;
     private readonly Func<IReadOnlyList<string>?>? _groupOrderProvider;
     private readonly DispatcherTimer _debounceTimer = null!;
+    private readonly OverlayQuickMenu _quickMenu = null!;
     private IReadOnlyList<HomeworkItem> _currentItems = [];
     private bool _sending;
     private int _refreshing;
@@ -67,13 +70,19 @@ public partial class HomeworkSuspensionWindow : Window
         IHomeworkStore store,
         Func<IReadOnlyList<string>?>? groupOrderProvider = null,
         ISettingsService? settingsService = null,
-        IHomeworkSendService? sendService = null)
+        IHomeworkSendService? sendService = null,
+        ISuspensionWindowController? overlays = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _groupOrderProvider = groupOrderProvider;
         _sendService = sendService;
         _settingsService = settingsService;
         InitializeComponent();
+        // 右上角「⋯」快捷菜单（与通知窗共用 OverlayQuickMenu：置顶/固定/穿透，即时生效并回写设置）
+        _quickMenu = new OverlayQuickMenu(
+            settingsService, overlays, SuspensionWindowController.HomeworkKey,
+            () => settingsService!.Current.Overlays.Homework, this);
+        QuickMenuButton.Flyout = _quickMenu.Flyout;
         // 「整理并发送」开关：连接设置 HomeworkSendEnabled（热生效）；开关关闭时隐藏入口
         UpdateSendEntryVisibility();
         _debounceTimer = new DispatcherTimer { Interval = RefreshDebounce };
@@ -226,24 +235,6 @@ public partial class HomeworkSuspensionWindow : Window
         candidates.AddRange(BaseSubjects);
         candidates.AddRange(extraSubjects.Where(s => !string.Equals(s, currentSubject, StringComparison.Ordinal)));
         return candidates;
-    }
-
-    private async void OnSubjectSelectionChanged(object? sender, SelectionChangedEventArgs e)
-    {
-        try
-        {
-            if (sender is ComboBox { DataContext: HomeworkRow row } comboBox
-                && comboBox.SelectedItem is string subject
-                && !string.Equals(subject, row.Item.Subject, StringComparison.Ordinal))
-            {
-                await _store.SetSubjectAsync(row.Item.Id, subject);
-                // 分组归属变化经 Changed → debounce 刷新完成
-            }
-        }
-        catch
-        {
-            // 修正失败保持原学科，不中断
-        }
     }
 
     /// <summary>
