@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>CyberTechRep.Shared</RootNamespace>
+    <Version>0.4.0.0</Version>
+    <Product>CyberTechRep</Product>
+    <Description>CyberTechRep 共享契约层：数据模型与模块接口（模块间只经此层通信）</Description>
+  </PropertyGroup>
+
+</Project>

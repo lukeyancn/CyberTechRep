@@ -1,0 +1,61 @@
+<local:CyberTechRepSettingsPageBase
+    x:Class="CyberTechRep.Plugin.Controls.SettingsPages.ConnectionSettingsPage"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:CyberTechRep.Plugin.Controls.SettingsPages"
+    mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="700">
+
+    <ScrollViewer>
+        <StackPanel Margin="24" MaxWidth="720" Spacing="10">
+
+            <TextBlock Text="连接设置（QQ 官方机器人开放平台）" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+
+            <TextBlock Text="机器人 AppID（q.qq.com 注册获得）" FontWeight="SemiBold"/>
+            <TextBox Text="{Binding Settings.Connection.AppId}" Watermark="AppID"/>
+
+            <TextBlock Text="AppSecret（DPAPI 加密存储，脱敏显示）" FontWeight="SemiBold"/>
+            <TextBox Text="{Binding AppSecretPlain, Mode=TwoWay}" PasswordChar="●" Watermark="AppSecret"/>
+
+            <TextBlock Text="开放平台 API 根地址" FontWeight="SemiBold"/>
+            <TextBox Text="{Binding Settings.Connection.ApiBase}"/>
+
+            <TextBlock Text="AccessToken 服务地址" FontWeight="SemiBold"/>
+            <TextBox Text="{Binding Settings.Connection.TokenApiUrl}"/>
+
+            <TextBlock Text="群白名单（群 OpenID，一行一个；留空 = 接收全部已接入群）" FontWeight="SemiBold"/>
+            <TextBox Text="{Binding GroupWhitelistText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
+                     Watermark="每一行一个群 OpenID"/>
+
+            <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗展示发送入口，确认后发送当天作业清单到目标群）"
+                          IsChecked="{Binding Settings.Connection.HomeworkSendEnabled}"/>
+
+            <TextBlock Text="作业清单发送目标群（群 OpenID，一行一个；与消息接管白名单相互独立，需单独填写）" FontWeight="SemiBold"/>
+            <TextBox Text="{Binding TargetGroupsText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
+                     Watermark="每一行一个群 OpenID（整理并发送专用）"/>
+            <TextBlock Text="说明：发送目标群与消息接管白名单相互独立——此处列表仅决定「整理并发送」发送到哪些群，修改白名单不影响发送目标；列表为空时点发送会明确提示未配置目标群。"
+                       FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
+
+            <Expander Header="断线重连参数" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="初始重连延迟（秒）"/>
+                    <NumericUpDown Value="{Binding Settings.Connection.ReconnectInitialDelaySec}" Minimum="1"
+                                   Maximum="3600" Increment="1"/>
+                    <TextBlock Text="重连延迟倍增系数"/>
+                    <NumericUpDown Value="{Binding Settings.Connection.ReconnectBackoffFactor}" Minimum="1"
+                                   Maximum="10" Increment="0.5" FormatString="0.0"/>
+                    <TextBlock Text="重连延迟上限（秒）"/>
+                    <NumericUpDown Value="{Binding Settings.Connection.ReconnectMaxDelaySec}" Minimum="1"
+                                   Maximum="3600" Increment="1"/>
+                </StackPanel>
+            </Expander>
+
+            <TextBlock Text="历史消息回溯天数：官方机器人平台不提供历史补拉 API，该功能当前不可用（设置项保留以兼容未来）。"
+                       FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
+
+            <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
+                    Margin="0,10,0,0"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:CyberTechRepSettingsPageBase>

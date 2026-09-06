@@ -1,0 +1,85 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>CyberTechRep.Plugin</RootNamespace>
+    <!-- 版本 0.4.0.0：与 manifest.yml 保持一致 -->
+    <Version>0.4.0.0</Version>
+    <!-- 程序集文件名/命名空间随品牌更名统一为 CyberTechRep -->
+    <AssemblyName>CyberTechRep.Plugin</AssemblyName>
+    <Product>CyberTechRep</Product>
+    <Company>CyberTechRep</Company>
+    <Title>CyberTechRep（ClassIsland 插件）</Title>
+    <!-- 关键：插件以可动态加载的程序集构建（宿主进程内加载） -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <!-- 构建时产出 .cipx 插件包（由 ClassIsland.PluginSdk.targets 驱动） -->
+    <CreateCipx>true</CreateCipx>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- SDK 只用于编译期：ClassIsland.Core 等由宿主进程提供，不随插件分发 -->
+    <PackageReference Include="ClassIsland.PluginSdk" Version="2.1.0.1">
+      <ExcludeAssets>runtime; native</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 编译期引用；运行时由宿主进程提供这些程序集（打进包里会与宿主产生同名不同源的类型分裂，
+         导致入口类 Initialize 被判定为未实现而 TypeLoadException） -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" ExcludeAssets="runtime;native" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" ExcludeAssets="runtime;native" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- System.Text.Json 供插件内部序列化使用，随包分发（插件 ALC 私有，不与宿主交换类型） -->
+    <PackageReference Include="System.Text.Json" Version="9.0.2" />
+    <!-- 学科文件悬浮窗：提取文件关联图标（仅 Windows 运行期使用，代码内有 OS 判断与兜底） -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- 打包前剥离宿主已提供的程序集，避免与宿主类型分裂（EnableDynamicLoading 会把传递依赖也复制进来） -->
+  <Target Name="StripHostProvidedAssemblies" BeforeTargets="CreateCipx">
+    <ItemGroup>
+      <HostProvidedAssemblies Include="$(OutputPath)Microsoft.Extensions.*.dll" />
+      <HostProvidedAssemblies Include="$(OutputPath)System.IO.Pipelines.dll" />
+    </ItemGroup>
+    <Delete Files="@(HostProvidedAssemblies)" />
+  </Target>
+
+  <ItemGroup>
+    <!-- 悬浮窗/文档：宿主插件页要求包内提供 README.md -->
+    <None Update="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- 模块 7：Avalonia 设置页编译期引用（axaml 编译与控件类型）；运行时由宿主进程提供 -->
+    <PackageReference Include="Avalonia" Version="11.3.17" ExcludeAssets="runtime; native" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- 模块 7：插件内 axaml（含模块 4-6 视图）统一走反射绑定，避免编译期绑定对新视图的强约束 -->
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CyberTechRep.Shared\CyberTechRep.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 单元测试可见内部成员（排序策略 / URL 构造 / 原子写入等） -->
+    <InternalsVisibleTo Include="CyberTechRep.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="manifest.yml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\classification-keywords.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\subjects.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

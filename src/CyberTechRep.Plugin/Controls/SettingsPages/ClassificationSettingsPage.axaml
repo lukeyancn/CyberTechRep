@@ -1,0 +1,43 @@
+﻿<local:CyberTechRepSettingsPageBase
+    x:Class="CyberTechRep.Plugin.Controls.SettingsPages.ClassificationSettingsPage"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:CyberTechRep.Plugin.Controls.SettingsPages"
+    mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="700">
+
+    <ScrollViewer>
+        <StackPanel Margin="24" MaxWidth="720" Spacing="10">
+
+            <TextBlock Text="分类设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+
+            <!-- 设置归属说明（需求 6 去重：每项设置单一入口） -->
+            <TextBlock Text="设置归属：通知/作业关键词与学科词表在「学科词表编辑」页编辑；AI 相关配置（总开关、云端 API、置信度阈值等）已全部集中到「CyberTechRep AI」页，本页不再重复。"
+                       TextWrapping="Wrap" Opacity="0.75"/>
+
+            <!-- 人工确认队列 -->
+            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="人工确认队列" FontWeight="SemiBold"/>
+                    <TextBlock Text="学科识别（关键词/AI）低置信或失败时，消息进入待确认队列等待人工指定学科。置信度阈值在「CyberTechRep AI」页调整。"
+                               TextWrapping="Wrap" Opacity="0.8"/>
+                    <ToggleSwitch Content="启用人工确认队列"
+                                  IsChecked="{Binding Settings.Classification.ManualConfirmQueueEnabled}"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 学科词表入口指向（去重：编辑统一在「学科词表编辑」页） -->
+            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="学科词表" FontWeight="SemiBold"/>
+                    <TextBlock Text="学科关键词规则（subjects.json）与消息分类关键词（classification-keywords.json）统一在「学科词表编辑」页可视化编辑（含导入/导出/恢复默认），本页不再提供重复编辑入口。"
+                               TextWrapping="Wrap" Opacity="0.8"/>
+                </StackPanel>
+            </Border>
+
+            <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
+                    Margin="0,10,0,0"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:CyberTechRepSettingsPageBase>

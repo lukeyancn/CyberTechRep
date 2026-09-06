@@ -1,0 +1,72 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="480" d:DesignHeight="540"
+        x:Class="CyberTechRep.Plugin.Views.FirstRunWizardWindow"
+        Title="CyberTechRep 首次启动引导" Width="480" Height="540" MinWidth="420" MinHeight="420"
+        SystemDecorations="None" Topmost="True" ShowInTaskbar="True" CanResize="True"
+        WindowStartupLocation="CenterScreen" FontSize="14" Background="Transparent">
+
+  <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
+    <Grid RowDefinitions="Auto,*,Auto">
+
+      <!-- 标题栏：拖拽区（风格与模块 6 悬浮窗一致：无边框 + 置顶 + 圆角） -->
+      <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
+              PointerPressed="OnHeaderPointerPressed">
+        <Grid ColumnDefinitions="*,Auto" Margin="14,10,8,10">
+          <TextBlock Text="CyberTechRep 首次启动引导" FontWeight="SemiBold" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Content="×" Click="OnSkipClick"
+                  Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+        </Grid>
+      </Border>
+
+      <!-- 步骤内容 -->
+      <Panel Grid.Row="1" Margin="24,16">
+
+        <!-- 第 1 步：欢迎/说明 -->
+        <StackPanel x:Name="StepWelcome" Spacing="10">
+          <TextBlock Text="欢迎使用 CyberTechRep" FontSize="22" FontWeight="Bold" />
+          <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                     Text="CyberTechRep 是 ClassIsland 的课堂信息分发插件：接入 QQ 群消息后自动分类通知/作业、识别学科，并在桌面悬浮窗展示与归档文件。"/>
+          <TextBlock Text="首次使用建议先完成连接配置：" FontWeight="SemiBold" Margin="0,8,0,0"/>
+          <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                     Text="• 在 q.qq.com（QQ 机器人开放平台）注册并创建机器人，获得 AppID / AppSecret；&#10;• 在下一步填入连接参数，插件即可接收班级群消息；&#10;• 其余设置（分类 / 悬浮窗 / 文件 / 维护）可随时在 ClassIsland 设置中调整。"/>
+          <TextBlock TextWrapping="Wrap" FontStyle="Italic" Opacity="0.7"
+                     Text="也可以选择「跳过引导」，稍后在「CyberTechRep 连接」设置页完成配置。"/>
+        </StackPanel>
+
+        <!-- 第 2 步：连接配置 -->
+        <StackPanel x:Name="StepConnection" Spacing="8" IsVisible="False">
+          <TextBlock Text="连接配置（QQ 官方机器人开放平台）" FontSize="18" FontWeight="Bold" Margin="0,0,0,4"/>
+          <TextBlock Text="机器人 AppID（q.qq.com 注册获得）" FontWeight="SemiBold"/>
+          <TextBox x:Name="AppIdBox" Watermark="AppID"/>
+          <TextBlock Text="AppSecret（DPAPI 加密存储）" FontWeight="SemiBold"/>
+          <TextBox x:Name="SecretBox" PasswordChar="●" Watermark="AppSecret"/>
+          <TextBlock Text="开放平台 API 根地址" FontWeight="SemiBold"/>
+          <TextBox x:Name="ApiBaseBox"/>
+          <TextBlock Text="AccessToken 服务地址" FontWeight="SemiBold"/>
+          <TextBox x:Name="TokenApiBox"/>
+          <TextBlock x:Name="ConnectionFeedback" Text="" TextWrapping="Wrap" Foreground="#B0000000"
+                     FontStyle="Italic" IsVisible="False" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- 第 3 步：完成 -->
+        <StackPanel x:Name="StepFinish" Spacing="10" VerticalAlignment="Center" IsVisible="False">
+          <TextBlock Text="设置完成！" FontSize="22" FontWeight="Bold" HorizontalAlignment="Center"/>
+          <TextBlock x:Name="FinishSummary" TextWrapping="Wrap" TextAlignment="Center" Opacity="0.85"
+                     Text="CyberTechRep 已就绪。连接参数与引导状态已保存，之后可在 ClassIsland 设置的 CyberTechRep 分组中随时调整。"/>
+        </StackPanel>
+      </Panel>
+
+      <!-- 底部按钮 -->
+      <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="24,0,24,16">
+        <Button x:Name="BackButton" Content="上一步" Click="OnBackClick"
+                HorizontalAlignment="Left" IsVisible="False" MinWidth="88"/>
+        <Button x:Name="NextButton" Grid.Column="1" Content="下一步" Click="OnNextClick" MinWidth="88"/>
+        <Button x:Name="SkipButton" Grid.Column="2" Content="跳过引导" Click="OnSkipClick" Margin="8,0,0,0"
+                MinWidth="88"/>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

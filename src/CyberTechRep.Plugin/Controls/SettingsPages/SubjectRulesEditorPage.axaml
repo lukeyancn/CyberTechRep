@@ -1,0 +1,124 @@
+<local:CyberTechRepSettingsPageBase
+    x:Class="CyberTechRep.Plugin.Controls.SettingsPages.SubjectRulesEditorPage"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:CyberTechRep.Plugin.Controls.SettingsPages"
+    mc:Ignorable="d" d:DesignWidth="640" d:DesignHeight="900">
+
+    <ScrollViewer>
+        <StackPanel Margin="24" MaxWidth="720" Spacing="10">
+
+            <TextBlock Text="分类词表编辑器" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
+            <TextBlock Text="在此可视化编辑学科关键词规则（subjects.json）与消息分类关键词（classification-keywords.json），无需手动改文件；点击「保存并应用」后立即写入并热生效。"
+                       TextWrapping="Wrap" Opacity="0.75"/>
+
+            <!-- 学科关键词规则（subjects.json） -->
+            <Expander Header="学科关键词规则（subjects.json）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="学科名同时用作归档目录名，不能包含斜杠、冒号、问号等非法字符。关键词一行一个，任一关键词命中即计分；一条消息命中多个学科时，先比命中关键词数，再比优先级（数值大者优先）。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ListBox x:Name="RulesList" ItemsSource="{Binding Rules}" MinHeight="160" MaxHeight="420">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="110,*,Auto,Auto,Auto" Margin="0,2">
+                                    <TextBox Grid.Column="0" Text="{Binding Subject}" Watermark="学科名"/>
+                                    <TextBox Grid.Column="1" Text="{Binding KeywordsText}" AcceptsReturn="True"
+                                             MinHeight="40" MaxHeight="120" Watermark="关键词，一行一个"
+                                             Margin="8,0"/>
+                                    <TextBlock Grid.Column="2" Text="优先级" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <NumericUpDown Grid.Column="3" Value="{Binding Priority}" Minimum="-100"
+                                                   Maximum="100" Width="110" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="4" Content="✕" Click="OnDeleteSubjectClicked"
+                                            VerticalAlignment="Center" Margin="8,0,0,0"
+                                            ToolTip.Tip="删除该学科"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="＋ 添加学科" Click="OnAddSubjectClicked"/>
+                        <Button Content="导出 JSON（剪贴板）" Click="OnExportSubjectsClicked"/>
+                        <Button Content="导入 JSON（剪贴板）" Click="OnImportSubjectsClicked"/>
+                        <Button Content="恢复默认（Assets 模板）" Click="OnRestoreSubjectsClicked"/>
+                    </StackPanel>
+                </StackPanel>
+            </Expander>
+
+            <!-- 消息分类关键词（classification-keywords.json） -->
+            <Expander Header="消息分类关键词（classification-keywords.json）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="区分「通知」与「作业」两类消息的关键词，一行一个；两侧同时命中时按作业处理。保存后写入文件并热生效。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <TextBlock Text="通知关键词" FontWeight="SemiBold"/>
+                    <TextBox Text="{Binding NoticeKeywordsText, Mode=TwoWay}" AcceptsReturn="True" Height="80"/>
+                    <TextBlock Text="作业关键词" FontWeight="SemiBold"/>
+                    <TextBox Text="{Binding HomeworkKeywordsText, Mode=TwoWay}" AcceptsReturn="True" Height="80"/>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="导出 JSON（剪贴板）" Click="OnExportKeywordsClicked"/>
+                        <Button Content="导入 JSON（剪贴板）" Click="OnImportKeywordsClicked"/>
+                        <Button Content="恢复默认（Assets 模板）" Click="OnRestoreKeywordsClicked"/>
+                    </StackPanel>
+                </StackPanel>
+            </Expander>
+
+            <!-- 学科识别模式（需求 4） -->
+            <Expander Header="学科识别模式（成员绑定优先 / 纯关键词）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="成员绑定优先（默认）：优先按成员 OpenID 的显式学科绑定归类；未绑定时照常走关键词识别链；链仍无结果且未绑定时弹出「未绑定学科选择悬浮窗」点选补绑定。纯关键词：完全不读取成员绑定、不触发选择悬浮窗，行为与历史版本完全一致（人工修正 &gt; 识别链 &gt; 发送者映射的优先级不变）。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ComboBox x:Name="ModeBox" SelectionChanged="OnModeChanged">
+                        <ComboBoxItem Content="成员绑定优先（默认）" Tag="MemberSelection"/>
+                        <ComboBoxItem Content="纯关键词（现状）" Tag="Keyword"/>
+                    </ComboBox>
+                    <ToggleSwitch Content="未绑定学科选择悬浮窗（发送者未绑定时弹出点选）"
+                                  IsChecked="{Binding Settings.SubjectRecognition.SelectionWindowEnabled}"/>
+                </StackPanel>
+            </Expander>
+
+            <!-- 成员学科绑定管理（需求 2） -->
+            <Expander Header="成员学科绑定（member-subject-bindings.json）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="以群成员 OpenID 为单位显式绑定学科。每行可填：群 OpenID + 成员 OpenID + 学科；群 OpenID 留空 = 对所有群生效（全局绑定），非空则仅对该群生效，群内绑定优先于全局绑定。保存后立即写入并热生效；此后该成员的作业/文件在「成员绑定优先」模式下按绑定学科归档。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ListBox x:Name="BindingsList" ItemsSource="{Binding Bindings}" MinHeight="80" MaxHeight="320">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="*,120,110,Auto" Margin="0,2">
+                                    <TextBox Grid.Column="0" Text="{Binding MemberOpenId}" Watermark="成员 OpenID"/>
+                                    <TextBox Grid.Column="1" Text="{Binding GroupOpenId}" Watermark="群（留空=全局）"
+                                             Margin="8,0"/>
+                                    <ComboBox Grid.Column="2" ItemsSource="{Binding SubjectOptions}"
+                                              SelectedItem="{Binding Subject}" VerticalAlignment="Center"/>
+                                    <Button Grid.Column="3" Content="✕" Click="OnDeleteBindingClicked"
+                                            VerticalAlignment="Center" Margin="8,0,0,0"
+                                            ToolTip.Tip="删除该绑定"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="＋ 添加绑定" Click="OnAddBindingClicked"/>
+                    </StackPanel>
+
+                    <!-- 危险区：完全重置（仅学科识别相关，两段式轻确认） -->
+                    <Separator Margin="0,8,0,0"/>
+                    <TextBlock Text="危险区：完全重置学科识别数据" FontWeight="SemiBold" Foreground="Firebrick"/>
+                    <TextBlock Text="仅重置以下学科识别相关数据：清空全部成员学科绑定（member-subject-bindings.json）、清空按发送者学习映射（user-subjects.json）、学科识别模式恢复默认（成员绑定优先 + 显示选择窗）。不影响作业/通知数据、files.json 归档库、AI 凭据与其他页面设置。点击后需 3 秒内再次确认才执行。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <Button x:Name="ResetButton" Content="完全重置（清空绑定与学习映射）" Click="OnResetClicked"
+                            HorizontalAlignment="Left" FontWeight="SemiBold"
+                            Foreground="Firebrick" BorderBrush="Firebrick"/>
+                    <TextBlock Text="{Binding ResetFeedback}" Foreground="Firebrick" TextWrapping="Wrap"/>
+                </StackPanel>
+            </Expander>
+
+            <TextBlock Text="{Binding ValidationMessage}" Foreground="Firebrick" TextWrapping="Wrap"/>
+            <TextBlock Text="{Binding TransferFeedback}" TextWrapping="Wrap" Opacity="0.85"/>
+
+            <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
+                    Margin="0,10,0,0"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:CyberTechRepSettingsPageBase>

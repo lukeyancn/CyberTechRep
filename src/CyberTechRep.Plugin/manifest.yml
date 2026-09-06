@@ -1,0 +1,8 @@
+id: classisland.classing
+name: CyberTechRep 课堂信息分发
+description: QQ 群消息接管与课堂信息分发系统：接收班级群消息与文件，自动分类通知/作业、识别学科并在桌面悬浮窗展示。
+entranceAssembly: "CyberTechRep.Plugin.dll"
+url: https://github.com/lukeyancn/CyberTechRep
+apiVersion: 2.0.0.0
+version: 0.4.0.0
+author: CyberTechRep
