@@ -67,3 +67,5 @@ jobs:
             src/CyberTechRep.Plugin/cipx/CyberTechRep.Plugin.cipx
             src/CyberTechRep.Plugin/cipx/checksums.md
           fail_on_unmatched_files: true
+          # tag 带 prerelease 后缀（如 -beta.1）时自动标记为预发布版本
+          prerelease: auto
