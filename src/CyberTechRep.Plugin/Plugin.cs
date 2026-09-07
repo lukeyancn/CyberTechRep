@@ -51,6 +51,14 @@ public class CyberTechRepPlugin : PluginBase
             sp.GetService<ILogger<MessageIngestService>>()));
         services.AddSingleton<IMessageIngestService>(sp => sp.GetRequiredService<MessageIngestService>());
 
+        // ---- NapCat 模式：一键启动服务（路径/端口校验 + 进程树管理；关停经 IHostedService 兜底终止）----
+        // 自监听端口探测委托：避免「本插件反向监听占用端口」被误报为端口冲突
+        services.AddSingleton(sp => new NapCatRunnerService(
+            sp.GetRequiredService<IngestOptionsProvider>(),
+            sp.GetService<ILogger<NapCatRunnerService>>(),
+            () => sp.GetRequiredService<MessageIngestService>().ActiveReverseListenerPort));
+        services.AddHostedService(sp => sp.GetRequiredService<NapCatRunnerService>());
+
         // 模块 2：通知/作业关键词分类器（词表外置 JSON，ReloadRules 热生效）
         services.AddSingleton(_ => new ClassifierOptionsProvider
         {

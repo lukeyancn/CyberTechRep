@@ -92,14 +92,71 @@ public class MessageClassifierTests : IDisposable
     }
 
     [Fact]
-    public async Task 两边都命中_作业优先()
+    public async Task 两边都命中_计数多者胜_作业计数高时判作业()
     {
         var clf = CreateClassifier();
-        // 「通知」命中 Notice，「作业」命中 Homework → 作业优先
+        // 「通知」命中 Notice（1 次）；「完成」「作业」各命中 Homework（2 次）→ 计数 2 > 1 判作业
         var result = await clf.ClassifyAsync(Msg("重要通知：今晚完成数学作业"));
 
         Assert.Equal(MessageKind.Homework, result.Kind);
-        Assert.Contains("both_hit_homework_priority", result.MatchReason);
+        Assert.Contains("homework_count_win", result.MatchReason);
+        Assert.Contains("homework_count=2", result.MatchReason);
+        Assert.Contains("notice_count=1", result.MatchReason);
+    }
+
+    [Fact]
+    public async Task 两边都命中_通知计数高时判通知()
+    {
+        var clf = CreateClassifier();
+        // 「注意」「通知」命中 Notice（2 次）；「作业」命中 Homework（1 次）→ 计数 2 > 1 判通知
+        var result = await clf.ClassifyAsync(Msg("请注意通知：明天交作业"));
+
+        Assert.Equal(MessageKind.Notice, result.Kind);
+        Assert.Contains("notice_count_win", result.MatchReason);
+        Assert.Contains("notice_count=2", result.MatchReason);
+        Assert.Contains("homework_count=1", result.MatchReason);
+    }
+
+    [Fact]
+    public async Task 两边都命中_计数相等_平局默认判通知()
+    {
+        var clf = CreateClassifier();
+        // 「注意」命中 Notice（1 次）；「完成」命中 Homework（1 次）→ 平局 → 通知（TieBreakNoticeWins）
+        var result = await clf.ClassifyAsync(Msg("请注意按时完成"));
+
+        Assert.Equal(MessageKind.Notice, result.Kind);
+        Assert.Equal(1.0, result.Confidence);
+        Assert.Contains("count_tie_notice_default", result.MatchReason);
+    }
+
+    [Fact]
+    public async Task 同一关键词多次出现_每次出现都计数()
+    {
+        var clf = CreateClassifier();
+        // 「作业」出现 3 次（homework=3）>「注意」1 次（notice=1）→ 作业；
+        // 同一关键词「作业」的多次出现全部计入
+        var result = await clf.ClassifyAsync(Msg("作业请注意：先交作业，再检查作业"));
+
+        Assert.Equal(MessageKind.Homework, result.Kind);
+        Assert.Contains("homework_count=3", result.MatchReason);
+        Assert.Contains("notice_count=1", result.MatchReason);
+    }
+
+    [Fact]
+    public async Task 大小写不敏感_命中仍计数()
+    {
+        _settings = new ClassificationSettings
+        {
+            NoticeKeywords = ["Notice"],
+            HomeworkKeywords = ["Hw"]
+        };
+        var clf = CreateClassifier();
+        // 大小写不敏感：NOTICE / hw 均命中；hw 出现 2 次 > notice 1 次 → 作业
+        var result = await clf.ClassifyAsync(Msg("please NOTICE me, hw and HW"));
+
+        Assert.Equal(MessageKind.Homework, result.Kind);
+        Assert.Contains("homework_count=2", result.MatchReason);
+        Assert.Contains("notice_count=1", result.MatchReason);
     }
 
     [Fact]

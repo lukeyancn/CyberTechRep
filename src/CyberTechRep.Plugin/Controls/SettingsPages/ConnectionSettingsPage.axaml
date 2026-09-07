@@ -10,25 +10,74 @@
     <ScrollViewer>
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
-            <TextBlock Text="连接设置（QQ 官方机器人开放平台）" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+            <TextBlock Text="连接设置（QQ 官方机器人开放平台 / NapCat）" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
 
-            <TextBlock Text="机器人 AppID（q.qq.com 注册获得）" FontWeight="SemiBold"/>
-            <TextBox Text="{Binding Settings.Connection.AppId}" Watermark="AppID"/>
+            <!-- ===== 模式选择（默认官方 = 现状行为完全不变；NapCat 为可选替代） ===== -->
+            <TextBlock Text="接入模式" FontWeight="SemiBold"/>
+            <StackPanel Orientation="Horizontal" Spacing="24" Margin="0,0,0,4">
+                <RadioButton Content="QQ 官方机器人（默认）" GroupName="ctrConnectionMode"
+                             IsChecked="{Binding IsOfficialMode}"/>
+                <RadioButton Content="NapCat（OneBot 11）" GroupName="ctrConnectionMode"
+                             IsChecked="{Binding IsNapCatMode}"/>
+            </StackPanel>
+            <TextBlock Text="说明：切换模式后需经排错面板手动重连或重启插件生效；群白名单与断线重连参数两种模式共用。"
+                       FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
 
-            <TextBlock Text="AppSecret（DPAPI 加密存储，脱敏显示）" FontWeight="SemiBold"/>
-            <TextBox Text="{Binding AppSecretPlain, Mode=TwoWay}" PasswordChar="●" Watermark="AppSecret"/>
+            <!-- ===== 官方模式专属设置（控件与原版完全一致，仅增加模式可见性） ===== -->
+            <StackPanel IsVisible="{Binding IsOfficialMode}" Spacing="10">
+                <TextBlock Text="机器人 AppID（q.qq.com 注册获得）" FontWeight="SemiBold"/>
+                <TextBox Text="{Binding Settings.Connection.AppId}" Watermark="AppID"/>
 
-            <TextBlock Text="开放平台 API 根地址" FontWeight="SemiBold"/>
-            <TextBox Text="{Binding Settings.Connection.ApiBase}"/>
+                <TextBlock Text="AppSecret（DPAPI 加密存储，脱敏显示）" FontWeight="SemiBold"/>
+                <TextBox Text="{Binding AppSecretPlain, Mode=TwoWay}" PasswordChar="●" Watermark="AppSecret"/>
 
-            <TextBlock Text="AccessToken 服务地址" FontWeight="SemiBold"/>
-            <TextBox Text="{Binding Settings.Connection.TokenApiUrl}"/>
+                <TextBlock Text="开放平台 API 根地址" FontWeight="SemiBold"/>
+                <TextBox Text="{Binding Settings.Connection.ApiBase}"/>
 
-            <TextBlock Text="群白名单（群 OpenID，一行一个；留空 = 接收全部已接入群）" FontWeight="SemiBold"/>
+                <TextBlock Text="AccessToken 服务地址" FontWeight="SemiBold"/>
+                <TextBox Text="{Binding Settings.Connection.TokenApiUrl}"/>
+            </StackPanel>
+
+            <!-- ===== NapCat 模式专属设置 ===== -->
+            <StackPanel IsVisible="{Binding IsNapCatMode}" Spacing="10">
+                <TextBlock Text="NapCat 正向 WS 地址（NapCat「WebSocket 服务器」配置项，如 ws://127.0.0.1:3001；留空则用反向监听）"
+                           FontWeight="SemiBold"/>
+                <TextBox Text="{Binding Settings.Connection.NapCatWsUrl}" Watermark="ws://127.0.0.1:3001"/>
+
+                <TextBlock Text="NapCat 反向 WS 监听端口（NapCat「WebSocket 客户端」配置项指向 ws://127.0.0.1:此端口；0 = 不启用）"
+                           FontWeight="SemiBold"/>
+                <NumericUpDown Value="{Binding Settings.Connection.NapCatReversePort}" Minimum="0"
+                               Maximum="65535" Increment="1"/>
+
+                <TextBlock Text="access token（与 NapCat 配置一致；DPAPI 加密存储，脱敏显示；留空 = 不校验）" FontWeight="SemiBold"/>
+                <TextBox Text="{Binding NapCatAccessTokenPlain, Mode=TwoWay}" PasswordChar="●" Watermark="token"/>
+
+                <Expander Header="NapCat 一键启动（插件不内置 NapCat 本体，请自行下载后填写路径）" IsExpanded="False">
+                    <StackPanel Spacing="10" Margin="0,6">
+                        <TextBlock Text="NapCat 可执行文件路径（exe / bat / 启动器脚本）" FontWeight="SemiBold"/>
+                        <TextBox Text="{Binding Settings.Connection.NapCatExePath}" Watermark="例如 D:\NapCat\NapCat.Win32.bat"/>
+
+                        <TextBlock Text="工作目录（可选；留空 = 可执行文件所在目录）" FontWeight="SemiBold"/>
+                        <TextBox Text="{Binding Settings.Connection.NapCatWorkDirectory}" Watermark="可选"/>
+
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Button Content="启动 NapCat" Click="OnStartNapCatClicked"/>
+                            <Button Content="停止 NapCat" Click="OnStopNapCatClicked"/>
+                            <TextBlock Text="{Binding NapCatRunnerStatusText}" VerticalAlignment="Center"
+                                       Opacity="0.9" TextWrapping="Wrap"/>
+                        </StackPanel>
+                        <TextBlock Text="说明：停止与插件关停会终止整个 NapCat 进程树；消息接入由上方连接设置（正向/反向 WS）独立承担。"
+                                   FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Expander>
+            </StackPanel>
+
+            <!-- ===== 两种模式共用设置 ===== -->
+            <TextBlock Text="群白名单（群 OpenID，一行一个；留空 = 接收全部已接入群。NapCat 模式填群号，官方模式填群 OpenID）" FontWeight="SemiBold"/>
             <TextBox Text="{Binding GroupWhitelistText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
-                     Watermark="每一行一个群 OpenID"/>
+                     Watermark="每一行一个群 OpenID（NapCat 模式为群号）"/>
 
-            <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗展示发送入口，确认后发送当天作业清单到目标群）"
+            <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗展示发送入口，确认后发送当天作业清单到目标群；仅官方模式可用）"
                           IsChecked="{Binding Settings.Connection.HomeworkSendEnabled}"/>
 
             <TextBlock Text="作业清单发送目标群（群 OpenID，一行一个；与消息接管白名单相互独立，需单独填写）" FontWeight="SemiBold"/>

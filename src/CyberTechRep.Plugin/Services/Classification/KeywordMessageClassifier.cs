@@ -8,12 +8,28 @@ namespace CyberTechRep.Plugin.Services.Classification;
 /// <summary>
 /// 模块 2：通知/作业关键词规则分类器。
 /// <para>
-/// 优先级策略：两侧均命中时<strong>作业优先</strong>（作业漏检成本更高）；
-/// 仅一侧命中则取该侧；均未命中或文本为空 → <see cref="MessageKind.Unknown"/>。
+/// 仲裁策略（关键词计数比较，取代旧的「两侧均命中 → 作业优先」规则）：
+/// 分别独立统计通知侧与作业侧的<strong>关键词命中总次数</strong>——
+/// 每个关键词在文本中的每一次出现都计入（同一关键词出现多次计多次；大小写不敏感；非重叠匹配），
+/// 类别总分 = 该类别全部关键词出现次数之和。
+/// </para>
+/// <para>
+/// ① 计数多者胜（两侧都命中时按计数比较）；② 仅一侧命中则取该侧；
+/// ③ 计数相等 → 固定平局规则 <see cref="TieBreakNoticeWins"/>：通知（Notice）胜，
+/// 并以 reason <c>count_tie_notice_default</c> 标记；
+/// ④ 均未命中或文本为空 → <see cref="MessageKind.Unknown"/>（reason 不变）。
 /// </para>
 /// </summary>
 public sealed class KeywordMessageClassifier : IMessageClassifier
 {
+    /// <summary>
+    /// 平局仲裁常量：通知/作业命中计数相等（含非零平局；双零已提前走 no_keyword_hit）时，
+    /// 归类为通知（Notice）——true = 通知胜。唯一、显式、有文档的平局规则；
+    /// 通知漏检可由用户在通知中心看到，作业误判成本更高，故平局宁可判通知。
+    /// </summary>
+    public const bool TieBreakNoticeWins = true;
+
+
     private readonly ClassifierOptionsProvider _provider;
     private readonly ILogger _logger;
     private readonly object _reloadLock = new();
@@ -56,44 +72,64 @@ public sealed class KeywordMessageClassifier : IMessageClassifier
             }
 
             var rules = _rules;
-            var noticeHits = FindHits(text, rules.NoticeKeywords);
-            var homeworkHits = FindHits(text, rules.HomeworkKeywords);
+            var notice = TallyHits(text, rules.NoticeKeywords);
+            var homework = TallyHits(text, rules.HomeworkKeywords);
 
-            if (noticeHits.Count == 0 && homeworkHits.Count == 0)
+            // 仲裁 ①：两侧命中总次数均为 0 → Unknown（保留原 reason，行为不变）
+            if (notice.TotalCount == 0 && homework.TotalCount == 0)
             {
                 return Task.FromResult(Unknown(message, "no_keyword_hit"));
             }
 
-            // 作业优先：两侧均命中 → Homework
-            if (homeworkHits.Count > 0 && noticeHits.Count > 0)
+            // 仲裁 ②：计数比较（取代旧「两侧均命中 → 作业优先」规则）。
+            // 仅一侧命中时沿用旧 reason 字符串（notice_hit= / homework_hit=），
+            // 两侧都命中时用 *_count_win 并附上两侧计数，便于排查。
+            if (homework.TotalCount > notice.TotalCount)
             {
+                var reason = notice.TotalCount == 0
+                    ? $"homework_hit=[{string.Join(',', homework.Hits)}]"
+                    : $"homework_count_win; homework_count={homework.TotalCount}; " +
+                      $"notice_count={notice.TotalCount}; " +
+                      $"homework=[{string.Join(',', homework.Hits)}]; " +
+                      $"notice=[{string.Join(',', notice.Hits)}]";
                 return Task.FromResult(new ClassifiedMessage
                 {
                     Source = message,
                     Kind = MessageKind.Homework,
                     Confidence = 1.0,
-                    MatchReason =
-                        $"both_hit_homework_priority; homework=[{string.Join(',', homeworkHits)}]; notice=[{string.Join(',', noticeHits)}]"
+                    MatchReason = reason
                 });
             }
 
-            if (homeworkHits.Count > 0)
+            if (notice.TotalCount > homework.TotalCount)
             {
+                var reason = homework.TotalCount == 0
+                    ? $"notice_hit=[{string.Join(',', notice.Hits)}]"
+                    : $"notice_count_win; notice_count={notice.TotalCount}; " +
+                      $"homework_count={homework.TotalCount}; " +
+                      $"notice=[{string.Join(',', notice.Hits)}]; " +
+                      $"homework=[{string.Join(',', homework.Hits)}]";
                 return Task.FromResult(new ClassifiedMessage
                 {
                     Source = message,
-                    Kind = MessageKind.Homework,
+                    Kind = MessageKind.Notice,
                     Confidence = 1.0,
-                    MatchReason = $"homework_hit=[{string.Join(',', homeworkHits)}]"
+                    MatchReason = reason
                 });
             }
 
+            // 仲裁 ③：计数相等（平局）→ 固定规则 TieBreakNoticeWins：通知胜。
+            // reason 带上 count_tie_notice_default 以区分普通 notice_hit / notice_count_win。
             return Task.FromResult(new ClassifiedMessage
             {
                 Source = message,
                 Kind = MessageKind.Notice,
                 Confidence = 1.0,
-                MatchReason = $"notice_hit=[{string.Join(',', noticeHits)}]"
+                MatchReason = $"count_tie_notice_default(TieBreakNoticeWins); " +
+                              $"notice_count={notice.TotalCount}; " +
+                              $"homework_count={homework.TotalCount}; " +
+                              $"notice=[{string.Join(',', notice.Hits)}]; " +
+                              $"homework=[{string.Join(',', homework.Hits)}]"
             });
         }
         catch (OperationCanceledException)
@@ -163,9 +199,21 @@ public sealed class KeywordMessageClassifier : IMessageClassifier
         }
     }
 
-    private static List<string> FindHits(string text, IReadOnlyList<string> keywords)
+    /// <summary>关键词命中统计：命中过的关键词（去重列表）+ 出现总次数。</summary>
+    private readonly record struct KeywordTally(List<string> Hits, int TotalCount);
+
+    /// <summary>
+    /// 统计一组关键词在文本中的命中情况。
+    /// <para>
+    /// 计数口径（文档化的唯一口径）：每个关键词的每一次出现都计入
+    /// （同一关键词出现多次计多次，大小写不敏感，非重叠匹配）；
+    /// <see cref="KeywordTally.TotalCount"/> = 全部关键词出现次数之和。
+    /// </para>
+    /// </summary>
+    private static KeywordTally TallyHits(string text, IReadOnlyList<string> keywords)
     {
         var hits = new List<string>();
+        var total = 0;
         foreach (var kw in keywords)
         {
             if (kw.Length == 0)
@@ -173,13 +221,32 @@ public sealed class KeywordMessageClassifier : IMessageClassifier
                 continue;
             }
 
-            if (text.Contains(kw, StringComparison.OrdinalIgnoreCase))
+            var occurrences = CountOccurrences(text, kw);
+            if (occurrences > 0)
             {
                 hits.Add(kw);
+                total += occurrences;
             }
         }
 
-        return hits;
+        return new KeywordTally(hits, total);
+    }
+
+    /// <summary>
+    /// 统计单个关键词在文本中的出现次数：大小写不敏感（OrdinalIgnoreCase）、
+    /// 非重叠匹配（命中后从关键词长度处继续向后扫描）。
+    /// </summary>
+    private static int CountOccurrences(string text, string keyword)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(keyword, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            count++;
+            index += keyword.Length;
+        }
+
+        return count;
     }
 
     private static ClassifiedMessage Unknown(MessageRecord source, string reason) => new()

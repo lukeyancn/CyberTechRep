@@ -29,9 +29,28 @@ public sealed class AppSettings
     public MaintenanceSettings Maintenance { get; set; } = new();
 }
 
+/// <summary>
+/// 消息接入协议模式：QQ 官方机器人开放平台（默认，现状行为）/
+/// NapCat（OneBot 11，可选替代）。默认 Official 保证零回归。
+/// </summary>
+public enum MessageConnectionMode
+{
+    /// <summary>QQ 官方机器人开放平台 WebSocket 网关（默认 = 迁移前行为不变）。</summary>
+    Official = 0,
+
+    /// <summary>NapCat（OneBot 11）：正向 WS 连接 NapCat 服务端，或反向 WS 监听 NapCat 接入。</summary>
+    NapCat = 1
+}
+
 /// <summary>连接设置（QQ 官方机器人开放平台）。</summary>
 public sealed class ConnectionSettings
 {
+    /// <summary>
+    /// 接入模式：Official（默认，QQ 官方平台，现状行为完全不变）/ NapCat（OneBot 11，可选替代）。
+    /// 模式切换后需经排错面板手动重连或重启插件生效（ApplySettings 不自动重建连接）。
+    /// </summary>
+    public MessageConnectionMode Mode { get; set; } = MessageConnectionMode.Official;
+
     /// <summary>机器人 AppID（q.qq.com 注册获得）。</summary>
     public string AppId { get; set; } = "";
 
@@ -63,6 +82,29 @@ public sealed class ConnectionSettings
 
     /// <summary>历史消息回溯天数。官方平台无历史补拉 API，当前恒为 0（保留字段兼容未来）。</summary>
     public int HistoryBackfillDays { get; set; } = 0;
+
+    // ---- NapCat（OneBot 11）模式设置：仅 Mode == NapCat 时使用，默认值不影响 Official 行为 ----
+
+    /// <summary>
+    /// NapCat 正向 WS 服务端地址（NapCat「WebSocket 服务器」配置项，如 ws://127.0.0.1:3001）。
+    /// 非空时优先按正向 WS 连接 NapCat；为空且反向端口 &gt; 0 时启用反向 WS 监听。
+    /// </summary>
+    public string NapCatWsUrl { get; set; } = "";
+
+    /// <summary>
+    /// NapCat 反向 WS 监听端口（NapCat「WebSocket 客户端」配置项指向 ws://127.0.0.1:此端口）。
+    /// 0 = 不启用反向监听；NapCat 模式需至少配置正向地址与反向端口其一。
+    /// </summary>
+    public int NapCatReversePort { get; set; } = 3001;
+
+    /// <summary>NapCat access token（DPAPI 加密存储，UI 脱敏显示，绝不入日志）。</summary>
+    public string NapCatAccessTokenProtected { get; set; } = "";
+
+    /// <summary>NapCat 可执行文件路径（一键启动 NapCat 用；插件不内置 NapCat 本体）。</summary>
+    public string NapCatExePath { get; set; } = "";
+
+    /// <summary>NapCat 工作目录（可选；为空时使用可执行文件所在目录）。</summary>
+    public string NapCatWorkDirectory { get; set; } = "";
 
     /// <summary>
     /// 作业清单「整理并发送」总开关（作业悬浮窗「整理并发送」入口与实际发送行为；

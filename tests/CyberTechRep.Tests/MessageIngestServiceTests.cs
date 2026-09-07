@@ -70,7 +70,7 @@ public class MessageIngestServiceTests : IAsyncLifetime, IDisposable
     }
 
     /// <summary>连接脚本：完成 Hello → 鉴权 → READY 握手，返回收到的帧队列供断言。</summary>
-    private static async Task<ConcurrentQueue<(int Op, JsonDocument Doc)>> HandshakeAsync(
+    internal static async Task<ConcurrentQueue<(int Op, JsonDocument Doc)>> HandshakeAsync(
         GatewayConnection conn, string sessionId, int heartbeatIntervalMs, CancellationToken ct,
         bool expectResume = false)
     {

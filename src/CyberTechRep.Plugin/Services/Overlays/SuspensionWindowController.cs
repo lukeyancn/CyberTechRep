@@ -87,6 +87,43 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         _settings = settingsService is not null
             ? LoadFromSettingsService(dataDirectory, settingsService)
             : LoadSettings();
+
+        // Current 替换（导入/恢复默认）后重捕获设置实例：ImportAsync/ResetToDefaultsAsync 会整体
+        // 替换 ISettingsService.Current，若不重捕获，控制器将继续读写已脱离设置服务的旧 Overlays
+        // 实例——拖拽回写/置顶/穿透等改动落不进 settings.json，重启即回退。
+        // 订阅 SettingsChanged（导入/恢复默认与每次保存后都会广播）：普通保存时 Current.Overlays
+        // 引用未变，处理为无副作用 no-op，不会造成广播回环。
+        if (_settingsService is not null)
+        {
+            _settingsService.SettingsChanged += OnSettingsServiceChanged;
+        }
+    }
+
+    /// <summary>
+    /// 设置服务 Current 替换（导入/恢复默认）后的重捕获：改用新的 Overlays 活实例。
+    /// 活跃 UI 状态的处理：新设置随后由 SettingsChangeApplier 按广播回放应用到窗口
+    /// （位置/置顶/可见性等以新设置为准）；此期间可能仍挂起的拖拽回写防抖被取消，
+    /// 避免其把已脱离服务的前一实例的状态写回 settings.json。
+    /// </summary>
+    private void OnSettingsServiceChanged(object? sender, AppSettings e)
+    {
+        OverlaySettings container;
+        lock (_lock)
+        {
+            container = e.Overlays;
+            if (ReferenceEquals(container, _settings))
+            {
+                // 普通保存（含控制器自身回写）：Current 未替换，无需重捕获
+                return;
+            }
+
+            _settings = container;
+            // 取消可能仍挂起的拖拽/缩放回写落盘：其待写目标实例已被替换，落盘只会写回旧值
+            _geometrySaveTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+
+        EnsureWindowSettingsDefaults(container);
+        _logger.LogInformation("检测到设置服务 Current 替换（导入/恢复默认），悬浮窗控制器已重捕获 Overlays 实例");
     }
 
     /// <summary>当前悬浮窗设置（副本；模块 7 设置页读写入口）。</summary>

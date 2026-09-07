@@ -477,4 +477,108 @@ public class SubjectChainTests : IDisposable
         Assert.Equal("数学", result.Subject);
         Assert.False(result.NeedsManualConfirm);
     }
+
+    // ---------- 计数仲裁（关键词出现次数总和；平局 → Priority → 学科名 Ordinal） ----------
+
+    /// <summary>先写自定义 subjects.json 再构造分类器（LoadOrSeed 会读取已存在文件）。</summary>
+    private KeywordSubjectClassifier CreateKeywordWithRules(string json)
+    {
+        File.WriteAllText(Path.Combine(_dataDir, "subjects.json"), json);
+        var provider = CreateProvider();
+        return CreateKeyword(provider);
+    }
+
+    [Fact]
+    public async Task 学科_计数最高者胜_低优先级不干扰()
+    {
+        // Alpha：foo 出现 1 次（score=1，priority=99）；Beta：foo 1 次 + bar 2 次（score=3，priority=1）
+        var keyword = CreateKeywordWithRules("""
+            { "rules": [
+              { "subject": "Alpha", "keywords": [ "foo" ], "priority": 99 },
+              { "subject": "Beta", "keywords": [ "foo", "bar" ], "priority": 1 }
+            ] }
+            """);
+
+        var result = await keyword.ClassifyAsync("foo bar bar");
+        Assert.NotNull(result);
+        Assert.Equal("Beta", result.Subject);
+        Assert.Contains("score=3", result.Reason);
+    }
+
+    [Fact]
+    public async Task 学科_同一关键词多次出现_每次都计数()
+    {
+        // Alpha：foo 出现 3 次（score=3）> Beta：bar 1 次（score=1）
+        var keyword = CreateKeywordWithRules("""
+            { "rules": [
+              { "subject": "Alpha", "keywords": [ "foo" ], "priority": 10 },
+              { "subject": "Beta", "keywords": [ "bar" ], "priority": 10 }
+            ] }
+            """);
+
+        var result = await keyword.ClassifyAsync("foo bar foo foo");
+        Assert.NotNull(result);
+        Assert.Equal("Alpha", result.Subject);
+        Assert.Contains("score=3", result.Reason);
+    }
+
+    [Fact]
+    public async Task 学科_计数相等_优先级高者胜()
+    {
+        var keyword = CreateKeywordWithRules("""
+            { "rules": [
+              { "subject": "Alpha", "keywords": [ "foo" ], "priority": 5 },
+              { "subject": "Beta", "keywords": [ "baz" ], "priority": 99 }
+            ] }
+            """);
+
+        var result = await keyword.ClassifyAsync("foo baz");
+        Assert.NotNull(result);
+        Assert.Equal("Beta", result.Subject);
+    }
+
+    [Fact]
+    public async Task 学科_计数与优先级都相等_按学科名Ordinal升序确定性取胜()
+    {
+        // 声明顺序刻意把 Beta 放在前面：胜负与 subjects.json 书写顺序无关
+        var keyword = CreateKeywordWithRules("""
+            { "rules": [
+              { "subject": "Beta", "keywords": [ "y" ], "priority": 10 },
+              { "subject": "Alpha", "keywords": [ "x" ], "priority": 10 }
+            ] }
+            """);
+
+        var result = await keyword.ClassifyAsync("x y");
+        Assert.NotNull(result);
+        Assert.Equal("Alpha", result.Subject); // "Alpha" < "Beta"（StringComparer.Ordinal）
+    }
+
+    [Fact]
+    public async Task 学科_大小写不敏感_命中仍计数()
+    {
+        var keyword = CreateKeywordWithRules("""
+            { "rules": [
+              { "subject": "Math", "keywords": [ "Math" ], "priority": 10 }
+            ] }
+            """);
+
+        var result = await keyword.ClassifyAsync("MATH homework: math math");
+        Assert.NotNull(result);
+        Assert.Equal("Math", result.Subject);
+        Assert.Contains("score=3", result.Reason);
+    }
+
+    [Fact]
+    public async Task 学科_无关键词命中_返回null链继续()
+    {
+        var keyword = CreateKeywordWithRules("""
+            { "rules": [
+              { "subject": "Alpha", "keywords": [ "foo" ], "priority": 10 },
+              { "subject": "Beta", "keywords": [ "bar" ], "priority": 10 }
+            ] }
+            """);
+
+        Assert.Null(await keyword.ClassifyAsync("no matching keywords here"));
+        Assert.Null(await keyword.ClassifyAsync(""));
+    }
 }

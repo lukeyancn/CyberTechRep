@@ -40,7 +40,7 @@ public sealed class QQOfficialWsClientOptions
 /// 职责：AccessToken 获取与刷新、网关获取、Identify/Resume、心跳、服务端重连指令处理、指数退避重连。
 /// 事件分发解析交给 <see cref="MessageIngestPipeline"/>，本类只透传 (t, d)。
 /// </summary>
-public sealed class QQOfficialWsClient : IAsyncDisposable
+public sealed class QQOfficialWsClient : IMessageGatewayClient
 {
     private readonly QQOfficialWsClientOptions _options;
     private readonly ILogger? _logger;

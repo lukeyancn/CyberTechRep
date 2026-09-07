@@ -1,4 +1,5 @@
 using CyberTechRep.Plugin.Services.Classification;
+using CyberTechRep.Plugin.Services.MessageAccess;
 using CyberTechRep.Plugin.Services.Overlays;
 using CyberTechRep.Plugin.Services.SubjectChain;
 using CyberTechRep.Shared.Abstractions;
@@ -27,6 +28,7 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
     private readonly IMessageClassifier? _messageClassifier;
     private readonly KeywordSubjectClassifier? _subjectClassifier;
     private readonly ISuspensionWindowController? _windowController;
+    private readonly MessageIngestService? _ingestService;
     private readonly ILogger _logger;
 
     private EventHandler<CyberTechRep.Shared.Models.AppSettings>? _handler;
@@ -35,12 +37,14 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
         IMessageClassifier? messageClassifier = null,
         KeywordSubjectClassifier? subjectClassifier = null,
         ISuspensionWindowController? windowController = null,
+        MessageIngestService? ingestService = null,
         ILogger? logger = null)
     {
         _settingsService = settingsService;
         _messageClassifier = messageClassifier;
         _subjectClassifier = subjectClassifier;
         _windowController = windowController;
+        _ingestService = ingestService;
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -82,13 +86,34 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
             _logger.LogError(ex, "通知悬浮窗控制器宿主停止失败（不影响宿主停止）");
         }
 
-        if (_handler is not null)
+        // 先退订自身广播处理（避免兜底保存触发一轮悬浮窗回放），再兜底保存：
+        // 设置页自动保存挂在 DetachedFromVisualTree，宿主直接退出（不经设置窗口关闭/页面分离）
+        // 时可能不触发；此处把内存中的最终值落盘一次，保证任何入口的最后编辑不丢。
+        // 时机在 NotifyHostStopping 之后：退出期批量关窗触发的可见性同步已被抑制，
+        // 保存的是用户最后一次的可见性意图，不会重现「退出把 Visible=false 写回」的旧缺陷。
+        var handler = _handler;
+        if (handler is not null)
         {
-            _settingsService.SettingsChanged -= _handler;
+            _settingsService.SettingsChanged -= handler;
             _handler = null;
         }
 
+        _ = FlushSettingsOnShutdownAsync();
+
         return Task.CompletedTask;
+    }
+
+    private async Task FlushSettingsOnShutdownAsync()
+    {
+        try
+        {
+            await _settingsService.SaveAsync(CancellationToken.None).ConfigureAwait(false);
+            _logger.LogInformation("宿主退出兜底保存设置完成");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "宿主退出兜底保存设置失败（不阻断宿主停止）");
+        }
     }
 
     private void Apply(CyberTechRep.Shared.Models.AppSettings settings)
@@ -121,6 +146,17 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
         if (_windowController is not null)
         {
             _ = ApplyOverlaysAsync(settings);
+        }
+
+        // ④ 连接设置热更新：群白名单即时生效（管道无需重连）；连接参数
+        //（AppId/ApiBase/TokenApiUrl）变更才触发重连，无变化时不重连（ApplySettings 内部判定）。
+        try
+        {
+            _ingestService?.ApplySettings(settings.Connection);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "应用设置失败：连接设置热更新");
         }
     }
 

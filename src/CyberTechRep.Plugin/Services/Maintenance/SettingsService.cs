@@ -98,6 +98,7 @@ public sealed class SettingsService : ISettingsService
             MigrateLegacyAiFields(imported);
             // 导入安全策略：Secret 字段保留本地加密值，防止恶意/误导入的密文或空值覆盖本机凭据。
             imported.Connection.AppSecretProtected = Current.Connection.AppSecretProtected;
+            imported.Connection.NapCatAccessTokenProtected = Current.Connection.NapCatAccessTokenProtected;
             imported.Classification.CloudApiKeyProtected = Current.Classification.CloudApiKeyProtected;
             imported.Ai.CloudApiKeyProtected = Current.Ai.CloudApiKeyProtected;
             merged = imported;
@@ -117,6 +118,7 @@ public sealed class SettingsService : ISettingsService
             // 导出脱敏：敏感字段置空（不导出密文，也不导出可反推明文的内容）。
             sanitized = DeepClone(Current);
             sanitized.Connection.AppSecretProtected = "";
+            sanitized.Connection.NapCatAccessTokenProtected = "";
             sanitized.Classification.CloudApiKeyProtected = "";
             sanitized.Ai.CloudApiKeyProtected = "";
         }
@@ -154,19 +156,24 @@ public sealed class SettingsService : ISettingsService
                 return new AppSettings();
             }
 
-            using var stream = File.OpenRead(_filePath);
-            var loaded = JsonSerializer.Deserialize<AppSettings>(stream, JsonOptions);
+            AppSettings? loaded;
+            using (var stream = File.OpenRead(_filePath))
+            {
+                loaded = JsonSerializer.Deserialize<AppSettings>(stream, JsonOptions);
+            }
             if (loaded is null)
             {
-                _logger.LogWarning("设置文件为空，使用默认设置：{Path}", _filePath);
+                _logger.LogWarning("设置文件为空，备份原文件后使用默认设置：{Path}", _filePath);
+                BackupUnreadableSettingsFile();
                 return new AppSettings();
             }
 
             if (loaded.SchemaVersion != SupportedSchemaVersion)
             {
                 _logger.LogWarning(
-                    "设置文件 SchemaVersion {Actual} 与支持版本 {Expected} 不符，使用默认设置",
+                    "设置文件 SchemaVersion {Actual} 与支持版本 {Expected} 不符，备份原文件后使用默认设置",
                     loaded.SchemaVersion, SupportedSchemaVersion);
+                BackupUnreadableSettingsFile();
                 return new AppSettings();
             }
 
@@ -176,8 +183,39 @@ public sealed class SettingsService : ISettingsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "读取设置文件失败，使用默认设置：{Path}", _filePath);
+            _logger.LogError(ex, "读取设置文件失败，备份原文件后使用默认设置：{Path}", _filePath);
+            BackupUnreadableSettingsFile();
             return new AppSettings();
+        }
+    }
+
+    /// <summary>
+    /// 把无法正常读取的 settings.json 原地改名备份为 settings.json.corrupt-&lt;时间戳&gt;，
+    /// 避免静默整档重置导致用户数据不可恢复（日志之外留一份原始文件供人工排查/恢复）。
+    /// 备份失败（如文件被占用）不影响「使用默认设置」的兜底行为。
+    /// </summary>
+    private void BackupUnreadableSettingsFile()
+    {
+        try
+        {
+            if (!File.Exists(_filePath))
+            {
+                return;
+            }
+
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var backupPath = $"{_filePath}.corrupt-{stamp}";
+            for (var attempt = 1; File.Exists(backupPath); attempt++)
+            {
+                backupPath = $"{_filePath}.corrupt-{stamp}-{attempt}";
+            }
+
+            File.Move(_filePath, backupPath);
+            _logger.LogWarning("无法读取的设置文件已备份：{BackupPath}", backupPath);
+        }
+        catch (Exception backupEx)
+        {
+            _logger.LogError(backupEx, "备份无法读取的设置文件失败（仍将使用默认设置）：{Path}", _filePath);
         }
     }
 
@@ -199,7 +237,20 @@ public sealed class SettingsService : ISettingsService
                 await stream.FlushAsync(ct).ConfigureAwait(false);
             }
 
-            File.Move(tempPath, _filePath, overwrite: true);
+            // Windows 下若并发读取方恰好持有 settings.json 句柄（如启动加载/诊断读取），
+            // Move(overwrite) 会瞬时 IOException；有界重试避免一次偶发冲突丢失整次保存。
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Move(tempPath, _filePath, overwrite: true);
+                    break;
+                }
+                catch (Exception ex) when (attempt < 3 && (ex is IOException or UnauthorizedAccessException))
+                {
+                    await Task.Delay(50, ct).ConfigureAwait(false);
+                }
+            }
         }
         finally
         {
