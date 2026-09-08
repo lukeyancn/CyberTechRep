@@ -6,8 +6,8 @@
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
     <RootNamespace>CyberTechRep.Plugin</RootNamespace>
-    <!-- 版本 2.0.0.0-beta.2：与 manifest.yml 保持一致；程序集版本用纯数字，信息版本带 beta 后缀 -->
-    <Version>2.0.0.0-beta.2</Version>
+    <!-- 版本 2.0.0.0-beta.3：与 manifest.yml 保持一致；程序集版本用纯数字，信息版本带 beta 后缀 -->
+    <Version>2.0.0.0-beta.3</Version>
     <AssemblyVersion>2.0.0.0</AssemblyVersion>
     <FileVersion>2.0.0.0</FileVersion>
     <!-- 程序集文件名/命名空间随品牌更名统一为 CyberTechRep -->
