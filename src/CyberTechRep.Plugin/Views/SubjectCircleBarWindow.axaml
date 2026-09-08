@@ -8,6 +8,16 @@
         SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
         Topmost="True" Background="Transparent" FontSize="12">
 
+  <!-- 拖放视觉提示：拖入文件悬停于学科圆圈上时高亮该圆圈（Copy 可用）；
+       注意：窗口开启鼠标穿透（WS_EX_TRANSPARENT）后收不到任何鼠标/拖放事件，拖放仅在穿透关闭时可用 -->
+  <Window.Styles>
+    <Style Selector="Button.circle.drop-target">
+      <Setter Property="BorderBrush" Value="#FF2196F3" />
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="Background" Value="#E6E3F2FD" />
+    </Style>
+  </Window.Styles>
+
   <Border CornerRadius="14" Background="#88F2F2F2" BorderBrush="#44000000" BorderThickness="1"
           PointerPressed="OnBarPointerPressed">
     <Grid RowDefinitions="*,Auto">
@@ -38,6 +48,13 @@
           </ItemsControl.ItemTemplate>
         </ItemsControl>
       </ScrollViewer>
+
+      <!-- 拖放导入结果瞬态提示（非致命反馈：跳过/失败原因等，几秒后自动隐藏） -->
+      <Border x:Name="DropStatusHost" Grid.Row="0" IsVisible="False" HorizontalAlignment="Center"
+              VerticalAlignment="Bottom" Margin="0,0,0,34" CornerRadius="6" Background="#F0333333"
+              MaxWidth="200">
+        <TextBlock x:Name="DropStatusText" Margin="8,4" TextWrapping="Wrap" Foreground="White" FontSize="11" />
+      </Border>
 
       <!-- 底部控件条：快捷设置菜单「⋯」 + 关闭（关闭与菜单入口统一放到底部；
            无边框置顶、空白处拖拽、穿透/固定等既有行为不变；× 隐藏后设置页可再唤出） -->

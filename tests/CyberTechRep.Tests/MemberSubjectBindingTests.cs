@@ -151,11 +151,14 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
 
     private sealed class FakeClassifier : IMessageClassifier
     {
+        /// <summary>分类结果（默认作业；文件消息触发用例改 Unknown 模拟纯文件无文本消息）。</summary>
+        public MessageKind Kind { get; init; } = MessageKind.Homework;
+
         public Task<ClassifiedMessage> ClassifyAsync(MessageRecord message, CancellationToken ct = default) =>
             Task.FromResult(new ClassifiedMessage
             {
                 Source = message,
-                Kind = MessageKind.Homework,
+                Kind = Kind,
                 Confidence = 1.0,
                 MatchReason = "homework-keyword"
             });
@@ -163,6 +166,44 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         public void ReloadRules()
         {
         }
+    }
+
+    /// <summary>最小文件管道替身（文件消息触发用例：断言附件入队与绑定归类）。</summary>
+    private sealed class FakeFilePipeline : IFilePipelineService
+    {
+        public List<(string MessageId, string FileName, string? Url)> EnqueueCalls { get; } = [];
+
+        public List<(Guid FileId, string Subject)> ReassignCalls { get; } = [];
+
+#pragma warning disable CS0067
+        public event EventHandler<FileRecord>? FileUpdated;
+#pragma warning restore CS0067
+
+        public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+            string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default)
+        {
+            EnqueueCalls.Add((messageId, fileName, url));
+            var record = new FileRecord
+            {
+                Id = Guid.NewGuid(),
+                MessageId = messageId,
+                FileName = fileName,
+                MemberOpenId = memberOpenId ?? "",
+                GroupOpenId = groupOpenId ?? "",
+                Status = FileStatus.Archived,
+                CompletedAt = DateTimeOffset.Now
+            };
+            return Task.FromResult(record);
+        }
+
+        public Task ReassignSubjectAsync(Guid fileId, string subject, CancellationToken ct = default)
+        {
+            ReassignCalls.Add((fileId, subject));
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<FileRecord>> GetRecordsAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<FileRecord>>([]);
     }
 
     private sealed class FakeSubjectChain : ISubjectClassifierChain
@@ -304,6 +345,24 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         ]
     };
 
+    /// <summary>纯文件消息（无文本段 → 分类器走 Unknown；2026-09-08 文件消息触发用例）。</summary>
+    private static MessageRecord FileMessage(string messageId = "msg-file", string memberOpenId = "member-1") => new()
+    {
+        MessageId = messageId,
+        GroupOpenId = "group-1",
+        MemberOpenId = memberOpenId,
+        SenderNickname = "数学老师",
+        Segments =
+        [
+            new MessageSegment
+            {
+                Type = SegmentTypes.File,
+                Url = "https://example.com/wb.pdf",
+                FileName = "wb.pdf"
+            }
+        ]
+    };
+
     private static SubjectRecognitionSettings Settings(
         SubjectRecognitionMode mode, bool selectionWindowEnabled = true) => new()
     {
@@ -313,7 +372,8 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
 
     private (MessageDispatchService Dispatch, FakeSubjectChain Chain, FakeHomeworkStore Homework,
         MemberSubjectBindingStore Bindings, List<SubjectSelectionRequest> Requests) Create(
-        SubjectRecognitionSettings settings, Action<MemberSubjectBindingStore>? seedBindings = null)
+        SubjectRecognitionSettings settings, Action<MemberSubjectBindingStore>? seedBindings = null,
+        FakeClassifier? classifier = null, FakeFilePipeline? files = null)
     {
         var bindings = new MemberSubjectBindingStore(_dir);
         seedBindings?.Invoke(bindings);
@@ -321,9 +381,10 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         var homework = new FakeHomeworkStore();
         var requests = new List<SubjectSelectionRequest>();
         var dispatch = new MessageDispatchService(
-            classifier: new FakeClassifier(),
+            classifier: classifier ?? new FakeClassifier(),
             subjectChain: chain,
             homeworkStore: homework,
+            filePipeline: files,
             memberBindings: bindings,
             getSubjectRecognitionSettings: () => settings);
         dispatch.SubjectSelectionRequired += (_, r) => requests.Add(r);
@@ -519,6 +580,112 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         Assert.Empty(requests);
     }
 
+    // ============ 文件消息触发（2026-09-08 修复 Issue A：纯文件消息从不弹选择窗） ============
+
+    [Fact]
+    public async Task MemberSelection_FileOnlyMessage_Unbound_RaisesSelection()
+    {
+        var files = new FakeFilePipeline();
+        var (dispatch, _, _, _, requests) = Create(
+            Settings(SubjectRecognitionMode.MemberSelection),
+            classifier: new FakeClassifier { Kind = MessageKind.Unknown }, // 无文本 → 分类器返回 Unknown
+            files: files);
+
+        await dispatch.ProcessMessageAsync(FileMessage());
+
+        // 文件消息同样触发选择悬浮窗（附件要按学科归档 → 需要学科分类）
+        var request = Assert.Single(requests);
+        Assert.Equal("msg-file", request.MessageId);
+        Assert.Equal("member-1", request.MemberOpenId);
+        // 主流程不阻塞：文件照常入队文件管道
+        var (msgId, fileName, _) = Assert.Single(files.EnqueueCalls);
+        Assert.Equal("msg-file", msgId);
+        Assert.Equal("wb.pdf", fileName);
+    }
+
+    [Fact]
+    public async Task MemberSelection_FileOnlyMessage_Bound_DoesNotRaiseSelection()
+    {
+        var files = new FakeFilePipeline();
+        var (dispatch, _, _, bindings, requests) = Create(
+            Settings(SubjectRecognitionMode.MemberSelection),
+            seedBindings: b => b.Set("member-1", "物理"),
+            classifier: new FakeClassifier { Kind = MessageKind.Unknown },
+            files: files);
+
+        await dispatch.ProcessMessageAsync(FileMessage());
+
+        Assert.Empty(requests); // 已绑定发送者：不触发（回归红线）
+    }
+
+    [Fact]
+    public async Task MemberSelection_UnclassifiedTextWithoutAttachments_DoesNotRaiseSelection()
+    {
+        // 纯文本无关键词消息维持现状：忽略、不弹窗（判定要求 Unknown 类消息必须携带附件段）
+        var (dispatch, _, _, _, requests) = Create(
+            Settings(SubjectRecognitionMode.MemberSelection),
+            classifier: new FakeClassifier { Kind = MessageKind.Unknown });
+
+        await dispatch.ProcessMessageAsync(Message());
+
+        Assert.Empty(requests);
+    }
+
+    // ============ 触发状态绝不一次性消费（2026-09-08 修复 Issue B：窗口关闭后可再次触发） ============
+
+    [Fact]
+    public async Task MemberSelection_RetriggerAfterCooldown_WindowCloseNeverSilencesPermanently()
+    {
+        var now = DateTimeOffset.Now;
+        var (dispatch, _, _, _, requests) = Create(Settings(SubjectRecognitionMode.MemberSelection));
+        dispatch.Clock = () => now; // 假时钟：控制冷却窗口推进
+
+        // 第 1 条消息 → 触发（模拟悬浮窗弹出后被用户关闭/超时隐藏）
+        await dispatch.ProcessMessageAsync(Message());
+        var first = Assert.Single(requests);
+        Assert.Equal("msg-member-1", first.MessageId);
+
+        // 冷却窗口内（45 秒）的第 2 条消息 → 限流跳过（防骚扰）
+        now += TimeSpan.FromSeconds(10);
+        await dispatch.ProcessMessageAsync(MessageWithId("msg-second"));
+        Assert.Single(requests); // 未新增
+
+        // 冷却过期 → 同一未绑定发送者的第 3 条消息再次触发（关闭窗口绝不变成永久静默）
+        now += MessageDispatchService.SelectionCooldownWindow;
+        await dispatch.ProcessMessageAsync(MessageWithId("msg-third"));
+
+        Assert.Equal(2, requests.Count);
+        Assert.Equal("msg-third", requests[1].MessageId);
+    }
+
+    /// <summary>同发送者换 MessageId 的消息（冷却限流按「群+成员」而非消息 Id）。</summary>
+    private static MessageRecord MessageWithId(string messageId, string memberOpenId = "member-1") => new()
+    {
+        MessageId = messageId,
+        GroupOpenId = "group-1",
+        MemberOpenId = memberOpenId,
+        SenderNickname = "数学老师",
+        Segments =
+        [
+            new MessageSegment { Type = SegmentTypes.Text, Text = "今天的数学作业是第 3 页" }
+        ]
+    };
+
+    [Fact]
+    public async Task MemberSelection_CooldownIsolated_PerSender()
+    {
+        var (dispatch, _, _, _, requests) = Create(Settings(SubjectRecognitionMode.MemberSelection));
+
+        // 发送者 A 的文件消息 → 触发
+        await dispatch.ProcessMessageAsync(FileMessage(memberOpenId: "member-a"));
+        // 同一瞬间发送者 B 的文件消息 → 不受 A 的冷却影响，独立触发
+        await dispatch.ProcessMessageAsync(FileMessage(messageId: "msg-file-b", memberOpenId: "member-b"));
+
+        Assert.Equal(2, requests.Count);
+        Assert.Equal("member-a", requests[0].MemberOpenId);
+        Assert.Equal("member-b", requests[1].MemberOpenId);
+    }
+
     // ============ 触发判定纯逻辑（可见性门控矩阵） ============
 
     [Fact]
@@ -526,25 +693,36 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
     {
         // MemberSelection + 开 + 作业 + 有发送者 + 未绑定 → 触发（与识别链结果无关）
         Assert.True(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework, "m1", memberBound: false));
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework,
+            hasAttachmentSegments: false, "m1", memberBound: false));
         // MemberSelection + 开 + 通知 + 未绑定 → 触发
         Assert.True(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, MessageKind.Notice, "m1", memberBound: false));
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Notice,
+            hasAttachmentSegments: false, "m1", memberBound: false));
+        // MemberSelection + 开 + 未分类（无文本的纯文件消息）+ 携带附件段 + 未绑定 → 触发（2026-09-08 文件消息修复）
+        Assert.True(MessageDispatchService.ShouldRaiseSubjectSelection(
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Unknown,
+            hasAttachmentSegments: true, "m1", memberBound: false));
         // Keyword 模式 → 永不触发
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.Keyword, true, MessageKind.Homework, "m1", memberBound: false));
+            SubjectRecognitionMode.Keyword, true, MessageKind.Homework,
+            hasAttachmentSegments: false, "m1", memberBound: false));
         // 开关关闭 → 不触发
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, false, MessageKind.Homework, "m1", memberBound: false));
+            SubjectRecognitionMode.MemberSelection, false, MessageKind.Homework,
+            hasAttachmentSegments: false, "m1", memberBound: false));
         // 已绑定 → 不触发
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework, "m1", memberBound: true));
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework,
+            hasAttachmentSegments: false, "m1", memberBound: true));
         // 无发送者（OpenID 为空）→ 不触发
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework, "", memberBound: false));
-        // 未分类消息（Unknown）→ 不触发
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Homework,
+            hasAttachmentSegments: false, "", memberBound: false));
+        // 未分类消息（Unknown）且无附件段（纯文本无关键词）→ 不触发（现状语义：忽略）
         Assert.False(MessageDispatchService.ShouldRaiseSubjectSelection(
-            SubjectRecognitionMode.MemberSelection, true, MessageKind.Unknown, "m1", memberBound: false));
+            SubjectRecognitionMode.MemberSelection, true, MessageKind.Unknown,
+            hasAttachmentSegments: false, "m1", memberBound: false));
     }
 
     // ============ 触发语义对齐需求（2026-09-06 修正）：关键词已识别 + 未绑定也触发 ============
@@ -556,12 +734,13 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         var now = DateTimeOffset.Now;
 
         Assert.True(dispatch.TryTakeSelectionTriggerSlot("m1", "g1", now));
-        // 同一「群+成员」冷却窗口内 → 拒绝
-        Assert.False(dispatch.TryTakeSelectionTriggerSlot("m1", "g1", now.AddMinutes(9)));
+        // 同一「群+成员」冷却窗口（45 秒）内 → 拒绝
+        Assert.False(dispatch.TryTakeSelectionTriggerSlot(
+            "m1", "g1", now.Add(MessageDispatchService.SelectionCooldownWindow - TimeSpan.FromSeconds(1))));
         // 其他成员 / 其他群 → 不受影响
         Assert.True(dispatch.TryTakeSelectionTriggerSlot("m2", "g1", now));
         Assert.True(dispatch.TryTakeSelectionTriggerSlot("m1", "g2", now));
-        // 冷却窗口过后 → 放行
+        // 冷却窗口过后 → 放行（窗口关闭后再次触发语义的关键：绝不永久静默）
         Assert.True(dispatch.TryTakeSelectionTriggerSlot(
             "m1", "g1", now + MessageDispatchService.SelectionCooldownWindow + TimeSpan.FromSeconds(1)));
     }

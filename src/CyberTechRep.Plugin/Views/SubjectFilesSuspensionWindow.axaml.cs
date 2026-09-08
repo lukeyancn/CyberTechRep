@@ -4,6 +4,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using CyberTechRep.Plugin.Services.Files;
 using CyberTechRep.Plugin.Services.Overlays;
 using CyberTechRep.Shared.Abstractions;
 using CyberTechRep.Shared.Models;
@@ -40,6 +41,12 @@ public sealed class SubjectFileGroupView
 /// / 详细列表（小图标在左、完整文件名在右），模式由圆圈栏设置记忆、点击文件用系统默认
 /// 程序打开；SetSubject 原地切换学科（供圆圈栏 toggle/切换交互复用窗口实例，不闪关）；
 /// 位置/大小/层级由 <see cref="SuspensionWindowController"/> 持久化与应用。
+/// <para>
+/// 拖放导入：拖文件到悬浮窗松开 → 复制归档到当前展示学科（Copy 语义，经
+/// <see cref="IFileImportService"/> 复用文件管道归档格式，源文件保留原位）。拖入时高亮
+/// 窗口外框提示可复制；负载不含文件路径时给出非致命提示。注意：窗口被钉底器打上
+/// WS_EX_TRANSPARENT（鼠标穿透开 + 固定开）后收不到拖放事件——拖放仅在穿透关闭时可用。
+/// </para>
 /// </summary>
 public partial class SubjectFilesSuspensionWindow : Window
 {
@@ -54,6 +61,12 @@ public partial class SubjectFilesSuspensionWindow : Window
     private readonly OverlayQuickMenu _quickMenu = null!;
     private int _refreshing;
     private string _subject = "未分类";
+
+    /// <summary>拖放导入实现（管道同实例；测试替身管道可能未实现 → null 时拖放降级为提示）。</summary>
+    private readonly IFileImportService? _importer;
+
+    /// <summary>拖放结果瞬态提示的自动隐藏计时器。</summary>
+    private readonly DispatcherTimer _dropNoticeTimer = null!;
 
     public SubjectFilesSuspensionWindow()
     {
@@ -87,6 +100,20 @@ public partial class SubjectFilesSuspensionWindow : Window
         };
         _pipeline.FileUpdated += OnPipelineFileUpdated;
         _ = RefreshAsync();
+
+        // 拖放导入：窗口级 AllowDrop + 路由事件（DragOver 含文件路径 → Copy + 外框高亮；
+        // Drop 提取路径后线程池异步复制归档到当前学科，不冻结 UI）。非文件负载 → 非致命提示。
+        _importer = pipeline as IFileImportService;
+        _dropNoticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+        _dropNoticeTimer.Tick += (_, _) =>
+        {
+            _dropNoticeTimer.Stop();
+            DropStatusHost.IsVisible = false;
+        };
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragOverEvent, OnFileDragOver);
+        AddHandler(DragDrop.DragLeaveEvent, OnFileDragLeave);
+        AddHandler(DragDrop.DropEvent, OnFileDrop);
     }
 
     /// <summary>当前展示的学科（圆圈栏 toggle 判断依据）。</summary>
@@ -263,5 +290,126 @@ public partial class SubjectFilesSuspensionWindow : Window
 
         Width = Math.Max(MinWidth, Width + e.Vector.X);
         Height = Math.Max(MinHeight, Height + e.Vector.Y);
+    }
+
+    // ============ 拖放导入（文件 → 当前学科，Copy 语义）============
+
+    /// <summary>
+    /// DragOver：负载含文件路径且导入实现可用 → 显式 Copy + 高亮窗口外框；否则 None。
+    /// 目标学科 = 届时 <see cref="_subject"/>（Drop 时取实时值，切换学科后立即生效）。
+    /// </summary>
+    private void OnFileDragOver(object? sender, DragEventArgs e)
+    {
+        var canCopy = _importer is not null
+            && !string.IsNullOrWhiteSpace(_subject)
+            && SubjectDropImport.HasFiles(e.Data);
+        if (!canCopy)
+        {
+            e.DragEffects = DragDropEffects.None;
+            RootBorder.Classes.Remove("drop-target");
+            return;
+        }
+
+        e.DragEffects = DragDropEffects.Copy;
+        RootBorder.Classes.Add("drop-target");
+    }
+
+    /// <summary>拖放离开窗口：清除外框高亮（视觉提示复位）。</summary>
+    private void OnFileDragLeave(object? sender, DragEventArgs e) => RootBorder.Classes.Remove("drop-target");
+
+    /// <summary>
+    /// Drop：提取全部文件路径后在线程池逐个复制归档到当前学科（大批量不冻结 UI），
+    /// 结果汇总为瞬态提示并触发刷新（FileUpdated 事件也会带动圆圈栏数据源）。
+    /// 非文件负载/无路径 → 非致命提示，不抛异常。
+    /// </summary>
+    private async void OnFileDrop(object? sender, DragEventArgs e)
+    {
+        try
+        {
+            e.Handled = true;
+            RootBorder.Classes.Remove("drop-target");
+
+            var subject = _subject;
+            var paths = SubjectDropImport.ExtractFilePaths(e.Data);
+            if (_importer is null)
+            {
+                ShowDropNotice("当前文件管道不支持拖放导入");
+                return;
+            }
+
+            if (paths.Count == 0)
+            {
+                // 非文件系统拖放（压缩包虚拟文件/纯文本等）且无法提取路径：非致命提示
+                ShowDropNotice("未识别到可导入的文件路径（非文件拖放或虚拟文件），已忽略");
+                return;
+            }
+
+            ShowDropNotice($"正在复制 {paths.Count} 个文件到「{subject}」…");
+            var importer = _importer;
+            var results = await Task.Run(() => SubjectDropImport.ImportAllAsync(importer, paths, subject));
+
+            var imported = 0;
+            var duplicated = 0;
+            var skipped = 0;
+            var failed = new List<string>();
+            foreach (var (_, result) in results)
+            {
+                switch (result.Outcome)
+                {
+                    case SubjectDropImportOutcome.Imported:
+                        imported++;
+                        break;
+                    case SubjectDropImportOutcome.Duplicate:
+                        duplicated++;
+                        break;
+                    case SubjectDropImportOutcome.Skipped:
+                        skipped++;
+                        break;
+                    default:
+                        failed.Add(result.Message);
+                        break;
+                }
+            }
+
+            var summary = $"已复制 {imported} 个文件到「{subject}」";
+            if (duplicated > 0)
+            {
+                summary += $"，{duplicated} 个内容重复跳过";
+            }
+
+            if (skipped > 0)
+            {
+                summary += $"，{skipped} 个跳过";
+            }
+
+            foreach (var message in failed)
+            {
+                _logger.LogWarning("拖放导入失败：{Message}", message);
+            }
+
+            if (failed.Count > 0)
+            {
+                summary += $"，{failed.Count} 个失败（详见日志）";
+            }
+
+            _logger.LogInformation("拖放导入完成：{Summary}", summary);
+            ShowDropNotice(summary);
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            // 拖放处理任何异常都不打断悬浮窗（非致命：提示 + 日志）
+            _logger.LogWarning(ex, "拖放导入处理异常（已吞掉）");
+            ShowDropNotice("拖放导入失败（详见日志）");
+        }
+    }
+
+    /// <summary>显示瞬态提示文本（几秒后自动隐藏；重复调用重置计时）。</summary>
+    private void ShowDropNotice(string message)
+    {
+        DropStatusText.Text = message;
+        DropStatusHost.IsVisible = true;
+        _dropNoticeTimer.Stop();
+        _dropNoticeTimer.Start();
     }
 }

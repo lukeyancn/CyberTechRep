@@ -286,6 +286,11 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                         message.MessageId, MaskMember(message.SenderNickname, message.MemberOpenId), unclassifiedBoundSubject);
                 }
 
+                // 需求（2026-09-08 文件消息触发修复）：未分类消息（典型：纯文件/图片消息，无文本 →
+                // 分类器返回 Unknown）同样经统一判定触发选择悬浮窗——附件要按学科归档，同样
+                // 「需要学科分类」。判定内部要求消息携带附件段：纯文本无关键词消息维持现状
+                //（忽略、不弹窗），已绑定发送者仍只走上面的显式绑定归类路径。
+                RaiseSubjectSelectionIfNeeded(message, text, MessageKind.Unknown, EmptyChainResult);
                 break;
         }
     }
@@ -425,43 +430,73 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
 
     /// <summary>
     /// 选择悬浮窗触发判定（internal 纯逻辑拆出供单测）：
-    /// MemberSelection 模式 + 显示开关开启 + 消息为作业或通知（需要学科分类）+ 有发送者 + 成员未绑定。
+    /// MemberSelection 模式 + 显示开关开启 + 消息需要学科分类 + 有发送者 + 成员未绑定。
+    /// 「需要学科分类」= 作业/通知，或消息携带文件/图片/视频段（附件按消息学科归档）。
     /// 与学科识别链结果无关：关键词链已识别出学科时同样触发（悬浮窗把已识别结果放候选首位），
     /// 点选一次写回绑定后，该成员后续消息走绑定直达。
     /// </summary>
     internal static bool ShouldRaiseSubjectSelection(
         SubjectRecognitionMode mode, bool selectionWindowEnabled, MessageKind kind,
-        string memberOpenId, bool memberBound)
+        bool hasAttachmentSegments, string memberOpenId, bool memberBound)
     {
         return mode == SubjectRecognitionMode.MemberSelection
             && selectionWindowEnabled
-            && kind is MessageKind.Homework or MessageKind.Notice
+            && (kind is MessageKind.Homework or MessageKind.Notice || hasAttachmentSegments)
             && !string.IsNullOrWhiteSpace(memberOpenId)
             && !memberBound;
     }
+
+    /// <summary>
+    /// 统一触发判定入口（文本路径与文件路径共用，禁止各分支散写判定）：对每条消息实时求值
+    /// 「发送者当前未绑定 AND 该消息需要学科分类」。悬浮窗被用户关闭/超时隐藏不改变任何输入，
+    /// 因此每条消息都会重新评估——仅受每「群+成员」冷却窗口限流（见 <see cref="SelectionCooldownWindow"/>），
+    /// 冷却过期后必然再次触发，绝不「一次性消费」为永久静默。
+    /// </summary>
+    internal bool NeedsSubjectBinding(MessageRecord message, MessageKind kind) =>
+        EvaluateSubjectBinding(message, kind).Needs;
+
+    /// <summary>判定结果明细（Needs + 各输入快照，供不触发原因打点）。</summary>
+    internal readonly record struct SubjectBindingDecision(
+        bool Needs, SubjectRecognitionMode Mode, bool WindowEnabled, bool HasAttachments, bool MemberBound);
+
+    /// <summary><see cref="NeedsSubjectBinding"/> 的明细版：收集各输入用于日志打点。</summary>
+    internal SubjectBindingDecision EvaluateSubjectBinding(MessageRecord message, MessageKind kind)
+    {
+        var settings = _getSubjectRecognitionSettings?.Invoke();
+        var mode = settings?.Mode ?? SubjectRecognitionMode.Keyword;
+        var enabled = settings?.SelectionWindowEnabled ?? true;
+        var bound = _memberBindings is not null
+            && _memberBindings.TryGetSubject(message.MemberOpenId, message.GroupOpenId, out _);
+        var hasAttachments = HasAttachmentSegments(message);
+        return new SubjectBindingDecision(
+            ShouldRaiseSubjectSelection(mode, enabled, kind, hasAttachments, message.MemberOpenId, bound),
+            mode, enabled, hasAttachments, bound);
+    }
+
+    /// <summary>消息是否携带文件/图片/视频段（附件需按学科归档 → 该消息需要学科分类）。</summary>
+    internal static bool HasAttachmentSegments(MessageRecord message) =>
+        message.Segments.Any(s => s?.Type is SegmentTypes.File or SegmentTypes.Image or SegmentTypes.Video);
 
     private void RaiseSubjectSelectionIfNeeded(
         MessageRecord message, string text, MessageKind kind, SubjectResult chainResult)
     {
         try
         {
-            var mode = GetRecognitionMode();
-            var enabled = _getSubjectRecognitionSettings?.Invoke().SelectionWindowEnabled ?? true;
-            var bound = _memberBindings is not null
-                && _memberBindings.TryGetSubject(message.MemberOpenId, message.GroupOpenId, out _);
+            var decision = EvaluateSubjectBinding(message, kind);
             var member = MaskMember(message.SenderNickname, message.MemberOpenId);
 
-            // 触发判定打点：为何不触发（模式/开关/消息类型/已绑定/无发送者）。Debug 级防刷屏。
-            if (!ShouldRaiseSubjectSelection(mode, enabled, kind, message.MemberOpenId, bound))
+            // 触发判定打点：为何不触发（模式/开关/消息类型/附件/已绑定/无发送者）。Debug 级防刷屏。
+            if (!decision.Needs)
             {
                 _logger.LogDebug(
-                    "选择悬浮窗触发判定：不触发（Member={Member}, Kind={Kind}, Mode={Mode}, WindowEnabled={Enabled}, Bound={Bound}）",
-                    member, kind, mode, enabled, bound);
+                    "选择悬浮窗触发判定：不触发（Member={Member}, Kind={Kind}, Mode={Mode}, WindowEnabled={Enabled}, HasAttachments={Attachments}, Bound={Bound}）",
+                    member, kind, decision.Mode, decision.WindowEnabled, decision.HasAttachments, decision.MemberBound);
                 return;
             }
 
-            // 防骚扰：同一「群+成员」在冷却窗口内不重复弹窗（用户关掉窗口未点选的场景尤甚）。
-            if (!TryTakeSelectionTriggerSlot(message.MemberOpenId, message.GroupOpenId, DateTimeOffset.Now))
+            // 防骚扰限流：同一「群+成员」在冷却窗口内不重复弹窗。仅限流用途——窗口被关闭/
+            // 超时隐藏后，冷却一过即恢复每条消息的实时评估并再次触发（绝不永久静默）。
+            if (!TryTakeSelectionTriggerSlot(message.MemberOpenId, message.GroupOpenId, Clock()))
             {
                 _logger.LogInformation(
                     "选择悬浮窗触发判定：冷却窗口内跳过（Member={Member}, CooldownSeconds={Seconds}），避免重复弹窗骚扰",
@@ -478,7 +513,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 chainResult.Subject,
                 chainResult.Confidence,
                 chainResult.Source,
-                DateTimeOffset.Now);
+                Clock());
             SubjectSelectionRequired?.Invoke(this, request);
             _logger.LogInformation(
                 "选择悬浮窗已弹出（Member={Member}, Kind={Kind}, ChainSubject={ChainSubject}, ChainSource={Source}；发送者未绑定学科，等待点选写回）",
@@ -491,8 +526,14 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
     }
 
-    /// <summary>选择窗触发冷却窗口（同一成员该窗口内不重复弹窗，防骚扰）。</summary>
-    internal static readonly TimeSpan SelectionCooldownWindow = TimeSpan.FromMinutes(10);
+    /// <summary>
+    /// 选择窗触发冷却窗口（同一「群+成员」限流，防骚扰）：45 秒内同一发送者不重复弹窗。
+    /// 仅限流用途，绝不「一次性消费」：窗口被用户关闭/超时隐藏后，冷却一过必然再次评估触发。
+    /// </summary>
+    internal static readonly TimeSpan SelectionCooldownWindow = TimeSpan.FromSeconds(45);
+
+    /// <summary>时钟（internal 可注入：单测用假时钟验证冷却过期后的再触发；运行时为系统当前时间）。</summary>
+    internal Func<DateTimeOffset> Clock { get; set; } = static () => DateTimeOffset.Now;
 
     /// <summary>同一「群+成员」的冷却截止时间（仅内存状态，重启即清零）。</summary>
     private readonly Dictionary<string, DateTimeOffset> _selectionCooldownUntil = new(StringComparer.Ordinal);

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
 using CyberTechRep.Shared.Abstractions;
 using CyberTechRep.Shared.Models;
@@ -71,6 +72,11 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// 用户主动 ×（直接 Hide）与设置页隐藏发生在置位前，持久化语义不受影响。
     /// </summary>
     private volatile bool _suppressVisiblePersist;
+
+    /// <summary>
+    /// 宿主关闭守卫第二道闸是否已挂接（<see cref="EnsureShutdownGuardHooked"/>，每控制器一次）。
+    /// </summary>
+    private bool _shutdownGuardHooked;
 
     /// <summary>
     /// <paramref name="settingsService"/> 提供时以其为设置单一来源（推荐）；
@@ -251,6 +257,28 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// <inheritdoc />
     public void NotifyHostStopping() => _suppressVisiblePersist = true;
 
+    /// <summary>
+    /// 宿主关闭守卫第二道闸：桌面生存期发出 ShutdownRequested（显式退出/关闭流程开始，
+    /// 早于生存期批量关闭各窗口）时即置位退出抑制。与 <see cref="NotifyHostStopping"/>
+    /// （hosted-service StopAsync 路径）互为备份：无论宿主以何种顺序先触发哪一个，
+    /// 退出期的批量关窗都不会把 Visible=false 持久化（否则重启后悬浮窗全部默认隐藏，
+    /// 用户实测「设置显示已启用但重启后不出现」的根因之一）。在首个窗口创建时挂接
+    ///（此刻 Application.Current 与桌面生存期必然可用，且挂在 UI 线程上）。
+    /// </summary>
+    private void EnsureShutdownGuardHooked()
+    {
+        if (_shutdownGuardHooked)
+        {
+            return;
+        }
+
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            desktop.ShutdownRequested += (_, _) => _suppressVisiblePersist = true;
+            _shutdownGuardHooked = true;
+        }
+    }
+
     private Task ApplySettingsCoreAsync(string overlayKey, OverlayWindowSettings settings, bool persist)
     {
         // 单一来源模式下：settings 实例若本就来自 ISettingsService.Current.Overlays
@@ -408,6 +436,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// <summary>窗口拖拽/缩放结束后把实际位置/大小回写到设置并持久化（逻辑坐标 DIP）。</summary>
     private void AttachPersistenceHooks(string overlayKey, Window window)
     {
+        EnsureShutdownGuardHooked();
         window.PositionChanged += (_, _) => CaptureBounds(overlayKey, window);
         window.PropertyChanged += (_, e) =>
         {

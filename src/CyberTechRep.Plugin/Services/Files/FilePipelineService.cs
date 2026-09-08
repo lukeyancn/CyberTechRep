@@ -17,10 +17,13 @@ namespace CyberTechRep.Plugin.Services.Files;
 /// （持久化重试队列与重放 UI 属模块 8，本模块不做后台自动重试）。
 /// HttpClient 可注入（测试用假 HttpMessageHandler）。
 /// </summary>
-public sealed class FilePipelineService : IFilePipelineService
+public sealed class FilePipelineService : IFilePipelineService, IFileImportService
 {
     /// <summary>初始归档学科目录（学科识别完成后经 ReassignSubject 移动）。</summary>
     private const string UnfiledSubject = "未分类";
+
+    /// <summary>拖放导入文件的 MessageId 占位（files.json 中 MessageId 必填，拖放文件无来源消息）。</summary>
+    internal const string DropImportMessageId = "drop-import";
 
     private const string TempPrefix = ".download-";
     private const string TempSuffix = ".tmp";
@@ -171,6 +174,197 @@ public sealed class FilePipelineService : IFilePipelineService
             IReadOnlyList<FileRecord> snapshot = _records.OrderBy(r => r.CreatedAt).ToList();
             return Task.FromResult(snapshot);
         }
+    }
+
+    // ============ 拖放导入（学科圆圈栏 / 学科文件悬浮窗 Drop）============
+
+    /// <summary>
+    /// 拖放导入：把磁盘源文件复制归档到指定学科，与下载文件共用同一 files.json 记录库与
+    /// 「下载文件/&lt;学科&gt;/&lt;yyyy-MM-dd&gt;/&lt;文件名&gt;」归档布局（元数据格式零分叉）。
+    /// <para>
+    /// Copy 语义（严格）：全程只复制——先流式复制源文件到根目录内临时文件（同步算 MD5），
+    /// 再复用既有 <see cref="ArchiveFile"/> 把「临时副本」移动进归档位；源文件自始至终保持原位。
+    /// </para>
+    /// <para>
+    /// 冲突策略（显式、确定性）：目标目录已有同名文件时按「name (2).ext」顺延取空闲名，
+    /// 绝不静默覆盖（区别于下载路径的 MD5 去重前置，本路径在去重判定之后仍可能同名冲突）。
+    /// </para>
+    /// 跳过/失败场景（均非致命、不抛异常）：源不存在、零字节、文件已在归档库内（防自复制）、
+    /// 超过单文件大小上限、磁盘占用超上限（复用 EnsureDiskBudget 清理策略）、
+    /// 文件名/学科名非法、IO 异常（源被占用等）。
+    /// </summary>
+    public async Task<SubjectDropImportResult> ImportAsync(string sourcePath, string subject, CancellationToken ct = default)
+    {
+        var settings = _provider.GetSettings();
+        try
+        {
+            // ① 源文件存在性 / 零字节 / 大小上限预检（拿不到 FileInfo 视为不可访问，跳过）
+            FileInfo info;
+            try
+            {
+                info = new FileInfo(sourcePath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "拖放导入：源文件不可访问，已跳过：{Path}", sourcePath);
+                return SubjectDropImportResult.Skipped($"源文件不可访问，已跳过：{Path.GetFileName(sourcePath)}");
+            }
+
+            if (!info.Exists)
+            {
+                return SubjectDropImportResult.Skipped($"源文件不存在，已跳过：{Path.GetFileName(sourcePath)}");
+            }
+
+            if (info.Length == 0)
+            {
+                _logger.LogInformation("拖放导入：零字节文件已跳过：{Path}", sourcePath);
+                return SubjectDropImportResult.Skipped($"零字节文件已跳过：{Path.GetFileName(sourcePath)}");
+            }
+
+            var maxFileBytes = settings.MaxFileSizeMb <= 0
+                ? long.MaxValue
+                : settings.MaxFileSizeMb * 1024L * 1024L;
+            if (info.Length > maxFileBytes)
+            {
+                return SubjectDropImportResult.Failed(
+                    $"文件 {info.Name} 大小 {info.Length} 字节超过单文件上限 {settings.MaxFileSizeMb} MB");
+            }
+
+            var root = GetDownloadRoot();
+
+            // ② 源文件已在归档库内（从归档窗口往外拖又拖回来）：跳过防自复制
+            if (IsInsideRoot(root, Path.GetFullPath(sourcePath)))
+            {
+                return SubjectDropImportResult.Skipped($"文件已在归档库内，无需重复导入：{info.Name}");
+            }
+
+            // ③ 学科名即归档目录名，与 ReassignSubject 同一套路径安全校验
+            if (!TryValidateFileName(subject, Math.Min(settings.MaxFileNameLength, 100), out var safeSubject, out var subjectError))
+            {
+                return SubjectDropImportResult.Failed($"学科名 {subject} 非法：{subjectError}");
+            }
+
+            if (!TryValidateFileName(Path.GetFileName(sourcePath), settings.MaxFileNameLength, out var originalName, out var nameError))
+            {
+                return SubjectDropImportResult.Failed(nameError);
+            }
+
+            // ④ 同名冲突预解析：name (2).ext 顺延（策略见方法注释），后续 ArchiveFile 内部的
+            //    UniquePath 兜底不会再改名（解析出的名字已空闲）
+            var date = DateTime.Now.ToString("yyyy-MM-dd");
+            var dir = settings.GroupBySubject
+                ? Path.Combine(root, safeSubject, date)
+                : Path.Combine(root, date);
+            var finalName = SubjectDropImport.ResolveAvailableName(dir, originalName);
+
+            var record = new FileRecord
+            {
+                MessageId = DropImportMessageId,
+                FileName = finalName,
+                Status = FileStatus.Pending,
+                CreatedAt = DateTimeOffset.Now
+            };
+            lock (_lock)
+            {
+                _records.Add(record);
+                Save();
+            }
+            RaiseUpdated(record);
+
+            // ⑤ 磁盘占用预算（与下载同一套：策略 0 拒收 / 策略 1 清理最旧）
+            if (!EnsureDiskBudget(root, settings, info.Length, record))
+            {
+                return SubjectDropImportResult.Failed(record.LastError ?? "磁盘占用已达上限");
+            }
+
+            ct.ThrowIfCancellationRequested();
+
+            // ⑥ 复制到临时文件（流式 + MD5），再走既有 ArchiveFile：临时副本 → 归档位（源文件不动）
+            var tempPath = Path.Combine(root, TempPrefix + Guid.NewGuid().ToString("N") + TempSuffix);
+            try
+            {
+                var (size, md5) = await CopyToTempWithMd5Async(Path.GetFullPath(sourcePath), tempPath, maxFileBytes, ct);
+                record.Size = size;
+                record.Md5 = md5;
+
+                // MD5 去重（与下载路径行为一致）：内容相同的文件不重复入库
+                if (settings.Md5DedupEnabled && FindArchivedByMd5(md5) is { } original)
+                {
+                    TryDelete(tempPath);
+                    record.Status = FileStatus.Duplicate;
+                    record.CompletedAt = DateTimeOffset.Now;
+                    PersistAndRaise(record);
+                    _logger.LogInformation(
+                        "拖放导入：{Name} 与已归档文件 {Existing} 内容相同（MD5 {Md5}），未重复入库",
+                        record.FileName, original.ArchivedRelativePath, md5);
+                    return SubjectDropImportResult.Duplicate(
+                        $"{info.Name} 与已归档文件 {original.FileName} 内容相同，未重复入库", record);
+                }
+
+                var relative = ArchiveFile(
+                    root, tempPath, settings.GroupBySubject ? safeSubject : "", record.CreatedAt.LocalDateTime, finalName);
+                record.ArchivedRelativePath = relative;
+                record.Status = FileStatus.Archived;
+                record.CompletedAt = DateTimeOffset.Now;
+                PersistAndRaise(record);
+                _logger.LogInformation(
+                    "拖放导入：{Name} 已复制归档至 {Path}（{Size} 字节，源文件保留）",
+                    record.FileName, relative, size);
+                return SubjectDropImportResult.Imported(record);
+            }
+            catch (OperationCanceledException)
+            {
+                TryDelete(tempPath);
+                Fail(record, "拖放导入已取消");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                TryDelete(tempPath);
+                Fail(record, $"拖放导入失败：{ex.Message}", countAttempt: true);
+                return SubjectDropImportResult.Failed($"复制 {info.Name} 失败：{ex.Message}");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "拖放导入异常：{Path}", sourcePath);
+            return SubjectDropImportResult.Failed($"导入 {Path.GetFileName(sourcePath)} 异常：{ex.Message}");
+        }
+    }
+
+    /// <summary>流式复制源文件到临时文件并同步计算 MD5；强制执行单文件大小上限（本地复制不限速）。</summary>
+    private static async Task<(long Size, string Md5)> CopyToTempWithMd5Async(
+        string sourcePath, string tempPath, long maxFileBytes, CancellationToken ct)
+    {
+        await using var source = new FileStream(
+            sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using var target = new FileStream(
+            tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous);
+        using var md5 = MD5.Create();
+
+        var buffer = new byte[81920];
+        long total = 0;
+        int read;
+        while ((read = await source.ReadAsync(buffer, ct)) > 0)
+        {
+            total += read;
+            if (total > maxFileBytes)
+            {
+                throw new InvalidOperationException("文件大小超过单文件上限");
+            }
+
+            md5.TransformBlock(buffer, 0, read, null, 0);
+            await target.WriteAsync(buffer.AsMemory(0, read), ct);
+        }
+
+        md5.TransformFinalBlock([], 0, 0);
+        await target.FlushAsync(ct);
+        return (total, Convert.ToHexString(md5.Hash ?? []).ToLowerInvariant());
     }
 
     // ============ 下载与归档 ============

@@ -8,7 +8,16 @@
         SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
         Topmost="True" Background="Transparent" FontSize="14">
 
-  <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
+  <!-- 拖放视觉提示：文件拖入悬浮窗时高亮外框（Copy 可用）；
+       注意：窗口开启鼠标穿透（WS_EX_TRANSPARENT）后收不到任何鼠标/拖放事件，拖放仅在穿透关闭时可用 -->
+  <Window.Styles>
+    <Style Selector="Border.drop-target">
+      <Setter Property="BorderBrush" Value="#FF2196F3" />
+      <Setter Property="BorderThickness" Value="2" />
+    </Style>
+  </Window.Styles>
+
+  <Border x:Name="RootBorder" CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
     <Grid RowDefinitions="Auto,*,Auto">
 
       <!-- 标题栏：学科名 + 快捷设置菜单（右上角，与通知窗共用 OverlayQuickMenu）+ 隐藏按钮（圆圈栏点击可再次唤出） -->
@@ -101,6 +110,13 @@
           </ItemsControl>
         </ScrollViewer>
       </Panel>
+
+      <!-- 拖放导入结果瞬态提示（非致命反馈：跳过/失败原因等，几秒后自动隐藏） -->
+      <Border x:Name="DropStatusHost" Grid.Row="1" IsVisible="False" HorizontalAlignment="Center"
+              VerticalAlignment="Bottom" Margin="0,0,0,24" CornerRadius="6" Background="#F0333333"
+              MaxWidth="300">
+        <TextBlock x:Name="DropStatusText" Margin="8,4" TextWrapping="Wrap" Foreground="White" FontSize="11" />
+      </Border>
 
       <!-- 角部缩放 Thumb -->
       <Thumb Grid.Row="2" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"

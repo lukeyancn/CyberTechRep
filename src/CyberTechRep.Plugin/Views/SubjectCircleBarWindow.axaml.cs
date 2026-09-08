@@ -4,6 +4,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using CyberTechRep.Plugin.Services.Files;
 using CyberTechRep.Plugin.Services.Overlays;
 using CyberTechRep.Shared.Abstractions;
 using CyberTechRep.Shared.Models;
@@ -22,6 +23,12 @@ namespace CyberTechRep.Plugin.Views;
 /// <see cref="OverlayQuickMenu"/>：置顶/固定/穿透）+「×」隐藏（设置页可再唤出）；
 /// 层级/穿透/固定/位置由 <see cref="SuspensionWindowController"/>
 /// 钉底器路径统一处理（与另三窗行为一致）。
+/// <para>
+/// 拖放导入：从资源管理器等拖文件悬停到学科圆圈上松开 → 文件复制归档到该学科
+/// （Copy 语义，经 <see cref="IFileImportService"/> 复用文件管道归档格式）。悬停时高亮
+/// 目标圆圈提示可复制；负载不含文件路径时效果为 None。注意：窗口被钉底器打上
+/// WS_EX_TRANSPARENT（鼠标穿透开 + 固定开）后收不到拖放事件——拖放仅在穿透关闭时可用。
+/// </para>
 /// </summary>
 public partial class SubjectCircleBarWindow : Window
 {
@@ -33,6 +40,15 @@ public partial class SubjectCircleBarWindow : Window
     private readonly OverlayQuickMenu _quickMenu = null!;
     private EventHandler<CyberTechRep.Shared.Models.AppSettings>? _settingsChangedHandler;
     private string? _pendingSubject;
+
+    /// <summary>拖放导入实现（管道同实例；测试替身管道可能未实现 → null 时拖放降级为提示）。</summary>
+    private readonly IFileImportService? _importer;
+
+    /// <summary>DragOver 高亮中的圆圈按钮（离开/放下/换目标时清除高亮）。</summary>
+    private Button? _dropHighlight;
+
+    /// <summary>拖放结果瞬态提示的自动隐藏计时器。</summary>
+    private readonly DispatcherTimer _dropNoticeTimer = null!;
 
     public SubjectCircleBarWindow()
     {
@@ -61,6 +77,20 @@ public partial class SubjectCircleBarWindow : Window
             () => settingsService!.Current.Overlays.Circle, this, openAbove: true);
         QuickMenuButton.Flyout = _quickMenu.Flyout;
         _ = RefreshAsync();
+
+        // 拖放导入：窗口级 AllowDrop + 路由事件（DragOver 命中学科圆圈 → Copy + 高亮；
+        // Drop 提取路径后线程池异步复制归档，不冻结 UI）。非文件负载 → None。
+        _importer = pipeline as IFileImportService;
+        _dropNoticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+        _dropNoticeTimer.Tick += (_, _) =>
+        {
+            _dropNoticeTimer.Stop();
+            DropStatusHost.IsVisible = false;
+        };
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragOverEvent, OnFileDragOver);
+        AddHandler(DragDrop.DragLeaveEvent, OnFileDragLeave);
+        AddHandler(DragDrop.DropEvent, OnFileDrop);
 
         // 可视树加载完成后再补一次方向应用：构造期 RefreshAsync 时 ItemsPanelRoot 可能尚未
         // 物化，ApplyOrientation 会静默跳过，导致初始设置的横/竖排列不生效。
@@ -204,5 +234,156 @@ public partial class SubjectCircleBarWindow : Window
         {
             _logger.LogWarning(ex, "圆圈顺序调整失败（已吞掉）");
         }
+    }
+
+    // ============ 拖放导入（文件 → 学科，Copy 语义）============
+
+    /// <summary>沿可视树向上找到拖放命中点的学科圆圈按钮（DataContext 为学科名字符串）。</summary>
+    private static Button? FindSubjectButton(Visual? source)
+    {
+        for (Visual? node = source; node is not null; node = node.GetVisualParent())
+        {
+            if (node is Button { DataContext: string } button)
+            {
+                return button;
+            }
+        }
+
+        return null;
+    }
+
+    private void ClearDropHighlight()
+    {
+        _dropHighlight?.Classes.Remove("drop-target");
+        _dropHighlight = null;
+    }
+
+    /// <summary>
+    /// DragOver：悬停在学科圆圈上且负载含文件路径 → 显式 Copy + 高亮该圆圈；
+    /// 空白处 / 非文件负载 / 导入实现缺失 → None（不可放置）。
+    /// </summary>
+    private void OnFileDragOver(object? sender, DragEventArgs e)
+    {
+        var button = FindSubjectButton(e.Source as Visual);
+        if (_dropHighlight != button)
+        {
+            ClearDropHighlight();
+            button?.Classes.Add("drop-target");
+            _dropHighlight = button;
+        }
+
+        if (button is null || _importer is null || !SubjectDropImport.HasFiles(e.Data))
+        {
+            e.DragEffects = DragDropEffects.None;
+            return;
+        }
+
+        e.DragEffects = DragDropEffects.Copy;
+    }
+
+    /// <summary>拖放离开窗口/圆圈：清除高亮（视觉提示复位）。</summary>
+    private void OnFileDragLeave(object? sender, DragEventArgs e) => ClearDropHighlight();
+
+    /// <summary>
+    /// Drop：提取全部文件路径后在线程池逐个复制归档到目标学科（大批量不冻结 UI），
+    /// 结果汇总为瞬态提示；源文件保持原位（Copy 语义在 <see cref="IFileImportService"/> 内保证）。
+    /// 非文件负载/无路径 → 非致命提示，不抛异常。
+    /// </summary>
+    private async void OnFileDrop(object? sender, DragEventArgs e)
+    {
+        try
+        {
+            e.Handled = true;
+            var button = FindSubjectButton(e.Source as Visual);
+            ClearDropHighlight();
+
+            if (button?.DataContext is not string subject)
+            {
+                e.DragEffects = DragDropEffects.None;
+                return;
+            }
+
+            e.DragEffects = DragDropEffects.Copy;
+            var paths = SubjectDropImport.ExtractFilePaths(e.Data);
+            if (_importer is null)
+            {
+                ShowDropNotice("当前文件管道不支持拖放导入");
+                return;
+            }
+
+            if (paths.Count == 0)
+            {
+                // 非文件系统拖放（压缩包虚拟文件/纯文本等）且无法提取路径：非致命提示
+                ShowDropNotice("未识别到可导入的文件路径（非文件拖放或虚拟文件），已忽略");
+                return;
+            }
+
+            ShowDropNotice($"正在复制 {paths.Count} 个文件到「{subject}」…");
+            var importer = _importer;
+            var results = await Task.Run(() => SubjectDropImport.ImportAllAsync(importer, paths, subject));
+
+            var imported = 0;
+            var duplicated = 0;
+            var skipped = 0;
+            var failed = new List<string>();
+            foreach (var (_, result) in results)
+            {
+                switch (result.Outcome)
+                {
+                    case SubjectDropImportOutcome.Imported:
+                        imported++;
+                        break;
+                    case SubjectDropImportOutcome.Duplicate:
+                        duplicated++;
+                        break;
+                    case SubjectDropImportOutcome.Skipped:
+                        skipped++;
+                        break;
+                    default:
+                        failed.Add(result.Message);
+                        break;
+                }
+            }
+
+            var summary = $"已复制 {imported} 个文件到「{subject}」";
+            if (duplicated > 0)
+            {
+                summary += $"，{duplicated} 个内容重复跳过";
+            }
+
+            if (skipped > 0)
+            {
+                summary += $"，{skipped} 个跳过";
+            }
+
+            foreach (var message in failed)
+            {
+                _logger.LogWarning("拖放导入失败：{Message}", message);
+            }
+
+            if (failed.Count > 0)
+            {
+                summary += $"，{failed.Count} 个失败（详见日志）";
+            }
+
+            _logger.LogInformation("拖放导入完成：{Summary}", summary);
+            ShowDropNotice(summary);
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            // 拖放处理任何异常都不打断圆圈栏（非致命：提示 + 日志）
+            _logger.LogWarning(ex, "拖放导入处理异常（已吞掉）");
+            ShowDropNotice("拖放导入失败（详见日志）");
+        }
+    }
+
+    /// <summary>显示瞬态提示文本（几秒后自动隐藏；重复调用重置计时）。</summary>
+    private void ShowDropNotice(string message)
+    {
+        DropStatusText.Text = message;
+        DropStatusHost.IsVisible = true;
+        _dropNoticeTimer.Stop();
+        _dropNoticeTimer.Start();
     }
 }
