@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -9,54 +10,188 @@ using CyberTechRep.Shared.Models;
 
 namespace CyberTechRep.Plugin.Views;
 
-/// <summary>作业悬浮窗分组条目（按学科分组的组头视图）。</summary>
-public sealed class HomeworkGroup
+/// <summary>
+/// 作业悬浮窗学科文档视图（需求 1）：每个学科一个撑满区块的方块，
+/// <see cref="Text"/> 双向绑定到可编辑文本容器；显示态点击进入编辑态，编辑态失焦/停顿回写存档。
+/// </summary>
+public sealed class HomeworkDocumentView : INotifyPropertyChanged
 {
+    private string _text = "";
+    private bool _isEditing;
+    private string _clearButtonText = "清空";
+    private string _sourceSummary = "";
+
+    /// <summary>学科名（组头与落档键）。</summary>
     public required string Subject { get; init; }
 
-    public required IReadOnlyList<HomeworkRow> Items { get; init; }
+    /// <summary>归档日（编辑回写与「转为通知」定位用）。</summary>
+    public required DateOnly Date { get; init; }
+
+    /// <summary>渲染文本（ManualText 优先，否则按条目拼接）；编辑态为用户正在改写的文本。</summary>
+    public string Text
+    {
+        get => _text;
+        set
+        {
+            if (string.Equals(_text, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _text = value;
+            Raise(nameof(Text));
+        }
+    }
+
+    /// <summary>是否处于编辑态（显示态为可选中的只读文本，点击进入编辑）。</summary>
+    public bool IsEditing
+    {
+        get => _isEditing;
+        set
+        {
+            if (_isEditing == value)
+            {
+                return;
+            }
+
+            _isEditing = value;
+            Raise(nameof(IsEditing));
+            Raise(nameof(EditHint));
+        }
+    }
+
+    /// <summary>来源与时间元信息摘要（存档条目里保留，折叠成一行展示）。</summary>
+    public string SourceSummary
+    {
+        get => _sourceSummary;
+        init
+        {
+            _sourceSummary = value;
+            Raise(nameof(SourceSummary));
+            Raise(nameof(HasSourceSummary));
+        }
+    }
+
+    public bool HasSourceSummary => !string.IsNullOrEmpty(_sourceSummary);
+
+    /// <summary>「清空」按钮两段式确认文案。</summary>
+    public string ClearButtonText
+    {
+        get => _clearButtonText;
+        set
+        {
+            if (string.Equals(_clearButtonText, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _clearButtonText = value;
+            Raise(nameof(ClearButtonText));
+        }
+    }
+
+    /// <summary>进入编辑态时的渲染文本（三方合并基线：区分「用户删改」与「编辑期间新到的消息」）。</summary>
+    public string? EditBaseline { get; set; }
+
+    public string EditHint => IsEditing ? "编辑中…停顿后自动保存" : "点击文字即可编辑";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    /// <summary>来源摘要（纯函数，可单测）：条数 + 前几位发送者与时间。</summary>
+    internal static string BuildSourceSummary(HomeworkDocument document)
+    {
+        var entries = document.Entries;
+        if (entries.Count == 0)
+        {
+            return document.ManualText is { Length: > 0 } ? "手工编辑（无消息来源）" : "";
+        }
+
+        const int maxShown = 3;
+        var parts = entries
+            .OrderBy(e => e.CreatedAt)
+            .Take(maxShown)
+            .Select(e =>
+            {
+                var label = string.IsNullOrWhiteSpace(e.SenderLabel) ? "成员" : e.SenderLabel.Trim();
+                return $"{label} {e.CreatedAt.LocalDateTime:HH:mm}";
+            })
+            .ToList();
+        var suffix = entries.Count > maxShown ? $" 等 {entries.Count} 条来源" : "";
+        return $"{entries.Count} 条来源 · {string.Join("、", parts)}{suffix}";
+    }
 }
 
-/// <summary>作业悬浮窗条目视图（正文 + 附件状态；学科修正候选保留供非 UI 入口复用）。</summary>
-public sealed class HomeworkRow
+/// <summary>「整理并发送·确认」里的常态化作业勾选项（需求 3）。</summary>
+public sealed class StandingHomeworkView : INotifyPropertyChanged
 {
-    public required HomeworkItem Item { get; init; }
+    private bool _isChecked;
 
-    /// <summary>「修正学科」候选：固定七学科 + 全部作业中已出现的其他学科（本条当前学科置顶）。</summary>
-    public required IReadOnlyList<string> AvailableSubjects { get; init; }
+    public required StandingHomeworkItem Item { get; init; }
 
-    public string SelectedSubject => Item.Subject;
+    /// <summary>勾选状态：勾选即时进入预览，取消即从预览移除；点「发送」才落档。</summary>
+    public bool IsChecked
+    {
+        get => _isChecked;
+        set
+        {
+            if (_isChecked == value)
+            {
+                return;
+            }
 
-    public bool HasAttachments => Item.AttachmentIds.Count > 0;
+            _isChecked = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsChecked)));
+        }
+    }
 
-    public string AttachmentText => $"附件 ×{Item.AttachmentIds.Count}";
+    public string DisplayText => $"{Item.Subject}：{Item.Content}";
 
-    /// <summary>时间展示：列表仅含当天作业（仅当天语义），组内显示 HH:mm 即可。</summary>
-    public string CreatedAtText => Item.CreatedAt.LocalDateTime.ToString("HH:mm");
+    public string Tooltip => $"勾选后写入「{Item.Subject}」作业文档末尾（点「发送」才落档）";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 /// <summary>
 /// 作业悬浮窗（Avalonia 无边框置顶窗）：
-/// 按学科分组（Expander 组头）展示，条目含正文与附件状态（学科修正下拉已从 UI 移除，
-/// 底层 SetSubjectAsync 修正逻辑与候选构建保留）；Changed 触发 200ms debounce 刷新；
-/// 分组顺序按 <see cref="CyberTechRep.Shared.Models.OverlaySettings.HomeworkGroupOrder"/>（配置顺序优先，
-/// 未配置的按字母序追加，空 = 全字母序）；设置广播触发刷新（分组顺序热生效）；
-/// 右上角「⋯」快捷菜单（与通知窗共用 <see cref="OverlayQuickMenu"/>）：
-/// 置顶/固定/鼠标穿透开关即时生效并回写 ISettingsService；
-/// 标题栏 BeginMoveDrag 拖拽、角部 Thumb 缩放；位置/大小由 <see cref="SuspensionWindowController"/> 持久化。
+/// <para>
+/// <b>需求 1 文档化</b>：按学科分组，每个学科区块内只有一个撑满区块的文档方块——该学科当天作业
+/// 聚合为一份连续文档（<see cref="IHomeworkStore.GetDocumentsAsync"/> 的渲染文本）；
+/// 点击文档进入编辑态，失焦或停顿 600ms 实时回写存档（<see cref="IHomeworkStore.SaveDocumentTextAsync"/>，
+/// 存档为单一事实源）；编辑期间挂起列表重建，避免刷新打断输入。
+/// </para>
+/// <para>
+/// <b>需求 3 常态化作业</b>：「整理并发送·确认」浮层列出启用的常态化作业并支持勾选，
+/// 勾选即时进预览、取消即移除，点「发送」才写入该学科文档末尾（IsStanding 条目）。
+/// </para>
+/// <para>
+/// <b>需求 5 换类</b>：文档方块提供「转为通知」，整份学科文档迁入通知存档。
+/// </para>
+/// 其余行为保持原样：仅显示当天作业、分组顺序按配置（HomeworkGroupOrder）、Changed 触发
+/// 200ms debounce 刷新、右上角「⋯」快捷菜单（置顶/固定/穿透）、拖拽与角部缩放、整理并发送入口。
 /// </summary>
 public partial class HomeworkSuspensionWindow : Window
 {
     /// <summary>Changed 事件合并刷新的 debounce 间隔（与通知悬浮窗一致）。</summary>
     internal static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>文档编辑回写存档的防抖间隔（停顿即存，不逐字符写盘）。</summary>
+    internal static readonly TimeSpan DocumentSaveDebounce = TimeSpan.FromMilliseconds(600);
+
     private readonly IHomeworkStore _store = null!;
     private readonly IHomeworkSendService? _sendService;
     private readonly ISettingsService? _settingsService;
+    private readonly IMessageReclassifyService? _reclassify;
     private readonly Func<IReadOnlyList<string>?>? _groupOrderProvider;
     private readonly DispatcherTimer _debounceTimer = null!;
+    private readonly DispatcherTimer _documentSaveTimer = null!;
     private readonly OverlayQuickMenu _quickMenu = null!;
-    private IReadOnlyList<HomeworkItem> _currentItems = [];
+    private IReadOnlyList<HomeworkDocument> _documents = [];
+    private IReadOnlyList<StandingHomeworkView> _standingViews = [];
+    private HomeworkDocumentView? _editing;
+    private HomeworkDocumentView? _pendingSave;
+    private bool _refreshPending;
     private bool _sending;
     private int _refreshing;
 
@@ -71,12 +206,14 @@ public partial class HomeworkSuspensionWindow : Window
         Func<IReadOnlyList<string>?>? groupOrderProvider = null,
         ISettingsService? settingsService = null,
         IHomeworkSendService? sendService = null,
-        ISuspensionWindowController? overlays = null)
+        ISuspensionWindowController? overlays = null,
+        IMessageReclassifyService? reclassify = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _groupOrderProvider = groupOrderProvider;
         _sendService = sendService;
         _settingsService = settingsService;
+        _reclassify = reclassify;
         InitializeComponent();
         // 右上角「⋯」快捷菜单（与通知窗共用 OverlayQuickMenu：置顶/固定/穿透，即时生效并回写设置）
         _quickMenu = new OverlayQuickMenu(
@@ -91,7 +228,18 @@ public partial class HomeworkSuspensionWindow : Window
             _debounceTimer.Stop();
             _ = RefreshAsync();
         };
-        _store.Changed += OnStoreChanged;
+        _documentSaveTimer = new DispatcherTimer { Interval = DocumentSaveDebounce };
+        _documentSaveTimer.Tick += async (_, _) =>
+        {
+            _documentSaveTimer.Stop();
+            var view = _pendingSave ?? _editing;
+            if (view is not null)
+            {
+                await PersistDocumentTextAsync(view);
+            }
+        };
+        _store.Changed += OnStoreItemChanged;
+        _store.DocumentChanged += OnStoreDocumentChanged;
         if (settingsService is not null)
         {
             // 设置变更（含分组顺序调整）→ debounce 刷新（SettingsChanged 可能在非 UI 线程触发）
@@ -104,7 +252,15 @@ public partial class HomeworkSuspensionWindow : Window
     /// <summary>当前分组数据源（测试用）。</summary>
     public System.Collections.IEnumerable? VisibleGroups => GroupList?.ItemsSource;
 
-    private void OnStoreChanged(object? sender, HomeworkItem e)
+    /// <summary>当前文档视图（测试用）。</summary>
+    internal IReadOnlyList<HomeworkDocumentView> VisibleDocuments =>
+        GroupList?.ItemsSource as IReadOnlyList<HomeworkDocumentView> ?? [];
+
+    private void OnStoreItemChanged(object? sender, HomeworkItem e) => ScheduleRefreshFromAnyThread();
+
+    private void OnStoreDocumentChanged(object? sender, HomeworkDocument e) => ScheduleRefreshFromAnyThread();
+
+    private void ScheduleRefreshFromAnyThread()
     {
         if (Dispatcher.UIThread.CheckAccess())
         {
@@ -120,7 +276,7 @@ public partial class HomeworkSuspensionWindow : Window
     {
         // 发送开关热生效：SettingsChanged 可能在非 UI 线程触发，可见性更新回 UI 线程
         Dispatcher.UIThread.Post(UpdateSendEntryVisibility);
-        OnStoreChanged(sender, null!);
+        ScheduleRefreshFromAnyThread();
     }
 
     /// <summary>「整理并发送」入口可见性：发送服务存在且开关开启才显示（设置热生效）。</summary>
@@ -142,6 +298,13 @@ public partial class HomeworkSuspensionWindow : Window
 
     internal async Task RefreshAsync()
     {
+        // 编辑态挂起重建：刷新会替换 ItemsSource 导致输入框失焦、光标丢失
+        if (_editing is not null)
+        {
+            _refreshPending = true;
+            return;
+        }
+
         if (Interlocked.Exchange(ref _refreshing, 1) == 1)
         {
             return;
@@ -149,57 +312,36 @@ public partial class HomeworkSuspensionWindow : Window
 
         try
         {
-            // 仅显示当天作业（按 CreatedAt 本地日期过滤）：
-            // 复用存储代理提供的按日期桶查询接口（GetByDateAsync，CreatedAt 本地日期分桶）。
             var today = DateOnly.FromDateTime(DateTime.Now);
-            var all = FilterToday(await _store.GetByDateAsync(today), today);
-
-            // 固定七学科之外，作业里出现过的其他学科也追加进候选（含历史遗留分类）
-            var extraSubjects = all.Select(i => i.Subject)
-                .Where(s => !string.IsNullOrWhiteSpace(s) && !BaseSubjects.Contains(s, StringComparer.Ordinal))
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(s => s, StringComparer.CurrentCulture)
+            var documents = (await _store.GetDocumentsAsync(today))
+                .Where(d => !d.IsEmpty)
                 .ToList();
+            _documents = documents;
 
-            var groups = all
-                .GroupBy(i => i.Subject, StringComparer.OrdinalIgnoreCase)
-                .Select(g => new HomeworkGroup
-                {
-                    Subject = g.Key,
-                    Items = g.OrderBy(i => i.CreatedAt)
-                        .Select(i => new HomeworkRow
-                        {
-                            Item = i,
-                            AvailableSubjects = BuildCandidates(i.Subject, extraSubjects)
-                        })
-                        .ToList()
-                })
-                .ToList();
-
-            // 分组顺序：配置顺序优先（HomeworkGroupOrdering），未配置的按名称序追加；
-            // 配置里多余/未知条目已由排序器安全忽略，兜底再按名称序补齐漏网组
-            var ordered = HomeworkGroupOrdering.Sort(_groupOrderProvider?.Invoke(), groups.Select(g => g.Subject));
-            var orderedGroups = new List<HomeworkGroup>(groups.Count);
-            var remaining = new Dictionary<string, HomeworkGroup>(StringComparer.OrdinalIgnoreCase);
-            foreach (var g in groups)
+            var ordered = HomeworkGroupOrdering.Sort(
+                _groupOrderProvider?.Invoke(), documents.Select(d => d.Subject));
+            var remaining = new Dictionary<string, HomeworkDocument>(StringComparer.OrdinalIgnoreCase);
+            foreach (var document in documents)
             {
-                remaining[g.Subject.Trim()] = g;
+                remaining[document.Subject.Trim()] = document;
             }
 
+            var views = new List<HomeworkDocumentView>(documents.Count);
             foreach (var subject in ordered)
             {
-                if (remaining.Remove(subject, out var group))
+                if (remaining.Remove(subject, out var document))
                 {
-                    orderedGroups.Add(group);
+                    views.Add(BuildView(document));
                 }
             }
 
-            orderedGroups.AddRange(remaining.Values.OrderBy(g => g.Subject, StringComparer.CurrentCulture));
+            views.AddRange(remaining.Values
+                .OrderBy(d => d.Subject, StringComparer.CurrentCulture)
+                .Select(BuildView));
 
             EmptyText.Text = "今天还没有作业";
-            EmptyText.IsVisible = all.Count == 0;
-            _currentItems = all;
-            GroupList.ItemsSource = groups;
+            EmptyText.IsVisible = views.Count == 0;
+            GroupList.ItemsSource = views;
         }
         catch
         {
@@ -210,6 +352,14 @@ public partial class HomeworkSuspensionWindow : Window
             Interlocked.Exchange(ref _refreshing, 0);
         }
     }
+
+    private static HomeworkDocumentView BuildView(HomeworkDocument document) => new()
+    {
+        Subject = document.Subject,
+        Date = document.Date,
+        Text = document.Render,
+        SourceSummary = HomeworkDocumentView.BuildSourceSummary(document)
+    };
 
     /// <summary>当天过滤（纯逻辑，可单测）：Created 转本地日期等于 today 才保留。</summary>
     internal static IReadOnlyList<HomeworkItem> FilterToday(IEnumerable<HomeworkItem> items, DateOnly today)
@@ -222,39 +372,155 @@ public partial class HomeworkSuspensionWindow : Window
     private static bool IsToday(DateTimeOffset createdAt, DateOnly today) =>
         DateOnly.FromDateTime(createdAt.LocalDateTime) == today;
 
-    /// <summary>候选顺序：本条当前学科（不在固定列表时置顶）→ 固定七学科 → 其他已出现学科。</summary>
-    private static IReadOnlyList<string> BuildCandidates(string currentSubject, List<string> extraSubjects)
+    // ---------- 需求 1：文档点击编辑 / 实时回写 ----------
+
+    private void OnDocumentPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        var candidates = new List<string>();
-        if (!string.IsNullOrWhiteSpace(currentSubject)
-            && !BaseSubjects.Contains(currentSubject, StringComparer.Ordinal))
+        if (sender is not Control { DataContext: HomeworkDocumentView view }
+            || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
         {
-            candidates.Add(currentSubject);
+            return;
         }
 
-        candidates.AddRange(BaseSubjects);
-        candidates.AddRange(extraSubjects.Where(s => !string.Equals(s, currentSubject, StringComparison.Ordinal)));
-        return candidates;
+        if (ReferenceEquals(_editing, view))
+        {
+            return;
+        }
+
+        // 切换编辑目标前先落档上一个（只写存档、不改编辑态，避免重建列表打断即将进入的编辑）
+        var previous = _editing;
+        if (previous is not null)
+        {
+            previous.IsEditing = false;
+            _ = PersistDocumentTextAsync(previous);
+        }
+
+        _editing = view;
+        view.EditBaseline = view.Text;
+        view.IsEditing = true;
+        FocusEditor(sender);
+    }
+
+    /// <summary>进入编辑态后把焦点与光标放到同方块内的编辑框末尾。</summary>
+    private static void FocusEditor(object? displayControl)
+    {
+        if (displayControl is not Control control || control.Parent is not Panel panel)
+        {
+            return;
+        }
+
+        var editor = panel.Children.OfType<TextBox>().FirstOrDefault();
+        if (editor is null)
+        {
+            return;
+        }
+
+        editor.Focus();
+        editor.CaretIndex = editor.Text?.Length ?? 0;
+    }
+
+    private void OnDocumentTextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (sender is not Control { DataContext: HomeworkDocumentView view })
+        {
+            return;
+        }
+
+        _pendingSave = view;
+        _documentSaveTimer.Stop();
+        _documentSaveTimer.Start();
+    }
+
+    private async void OnDocumentEditorLostFocus(object? sender, RoutedEventArgs e)
+    {
+        _documentSaveTimer.Stop();
+        if (sender is not Control { DataContext: HomeworkDocumentView view })
+        {
+            return;
+        }
+
+        await PersistDocumentTextAsync(view);
+        view.IsEditing = false;
+        if (ReferenceEquals(_editing, view))
+        {
+            _editing = null;
+        }
+
+        // 编辑期间挂起的刷新（新消息/其他窗口改动）现在补做
+        if (_refreshPending && _editing is null)
+        {
+            _refreshPending = false;
+            await RefreshAsync();
+        }
     }
 
     /// <summary>
-    /// 删除条目：轻量二次确认 = 同一按钮两段式（首次点击进入「确认删除?」待确认态，
-    /// 3 秒内再次点击才真正删除，超时自动复位）。理由：悬浮窗为无边框置顶小窗，
-    /// 弹模态对话框会打断桌面常驻体验且易被置顶层级遮挡；两段式按钮与「修正学科」下拉同级紧凑，
-    /// 误触概率低，刷新重建列表时待确认态自动失效（fail-safe）。
+    /// 把文档文本回写存档（存档为单一事实源）；空文本 = 清除手工文本、回到按条目渲染。
+    /// 传入进入编辑态时的基线做三方合并：编辑期间新到达的消息行补齐到末尾，用户删改保留。
+    /// 保存失败保留用户输入（不静默丢改动），下次失焦/停顿再试。
     /// </summary>
-    private async void OnDeleteClick(object? sender, RoutedEventArgs e)
+    private async Task PersistDocumentTextAsync(HomeworkDocumentView view)
     {
-        if (sender is not Button { DataContext: HomeworkRow row } button)
+        if (ReferenceEquals(_pendingSave, view))
+        {
+            _pendingSave = null;
+        }
+
+        try
+        {
+            await _store.SaveDocumentTextAsync(
+                view.Date, view.Subject, view.Text, CancellationToken.None, view.EditBaseline);
+        }
+        catch
+        {
+            // 保留用户输入，不静默丢改动
+        }
+    }
+
+    // ---------- 需求 5：文档 → 通知 ----------
+
+    private async void OnDocumentToNoticeClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Control { DataContext: HomeworkDocumentView view })
+        {
+            return;
+        }
+
+        if (_reclassify is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // 编辑中的改动先落档，再整体迁移，避免丢改
+            if (_editing is not null)
+            {
+                await PersistDocumentTextAsync(_editing);
+            }
+
+            await _reclassify.MoveDocumentToNoticeAsync(view.Date, view.Subject);
+            // 存储事件 → debounce 刷新（作业方块消失、通知悬浮窗出现）
+        }
+        catch
+        {
+            // 迁移失败保持现状，不中断悬浮窗
+        }
+    }
+
+    // ---------- 清空文档（保留既有删除能力，两段式确认） ----------
+
+    private async void OnClearDocumentClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: HomeworkDocumentView view } button)
         {
             return;
         }
 
         if (button.Tag is not true)
         {
-            // 第一次点击：进入待确认态（3 秒后自动复位）
             button.Tag = true;
-            button.Content = "确认删除?";
+            view.ClearButtonText = "确认清空?";
             var revert = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
             revert.Tick += (_, _) =>
             {
@@ -262,7 +528,7 @@ public partial class HomeworkSuspensionWindow : Window
                 if (button.Tag is true)
                 {
                     button.Tag = null;
-                    button.Content = "删除";
+                    view.ClearButtonText = "清空";
                 }
             };
             revert.Start();
@@ -270,11 +536,11 @@ public partial class HomeworkSuspensionWindow : Window
         }
 
         button.Tag = null;
-        button.Content = "删除";
+        view.ClearButtonText = "清空";
         try
         {
-            await _store.DeleteAsync(row.Item.Id);
-            // 列表刷新经 Changed → debounce 完成
+            await _store.RemoveDocumentAsync(view.Date, view.Subject);
+            // 列表刷新经 DocumentChanged → debounce 完成
         }
         catch
         {
@@ -282,7 +548,7 @@ public partial class HomeworkSuspensionWindow : Window
         }
     }
 
-    // ---------- 整理并发送（需求 2）----------
+    // ---------- 整理并发送（需求 2 + 需求 3）----------
 
     private void OnSendDigestClick(object? sender, RoutedEventArgs e)
     {
@@ -291,19 +557,57 @@ public partial class HomeworkSuspensionWindow : Window
             return;
         }
 
-        // 清单预览：与实际发送内容同一格式化函数（同一份字符串），预览即所得
-        SendPreviewText.Text = _currentItems.Count == 0
-            ? "（今天还没有作业，无可发送内容）"
-            : HomeworkDigestFormatter.Format(_currentItems);
-        SendConfirmButton.IsEnabled = _currentItems.Count > 0;
+        BuildStandingViews();
+        SendPreviewText.Text = BuildDigest();
+        SendConfirmButton.IsEnabled = HasSendableContent();
 
         var groups = SettingsServiceGroupWhitelist();
         SendTargetText.Text = groups.Count == 0
-            ? "目标群：白名单为空（请在 CyberTechRep 连接设置中配置群白名单），发送会失败"
-            : $"目标群：{groups.Count} 个白名单群（{MaskGroups(groups)}），确认后逐群发送";
+            ? "目标群：白名单为空（请在 CyberTechRep 连接设置中配置目标群），发送会失败"
+            : $"目标群：{groups.Count} 个目标群（{MaskGroups(groups)}），确认后逐群发送";
         SendResultText.IsVisible = false;
         SendResultText.Text = "";
         SendConfirmOverlay.IsVisible = true;
+    }
+
+    /// <summary>勾选列表数据源（测试用）。</summary>
+    internal IReadOnlyList<StandingHomeworkView> StandingViews => _standingViews;
+
+    /// <summary>从设置构建常态化作业勾选项（仅启用且学科/内容非空的条目；每次打开确认窗重置为未勾选）。</summary>
+    private void BuildStandingViews()
+    {
+        var items = _settingsService?.Current.StandingHomework.Items ?? [];
+        _standingViews = items
+            .Where(i => i.Enabled
+                && !string.IsNullOrWhiteSpace(i.Subject)
+                && !string.IsNullOrWhiteSpace(i.Content))
+            .Select(i => new StandingHomeworkView { Item = i })
+            .ToList();
+        StandingList.ItemsSource = _standingViews;
+        StandingList.IsVisible = _standingViews.Count > 0;
+        StandingSection.IsVisible = _standingViews.Count > 0;
+    }
+
+    private void OnStandingItemToggled(object? sender, RoutedEventArgs e)
+    {
+        // 勾选即时刷新预览（取消勾选即从预览移除）；落档仍只在点「发送」时发生
+        SendPreviewText.Text = BuildDigest();
+        SendConfirmButton.IsEnabled = HasSendableContent();
+    }
+
+    private bool HasSendableContent() =>
+        _documents.Any(d => !d.IsEmpty) || _standingViews.Any(v => v.IsChecked);
+
+    /// <summary>预览与实际发送共用的同一份清单文本（预览即所得）。</summary>
+    private string BuildDigest()
+    {
+        var checkedItems = _standingViews.Where(v => v.IsChecked).Select(v => v.Item).ToList();
+        if (_documents.Count == 0 && checkedItems.Count == 0)
+        {
+            return "（今天还没有作业，无可发送内容）";
+        }
+
+        return HomeworkDigestFormatter.FormatDocuments(_documents, checkedItems);
     }
 
     private void OnSendCancelClick(object? sender, RoutedEventArgs e) => HideSendOverlay();
@@ -330,10 +634,22 @@ public partial class HomeworkSuspensionWindow : Window
         SendResultText.Text = "正在发送…";
         try
         {
-            var digest = HomeworkDigestFormatter.Format(_currentItems);
+            // 预览即所得：先取用户看到的清单文本（含勾选的常态化作业行），再落档。
+            // 顺序不可颠倒——落档后文档已含常态化行，重新格式化会再追加一遍（曾经的重复发送根因）。
+            var digest = BuildDigest();
+
+            // 需求 3 落档时机：点「发送」才把勾选的常态化作业写入该学科文档末尾
+            // （勾选只影响预览）。写入幂等：同一天同学科同内容已存在时由合并器判为完全重复而跳过。
+            var standingError = await ApplyStandingHomeworkAsync();
+
             var results = await _sendService.SendTextToTargetGroupsAsync(digest);
             var okCount = results.Count(r => r.Success);
             var lines = new List<string> { $"发送完成：成功 {okCount}/{results.Count} 群" };
+            if (standingError is not null)
+            {
+                lines.Add(standingError);
+            }
+
             lines.AddRange(results.Where(r => !r.Success)
                 .Select(r => $"群 {MaskGroupId(r.GroupOpenId)} 失败：{r.Error}"));
             SendResultText.Text = string.Join(Environment.NewLine, lines);
@@ -363,11 +679,52 @@ public partial class HomeworkSuspensionWindow : Window
         }
     }
 
+    /// <summary>
+    /// 把勾选的常态化作业写入对应学科文档末尾（IsStanding 条目，来源元信息标为常态化）。
+    /// 返回 null 表示全部成功，否则返回可展示的失败摘要（不阻断发送）。
+    /// </summary>
+    private async Task<string?> ApplyStandingHomeworkAsync()
+    {
+        var checkedItems = _standingViews.Where(v => v.IsChecked).Select(v => v.Item).ToList();
+        if (checkedItems.Count == 0)
+        {
+            return null;
+        }
+
+        var now = DateTimeOffset.Now;
+        var failed = new List<string>();
+        foreach (var item in checkedItems)
+        {
+            try
+            {
+                await _store.AppendDocumentEntryAsync(item.Subject, new HomeworkDocumentEntry
+                {
+                    SourceMessageIds = [],
+                    MemberOpenId = "",
+                    SenderLabel = "常态化作业",
+                    Text = item.Content.Trim(),
+                    CreatedAt = now,
+                    IsStanding = true
+                });
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{item.Subject}：{ex.Message}");
+            }
+        }
+
+        // 落档后刷新本地文档副本（发送内容与预览同源，仍用 BuildDigest 的同一份字符串）
+        _documents = (await _store.GetDocumentsAsync(DateOnly.FromDateTime(now.LocalDateTime)))
+            .Where(d => !d.IsEmpty)
+            .ToList();
+        return failed.Count == 0 ? null : $"常态化作业落档失败：{string.Join("；", failed)}";
+    }
+
     private IReadOnlyList<string> SettingsServiceGroupWhitelist()
     {
         try
         {
-            return _settingsService?.Current.Connection.GroupWhitelist ?? [];
+            return _settingsService?.Current.Connection.TargetGroupOpenIds ?? [];
         }
         catch
         {

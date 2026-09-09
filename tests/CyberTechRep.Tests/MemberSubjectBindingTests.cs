@@ -249,7 +249,7 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
 #pragma warning restore CS0067
 
         public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
-            string? groupOpenId = null, CancellationToken ct = default)
+            string? groupOpenId = null, DateTimeOffset? createdAt = null, CancellationToken ct = default)
         {
             var existing = Items.Find(i => i.MessageId == messageId);
             if (existing is not null)
@@ -276,6 +276,11 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
             Task.FromResult<IReadOnlyList<NoticeItem>>([.. Items]);
 
         public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
+
+        public Task<bool> RemoveAsync(Guid id, CancellationToken ct = default) => Task.FromResult(false);
+
+        public Task<bool> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+            => Task.FromResult(false);
     }
 
     private sealed class FakeHomeworkStore : IHomeworkStore
@@ -284,6 +289,8 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
 
 #pragma warning disable CS0067
         public event EventHandler<HomeworkItem>? Changed;
+
+        public event EventHandler<HomeworkDocument>? DocumentChanged;
 #pragma warning restore CS0067
 
         public Task<HomeworkItem> UpsertAsync(HomeworkItem item, CancellationToken ct = default)
@@ -331,6 +338,30 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
         public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) => Task.FromResult(false);
+
+        public Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<HomeworkDocument>>([]);
+
+        public Task<HomeworkDocument> AppendDocumentEntryAsync(
+            string subject, HomeworkDocumentEntry entry, CancellationToken ct = default)
+            => Task.FromResult(new HomeworkDocument
+            {
+                Date = RetentionPolicies.BucketOf(entry.CreatedAt),
+                Subject = subject,
+                Entries = [entry],
+                UpdatedAt = DateTimeOffset.Now
+            });
+
+        public Task<HomeworkDocument?> SaveDocumentTextAsync(
+            DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+            string? editBaseline = null)
+            => Task.FromResult<HomeworkDocument?>(null);
+
+        public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+            => Task.FromResult(0);
+
+        public Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default)
+            => Task.FromResult(0);
     }
 
     private static MessageRecord Message(string memberOpenId = "member-1") => new()
@@ -987,6 +1018,8 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
 
 #pragma warning disable CS0067
         public event EventHandler<HomeworkItem>? Changed;
+
+        public event EventHandler<HomeworkDocument>? DocumentChanged;
 #pragma warning restore CS0067
 
         public Task<HomeworkItem> UpsertAsync(HomeworkItem item, CancellationToken ct = default) =>
@@ -1022,5 +1055,29 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
         public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) => Task.FromResult(false);
+
+        public Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<HomeworkDocument>>([]);
+
+        public Task<HomeworkDocument> AppendDocumentEntryAsync(
+            string subject, HomeworkDocumentEntry entry, CancellationToken ct = default)
+            => Task.FromResult(new HomeworkDocument
+            {
+                Date = RetentionPolicies.BucketOf(entry.CreatedAt),
+                Subject = subject,
+                Entries = [entry],
+                UpdatedAt = DateTimeOffset.Now
+            });
+
+        public Task<HomeworkDocument?> SaveDocumentTextAsync(
+            DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+            string? editBaseline = null)
+            => Task.FromResult<HomeworkDocument?>(null);
+
+        public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+            => Task.FromResult(0);
+
+        public Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default)
+            => Task.FromResult(0);
     }
 }

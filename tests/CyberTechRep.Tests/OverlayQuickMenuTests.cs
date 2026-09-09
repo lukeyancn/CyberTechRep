@@ -156,6 +156,12 @@ public sealed class OverlayQuickMenuTests : IDisposable
             remove { }
         }
 
+        public event EventHandler<HomeworkDocument>? DocumentChanged
+        {
+            add { }
+            remove { }
+        }
+
         public Task<HomeworkItem> UpsertAsync(HomeworkItem item, CancellationToken ct = default)
             => Task.FromResult(item);
 
@@ -173,6 +179,28 @@ public sealed class OverlayQuickMenuTests : IDisposable
         public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) => Task.FromResult(false);
+
+        public Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<HomeworkDocument>>([]);
+
+        public Task<HomeworkDocument> AppendDocumentEntryAsync(
+            string subject, HomeworkDocumentEntry entry, CancellationToken ct = default)
+            => Task.FromResult(new HomeworkDocument
+            {
+                Date = DateOnly.FromDateTime(DateTime.Now),
+                Subject = subject
+            });
+
+        public Task<HomeworkDocument?> SaveDocumentTextAsync(
+            DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+            string? editBaseline = null)
+            => Task.FromResult<HomeworkDocument?>(null);
+
+        public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+            => Task.FromResult(0);
+
+        public Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default)
+            => Task.FromResult(0);
     }
 
     private sealed class FakeCirclePipeline : IFilePipelineService

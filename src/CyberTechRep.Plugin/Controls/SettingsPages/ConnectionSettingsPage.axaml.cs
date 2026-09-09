@@ -23,7 +23,12 @@ public partial class ConnectionSettingsPage : CyberTechRepSettingsPageBase
     {
         _napCatRunner = napCatRunner;
         _napCatRunner.StatusChanged += (_, _) =>
-            Avalonia.Threading.Dispatcher.UIThread.Post(() => RaisePropertyChanged(nameof(NapCatRunnerStatusText)));
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                RaisePropertyChanged(nameof(NapCatRunnerStatusText));
+                RaisePropertyChanged(nameof(HasWebUiUrl));
+                RaisePropertyChanged(nameof(NapCatWebUiUrlText));
+            });
         InitializeComponent();
     }
 
@@ -107,9 +112,53 @@ public partial class ConnectionSettingsPage : CyberTechRepSettingsPageBase
         }
     }
 
+    // ---- 登录方式（RadioButton 双向绑定桥接 NapCatLoginMode 枚举） ----
+
+    /// <summary>扫码登录选中状态（默认；二维码经 NapCat WebUI/控制台展示）。</summary>
+    public bool IsScanQrLogin
+    {
+        get => Settings.Connection.NapCatLoginMode == NapCatLoginMode.ScanQrCode;
+        set
+        {
+            if (value)
+            {
+                Settings.Connection.NapCatLoginMode = NapCatLoginMode.ScanQrCode;
+            }
+
+            RaisePropertyChanged(nameof(IsScanQrLogin));
+            RaisePropertyChanged(nameof(IsQuickLogin));
+        }
+    }
+
+    /// <summary>QQ 号快速登录选中状态（每次启动传 <c>-q QQ号</c> 跳过扫码）。</summary>
+    public bool IsQuickLogin
+    {
+        get => Settings.Connection.NapCatLoginMode == NapCatLoginMode.QuickLoginQQ;
+        set
+        {
+            if (value)
+            {
+                Settings.Connection.NapCatLoginMode = NapCatLoginMode.QuickLoginQQ;
+            }
+
+            RaisePropertyChanged(nameof(IsScanQrLogin));
+            RaisePropertyChanged(nameof(IsQuickLogin));
+        }
+    }
+
+    /// <summary>是否已发现 NapCat WebUI 地址（控制「打开 WebUI」按钮可用性）。</summary>
+    public bool HasWebUiUrl => !string.IsNullOrEmpty(_napCatRunner.WebUiUrl);
+
+    /// <summary>WebUI 地址展示文本（未发现时给出指引）。</summary>
+    public string NapCatWebUiUrlText => HasWebUiUrl
+        ? $"WebUI 地址：{_napCatRunner.WebUiUrl}"
+        : "WebUI 地址：启动 NapCat 后自动从其配置中发现（用于扫码登录与账号管理）";
+
     private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 
     private void OnStartNapCatClicked(object? sender, RoutedEventArgs e) => _ = _napCatRunner.StartNapCatAsync();
 
     private void OnStopNapCatClicked(object? sender, RoutedEventArgs e) => _ = _napCatRunner.StopNapCatAsync();
+
+    private void OnOpenWebUiClicked(object? sender, RoutedEventArgs e) => _napCatRunner.OpenWebUi();
 }

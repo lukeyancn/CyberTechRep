@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CyberTechRep.Shared.Models;
 
 namespace CyberTechRep.Plugin.Services.MessageAccess;
 
@@ -17,6 +18,15 @@ public sealed record NapCatEventResult
     /// <summary>忽略原因（心跳/回包/不支持事件等；仅 !Handled 时有意义）。</summary>
     public string IgnoreReason { get; init; } = "";
 
+    /// <summary>true = 消息携带 file 段附件，分发前需经 <see cref="NapCatFileUrlResolver"/> 补全/刷新下载直链。</summary>
+    public bool HasFileAttachment { get; init; }
+
+    /// <summary>
+    /// 撤回事件（<c>notice.group_recall</c> / <c>notice.friend_recall</c>）：非空时经
+    /// <see cref="NapCatWsClient"/> 的 MessageRecalled 通道分发，不进入消息管道。
+    /// </summary>
+    public MessageRecallEvent? Recall { get; init; }
+
     public static NapCatEventResult Ignored(string reason) => new() { Handled = false, IgnoreReason = reason };
 }
 
@@ -30,7 +40,8 @@ public sealed record NapCatEventResult
 /// 字段映射：message_id→id；group_id→group_openid（私聊用 "private:{user_id}" 占位，
 /// 群白名单可按需放行）；user_id→author.member_openid；sender.nickname→author.username；
 /// message 数组段拼接为 content（text 原文 / at → [@qq] / face → [表情]），
-/// image 段转 attachments（复用官方附件下载链路）；字符串 message 整体作为纯文本 content。
+/// image/file 段转 attachments（image 复用官方附件下载链路；file 携带 file_id，分发前
+/// 经 <see cref="NapCatFileUrlResolver"/> 刷新直链后走同一附件链路）；字符串 message 整体作为纯文本 content。
 /// meta_event（心跳/生命周期）、echo API 回包、notice/request 事件一律忽略不下发。
 /// </para>
 /// </summary>
@@ -78,6 +89,23 @@ public static class NapCatEventNormalizer
 
             if (postType is "notice" or "request" or "message_sent")
             {
+                // 撤回上报（OneBot 11）：notice.group_recall / notice.friend_recall → 撤回事件。
+                // 其余 notice（group_increase 等）/request 维持现状忽略。
+                if (postType == "notice")
+                {
+                    var recall = TryMapRecall(root);
+                    if (recall is not null)
+                    {
+                        return new NapCatEventResult
+                        {
+                            Handled = true,
+                            DispatchType = "MESSAGE_RECALL",
+                            MappedJson = JsonSerializer.Serialize(recall),
+                            Recall = recall
+                        };
+                    }
+                }
+
                 return NapCatEventResult.Ignored($"不支持分发的事件类型：{postType}");
             }
 
@@ -90,8 +118,81 @@ public static class NapCatEventNormalizer
         }
     }
 
-    private static NapCatEventResult MapMessageEvent(JsonElement root)
+    /// <summary>
+    /// 撤回事件映射：<c>notice_type</c> = <c>group_recall</c> / <c>friend_recall</c> →
+    /// <see cref="MessageRecallEvent"/>；其余 notice 类型返回 null（维持忽略）。
+    /// 缺少 message_id 时返回 null（无法定位被撤回的消息）。
+    /// </summary>
+    public static MessageRecallEvent? TryMapRecall(JsonElement root)
     {
+        var noticeType = GetStr(root, "notice_type");
+        if (noticeType is not ("group_recall" or "friend_recall"))
+        {
+            return null;
+        }
+
+        var messageId = GetNumberAsString(root, "message_id");
+        if (messageId.Length == 0)
+        {
+            return null;
+        }
+
+        var userId = GetNumberAsString(root, "user_id");
+        var groupKey = noticeType == "group_recall"
+            ? GetNumberAsString(root, "group_id")
+            : PrivateGroupPrefix + userId;
+
+        var recalledAt = DateTimeOffset.Now;
+        if (root.TryGetProperty("time", out var timeEl)
+            && timeEl.ValueKind == JsonValueKind.Number
+            && timeEl.TryGetInt64(out var seconds)
+            && seconds > 0)
+        {
+            try
+            {
+                recalledAt = DateTimeOffset.FromUnixTimeSeconds(seconds).ToLocalTime();
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // 时间戳异常：按到达时间处理
+            }
+        }
+
+        return new MessageRecallEvent
+        {
+            MessageId = messageId,
+            GroupOpenId = groupKey,
+            SenderOpenId = userId,
+            OperatorOpenId = GetNumberAsString(root, "operator_id"),
+            RecalledAt = recalledAt,
+            FromProtocolNotice = true
+        };
+    }
+
+    /// <summary>
+    /// 原始帧是否为 OneBot 生命周期/心跳元事件（<c>meta_event.lifecycle</c> / <c>meta_event.heartbeat</c>）。
+    /// NapCat 连接状态机据此从「传输层就绪」升级为「已连接」——握手成功本身不足以判定可用。
+    /// </summary>
+    public static bool IsLifecycleOrHeartbeat(string rawJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || GetStr(root, "post_type") != "meta_event")
+            {
+                return false;
+            }
+
+            return GetStr(root, "meta_event_type") is "lifecycle" or "heartbeat";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static NapCatEventResult MapMessageEvent(JsonElement root)    {
         var messageType = GetStr(root, "message_type");
         if (messageType is not ("group" or "private"))
         {
@@ -119,9 +220,11 @@ public static class NapCatEventNormalizer
             }
         }
 
-        // message 段：数组格式（text/face/at/image/...）或纯字符串
+        // message 段：数组格式（text/face/at/image/file/...）或纯字符串
         var content = new List<string>();
         var attachments = new List<object>();
+        var hasFileAttachment = false;
+        var replyTo = "";
         if (root.TryGetProperty("message", out var messageEl))
         {
             if (messageEl.ValueKind == JsonValueKind.Array)
@@ -157,6 +260,18 @@ public static class NapCatEventNormalizer
                             content.Add("[表情]");
                             break;
 
+                        case "reply":
+                            // 需求 1：回复段（引用某条消息）→ 透传被回复消息 id，
+                            // 由消息管道判定「被回复的是作业/通知」并按对方类型与学科归并。
+                            if (data.ValueKind == JsonValueKind.Object)
+                            {
+                                replyTo = GetStr(data, "id") is { Length: > 0 } rid
+                                    ? rid
+                                    : GetNumberAsString(data, "id");
+                            }
+
+                            break;
+
                         case "image":
                             if (data.ValueKind == JsonValueKind.Object)
                             {
@@ -172,8 +287,36 @@ public static class NapCatEventNormalizer
 
                             break;
 
+                        case "file":
+                            // 群文件段 → 附件（content_type="file" 走既有文件管道归档链路）。
+                            // 直链可能缺失或受下载次数限制：file_id 随事件透传，分发前由
+                            // NapCatWsClient 经 NapCatFileUrlResolver 调 get_group_file_url 刷新。
+                            if (data.ValueKind == JsonValueKind.Object)
+                            {
+                                var fileId = GetStr(data, "file_id") is { Length: > 0 } fid
+                                    ? fid
+                                    : GetNumberAsString(data, "file_id");
+                                var fileName = GetStr(data, "file");
+                                if (fileName.Length == 0)
+                                {
+                                    fileName = fileId;
+                                }
+
+                                attachments.Add(new
+                                {
+                                    content_type = "file",
+                                    filename = fileName,
+                                    url = GetStr(data, "url"),
+                                    size = GetFileLength(data),
+                                    file_id = fileId
+                                });
+                                hasFileAttachment = true;
+                            }
+
+                            break;
+
                         default:
-                            // record/ video/ file/ json 等：文本与附件链路暂不消费，保守忽略不误映射
+                            // record/ video/ json 等：文本与附件链路暂不消费，保守忽略不误映射
                             break;
                     }
                 }
@@ -195,6 +338,9 @@ public static class NapCatEventNormalizer
             group_openid = groupKey,
             author = new { member_openid = userId, username = nickname },
             content = string.Join("", content),
+            reply_to = replyTo,
+            // 需求 4：透传 OneBot 原始时间（Unix 秒）——续传游标与启动核对共用同一时间基准
+            timestamp = GetNumberAsString(root, "time"),
             attachments
         };
 
@@ -202,7 +348,24 @@ public static class NapCatEventNormalizer
         {
             Handled = true,
             DispatchType = GroupEventTypes.GroupMessageCreate,
-            MappedJson = JsonSerializer.Serialize(mapped)
+            MappedJson = JsonSerializer.Serialize(mapped),
+            HasFileAttachment = hasFileAttachment
+        };
+    }
+
+    /// <summary>file 段 file_size（OneBot 数字/字符串）→ 字节数。</summary>
+    private static long? GetFileLength(JsonElement data)
+    {
+        if (!data.TryGetProperty("file_size", out var v))
+        {
+            return null;
+        }
+
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number when v.TryGetInt64(out var l) => l,
+            JsonValueKind.String when long.TryParse(v.GetString(), out var l) => l,
+            _ => null
         };
     }
 

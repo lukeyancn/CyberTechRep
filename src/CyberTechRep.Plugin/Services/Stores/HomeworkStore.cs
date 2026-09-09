@@ -12,6 +12,12 @@ internal sealed class HomeworkFileDto
 {
     [JsonPropertyName("items")]
     public List<HomeworkItem> Items { get; set; } = [];
+
+    /// <summary>
+    /// 学科文档（需求 1）。旧存档（仅 items）加载时按 items 一次性重建，向后兼容迁移，不丢数据。
+    /// </summary>
+    [JsonPropertyName("documents")]
+    public List<HomeworkDocument> Documents { get; set; } = [];
 }
 
 /// <summary>
@@ -28,6 +34,12 @@ internal sealed class HomeworkFileDto
 /// ③识别链「未分类」且发送者有映射 → 套用映射（SubjectSource=Manual 语义保留）；④映射只在
 /// 「人工修正未分类作业」这一个入口学习（SetSubjectAsync 门控保持）。
 /// </para>
+/// <para>
+/// 需求 1：每个学科、每个归档日维护一份<b>连续文档</b>（<see cref="HomeworkDocument"/>），
+/// 消息到达时经 <see cref="HomeworkDocumentMerger"/> 决策「新增 / 跳过重复 / 并集合并」后追加；
+/// 用户就地编辑的整篇文本存于 <see cref="HomeworkDocument.ManualText"/>，与追加写入共用同一存档，
+/// 以存档为单一事实源双向同步（编辑期间到达的新消息按「末尾增量追加」并入 ManualText，不丢不覆盖）。
+/// </para>
 /// <para>按天归档与保留期清理见 <see cref="RetentionPolicies"/>（逻辑分桶，启动/跨天清理）。</para>
 /// </summary>
 public sealed class HomeworkStore : IHomeworkStore
@@ -38,6 +50,7 @@ public sealed class HomeworkStore : IHomeworkStore
     private readonly Func<int>? _homeworkRetentionDays;
     private readonly object _lock = new();
     private List<HomeworkItem>? _items;
+    private List<HomeworkDocument>? _documents;
 
     public HomeworkStore(
         string dataDirectory,
@@ -53,6 +66,9 @@ public sealed class HomeworkStore : IHomeworkStore
 
     /// <inheritdoc />
     public event EventHandler<HomeworkItem>? Changed;
+
+    /// <inheritdoc />
+    public event EventHandler<HomeworkDocument>? DocumentChanged;
 
     /// <inheritdoc />
     public Task<HomeworkItem> UpsertAsync(HomeworkItem item, CancellationToken ct = default)
@@ -140,6 +156,12 @@ public sealed class HomeworkStore : IHomeworkStore
             };
             _items[index] = updated;
 
+            // 需求 1：学科变更时把该消息的文档条目一并迁到新学科文档（存档与展示同步）
+            if (!string.Equals(existing.Subject, updated.Subject, StringComparison.OrdinalIgnoreCase))
+            {
+                MoveDocumentEntry(existing.MessageId, existing.Subject, updated.Subject, existing.CreatedAt);
+            }
+
             // 「无法分类（未分类）→ 人工指定」触发按发送者规则学习（唯一学习入口，门控保持），
             // 并同步该成员历史作业。同步范围限定：仅「未分类」条目与此前按旧映射归类的条目
             // （识别链正常命中的历史作业不覆盖——与优先级矩阵②一致）。
@@ -167,6 +189,7 @@ public sealed class HomeworkStore : IHomeworkStore
                     }
 
                     _items[i] = CloneWithSubject(_items[i], updated.Subject);
+                    MoveDocumentEntry(_items[i].MessageId, null, updated.Subject, _items[i].CreatedAt);
                     propagated++;
                 }
             }
@@ -252,12 +275,33 @@ public sealed class HomeworkStore : IHomeworkStore
                 }
             }
 
+            var documentsRemoved = 0;
             if (removed.Count > 0)
             {
                 _items = kept;
+
+                // 需求 1：文档随条目保留期一起清理（文档日桶过期即整篇移除）
+                var keptDocuments = new List<HomeworkDocument>();
+                foreach (var doc in _documents!)
+                {
+                    if (retention > 0 && doc.Date < today.AddDays(-(retention - 1)))
+                    {
+                        documentsRemoved++;
+                        continue;
+                    }
+
+                    keptDocuments.Add(doc);
+                }
+
+                if (documentsRemoved > 0)
+                {
+                    _documents = keptDocuments;
+                }
+
                 Save();
                 _logger.LogInformation(
-                    "作业保留期清理完成：删除 {Count} 条过期桶（当天条目不受影响）", removed.Count);
+                    "作业保留期清理完成：删除 {Count} 条过期桶（当天条目不受影响），文档 {Documents} 篇",
+                    removed.Count, documentsRemoved);
             }
         }
 
@@ -286,6 +330,7 @@ public sealed class HomeworkStore : IHomeworkStore
 
             removed = _items[index];
             _items.RemoveAt(index);
+            RemoveDocumentEntries([removed.MessageId]);
             Save();
             _logger.LogInformation("作业已删除（仅该条，不影响按发送者学科映射）Id={Id}, MessageId={MessageId}, Subject={Subject}",
                 removed.Id, removed.MessageId, removed.Subject);
@@ -294,6 +339,487 @@ public sealed class HomeworkStore : IHomeworkStore
         // 锁外触发：悬浮窗合并刷新（被删条目从视图移除）
         RaiseChanged(removed);
         return Task.FromResult(true);
+    }
+
+    // ============ 需求 1：学科文档 ============
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default)
+    {
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            IReadOnlyList<HomeworkDocument> documents = _documents!
+                .Where(d => d.Date == date && !d.IsEmpty)
+                .OrderBy(d => d.Subject, StringComparer.CurrentCulture)
+                .ToList();
+            return Task.FromResult(documents);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<HomeworkDocument> AppendDocumentEntryAsync(
+        string subject, HomeworkDocumentEntry entry, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        var normalizedSubject = string.IsNullOrWhiteSpace(subject)
+            ? HomeworkSubjectResolver.Unclassified
+            : subject.Trim();
+        var date = RetentionPolicies.BucketOf(entry.CreatedAt);
+        HomeworkDocument document;
+        DocumentMergeDecision decision;
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            document = GetOrCreateDocument(date, normalizedSubject);
+            var plan = HomeworkDocumentMerger.Plan(document.Entries, entry.Text, entry.MemberOpenId);
+            decision = plan.Decision;
+
+            switch (plan.Decision)
+            {
+                case DocumentMergeDecision.Duplicate:
+                    _logger.LogInformation(
+                        "作业文档去重合并：完全重复，已跳过（Subject={Subject}, MessageId={MessageId}）",
+                        normalizedSubject, entry.SourceMessageIds.FirstOrDefault());
+                    break;
+
+                case DocumentMergeDecision.MergeIntoExisting:
+                {
+                    var target = document.Entries[plan.ExistingIndex];
+                    var sourceIds = target.SourceMessageIds
+                        .Concat(entry.SourceMessageIds)
+                        .Where(id => !string.IsNullOrWhiteSpace(id))
+                        .Distinct(StringComparer.Ordinal)
+                        .ToList();
+                    document.Entries[plan.ExistingIndex] = new HomeworkDocumentEntry
+                    {
+                        Id = target.Id,
+                        SourceMessageIds = sourceIds,
+                        MemberOpenId = string.IsNullOrEmpty(target.MemberOpenId) ? entry.MemberOpenId : target.MemberOpenId,
+                        SenderLabel = string.IsNullOrEmpty(target.SenderLabel) ? entry.SenderLabel : target.SenderLabel,
+                        Text = plan.MergedText,
+                        CreatedAt = target.CreatedAt,
+                        IsStanding = target.IsStanding && entry.IsStanding
+                    };
+
+                    // 手工编辑过：新内容按末尾增量追加并入 ManualText，保留用户删改（存档为单一事实源）
+                    var appended = AppendToManualText(document, plan.NewLines);
+                    document.UpdatedAt = DateTimeOffset.Now;
+                    Save();
+                    _logger.LogInformation(
+                        "作业文档去重合并：部分重叠已并入（Subject={Subject}, MessageId={MessageId}, 新增行={Lines}, 手工文本追加={Appended}）",
+                        normalizedSubject, entry.SourceMessageIds.FirstOrDefault(), plan.NewLines.Count, appended);
+                    break;
+                }
+
+                default:
+                {
+                    document.Entries.Add(entry);
+                    var appended = AppendToManualText(document, HomeworkDocumentMerger.SplitLines(entry.Text));
+                    document.UpdatedAt = DateTimeOffset.Now;
+                    Save();
+                    _logger.LogInformation(
+                        "作业文档已追加写入（Subject={Subject}, Date={Date}, MessageId={MessageId}, 手工文本追加={Appended}, 条目数={Count}）",
+                        normalizedSubject, date, entry.SourceMessageIds.FirstOrDefault(), appended,
+                        document.Entries.Count);
+                    break;
+                }
+            }
+        }
+
+        if (decision != DocumentMergeDecision.Duplicate)
+        {
+            RaiseDocumentChanged(document);
+        }
+
+        return Task.FromResult(document);
+    }
+
+    /// <inheritdoc />
+    public Task<HomeworkDocument?> SaveDocumentTextAsync(
+        DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+        string? editBaseline = null)
+    {
+        var normalizedSubject = string.IsNullOrWhiteSpace(subject)
+            ? HomeworkSubjectResolver.Unclassified
+            : subject.Trim();
+        HomeworkDocument? document = null;
+        var trimmed = manualText?.Replace("\r\n", "\n").TrimEnd();
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            if (string.IsNullOrEmpty(trimmed))
+            {
+                // 清空手工文本：回到按条目渲染（文档不存在则无需创建）
+                var existing = FindDocument(date, normalizedSubject);
+                if (existing is null)
+                {
+                    return Task.FromResult<HomeworkDocument?>(null);
+                }
+
+                if (existing.ManualText is null)
+                {
+                    return Task.FromResult<HomeworkDocument?>(existing);
+                }
+
+                existing.ManualText = null;
+                existing.UpdatedAt = DateTimeOffset.Now;
+                document = existing;
+                if (document.IsEmpty)
+                {
+                    _documents!.Remove(existing);
+                }
+
+                Save();
+                _logger.LogInformation("作业文档手工文本已清空，回到按条目渲染（Subject={Subject}, Date={Date}）",
+                    normalizedSubject, date);
+            }
+            else
+            {
+                document = GetOrCreateDocument(date, normalizedSubject);
+
+                // 三方合并（需求 1：编辑期间到达的新消息不丢不覆盖）
+                var merged = MergeLateLines(document, trimmed, editBaseline);
+                if (string.Equals(document.ManualText, merged, StringComparison.Ordinal))
+                {
+                    return Task.FromResult<HomeworkDocument?>(document);
+                }
+
+                document.ManualText = merged;
+                document.UpdatedAt = DateTimeOffset.Now;
+                Save();
+                _logger.LogInformation("作业文档手工编辑已回写存档（Subject={Subject}, Date={Date}, 长度={Length}）",
+                    normalizedSubject, date, merged.Length);
+            }
+        }
+
+        if (document is not null)
+        {
+            RaiseDocumentChanged(document);
+        }
+
+        return Task.FromResult(document);
+    }
+
+    /// <inheritdoc />
+    public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(messageId))
+        {
+            return Task.FromResult(0);
+        }
+
+        List<HomeworkItem> removed = [];
+        List<HomeworkDocument> touched = [];
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            removed.AddRange(_items!.Where(i => string.Equals(i.MessageId, messageId, StringComparison.Ordinal)));
+            if (removed.Count > 0)
+            {
+                _items.RemoveAll(i => string.Equals(i.MessageId, messageId, StringComparison.Ordinal));
+            }
+
+            touched.AddRange(RemoveDocumentEntries([messageId]));
+            if (removed.Count > 0 || touched.Count > 0)
+            {
+                Save();
+                _logger.LogInformation(
+                    "按消息 id 移除作业完成（MessageId={MessageId}, 作业条目={Items}, 文档={Documents}）",
+                    messageId, removed.Count, touched.Count);
+            }
+        }
+
+        foreach (var item in removed)
+        {
+            RaiseChanged(item);
+        }
+
+        foreach (var document in touched)
+        {
+            RaiseDocumentChanged(document);
+        }
+
+        return Task.FromResult(removed.Count);
+    }
+
+    /// <inheritdoc />
+    public Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default)
+    {
+        var normalizedSubject = string.IsNullOrWhiteSpace(subject)
+            ? HomeworkSubjectResolver.Unclassified
+            : subject.Trim();
+        List<HomeworkItem> removed = [];
+        HomeworkDocument? document = null;
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            document = FindDocument(date, normalizedSubject);
+            if (document is not null)
+            {
+                _documents!.Remove(document);
+            }
+
+            var messageIds = document?.Entries
+                .SelectMany(e => e.SourceMessageIds)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToHashSet(StringComparer.Ordinal) ?? [];
+
+            // 条目匹配口径：文档有来源消息 id 时按 id 精确匹配（稳定键，与作业条目的时间桶无关——
+            // 补拉/迁移的历史消息其 CreatedAt 可能不落在文档日桶内）；无来源 id（手工编辑出来的空壳文档）
+            // 才退回「同一天 + 同科」的粗匹配。
+            removed.AddRange(_items!.Where(i => messageIds.Count > 0
+                ? messageIds.Contains(i.MessageId)
+                : RetentionPolicies.BucketOf(i.CreatedAt) == date
+                  && string.Equals(i.Subject, normalizedSubject, StringComparison.OrdinalIgnoreCase)));
+            if (removed.Count > 0)
+            {
+                _items.RemoveAll(i => removed.Any(r => r.Id == i.Id));
+            }
+
+            if (document is not null || removed.Count > 0)
+            {
+                Save();
+                _logger.LogInformation(
+                    "学科文档已整体移除（Subject={Subject}, Date={Date}, 作业条目={Items}）",
+                    normalizedSubject, date, removed.Count);
+            }
+        }
+
+        foreach (var item in removed)
+        {
+            RaiseChanged(item);
+        }
+
+        if (document is not null)
+        {
+            RaiseDocumentChanged(document);
+        }
+
+        return Task.FromResult(removed.Count);
+    }
+
+    /// <summary>取或创建文档（调用方持锁）。</summary>
+    private HomeworkDocument GetOrCreateDocument(DateOnly date, string subject)
+    {
+        var existing = FindDocument(date, subject);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var created = new HomeworkDocument
+        {
+            Date = date,
+            Subject = subject,
+            UpdatedAt = DateTimeOffset.Now
+        };
+        _documents!.Add(created);
+        return created;
+    }
+
+    private HomeworkDocument? FindDocument(DateOnly date, string subject) =>
+        _documents!.FirstOrDefault(d =>
+            d.Date == date && string.Equals(d.Subject, subject, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// 编辑回写时的三方合并（调用方持锁）：把「编辑期间新落档、且不在编辑基线、也不在编辑稿中」
+    /// 的条目行按末尾增量并入编辑稿。
+    /// <para>
+    /// 基线（<paramref name="editBaseline"/>）是进入编辑态那一刻的渲染文本，用于区分
+    /// 「用户删掉的旧行」与「编辑期间新到的行」：前者保留删除、后者补齐——这是
+    /// 「消息到达 vs 用户编辑中」并发竞争的正解（存档为单一事实源，双向同步不丢内容）。
+    /// </para>
+    /// <para>
+    /// 基线为空（null）= 无三方语义，按整篇覆盖返回编辑稿（旧行为，供非编辑器调用方使用）。
+    /// </para>
+    /// </summary>
+    private static string MergeLateLines(
+        HomeworkDocument document, string editorText, string? editBaseline)
+    {
+        if (editBaseline is null)
+        {
+            return editorText;
+        }
+
+        var baselineKeys = HomeworkDocumentMerger.SplitLines(editBaseline)
+            .Select(HomeworkDocumentMerger.Normalize)
+            .Where(k => k.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var editorLines = HomeworkDocumentMerger.SplitLines(editorText);
+        var seen = editorLines
+            .Select(HomeworkDocumentMerger.Normalize)
+            .Where(k => k.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var lateLines = new List<string>();
+        foreach (var entry in document.Entries.OrderBy(e => e.CreatedAt))
+        {
+            foreach (var line in HomeworkDocumentMerger.SplitLines(entry.Text))
+            {
+                var key = HomeworkDocumentMerger.Normalize(line);
+                if (key.Length == 0 || baselineKeys.Contains(key) || !seen.Add(key))
+                {
+                    continue;
+                }
+
+                lateLines.Add(line);
+            }
+        }
+
+        if (lateLines.Count == 0)
+        {
+            return editorText;
+        }
+
+        return editorText.TrimEnd()
+            + Environment.NewLine
+            + string.Join(Environment.NewLine, lateLines);
+    }
+
+    /// <summary>
+    /// 手工文本增量追加（调用方持锁）：文档存在手工文本时把新增行并入末尾（归一化去重），
+    /// 返回追加行数。未编辑过（ManualText 为空）时不做任何事（展示直接来自 Entries）。
+    /// </summary>
+    private static int AppendToManualText(HomeworkDocument document, IReadOnlyList<string> newLines)
+    {
+        if (document.ManualText is not { Length: > 0 } manual || newLines.Count == 0)
+        {
+            return 0;
+        }
+
+        var existingKeys = HomeworkDocumentMerger.SplitLines(manual)
+            .Select(HomeworkDocumentMerger.Normalize)
+            .ToHashSet(StringComparer.Ordinal);
+        var added = newLines
+            .Where(line => !string.IsNullOrWhiteSpace(line) && existingKeys.Add(HomeworkDocumentMerger.Normalize(line)))
+            .ToList();
+        if (added.Count == 0)
+        {
+            return 0;
+        }
+
+        document.ManualText = manual.TrimEnd() + Environment.NewLine + string.Join(Environment.NewLine, added);
+        return added.Count;
+    }
+
+    /// <summary>
+    /// 从文档中移除指定来源消息（调用方持锁）：命中条目整体移除（合并条目随任一来源撤回而移除），
+    /// 手工文本按行匹配尽力移除（用户已自行删改过则保持原样）。返回受影响的文档。
+    /// </summary>
+    private List<HomeworkDocument> RemoveDocumentEntries(IReadOnlyCollection<string> messageIds)
+    {
+        var touched = new List<HomeworkDocument>();
+        if (_documents is null || messageIds.Count == 0)
+        {
+            return touched;
+        }
+
+        var idSet = messageIds.ToHashSet(StringComparer.Ordinal);
+        for (var i = _documents.Count - 1; i >= 0; i--)
+        {
+            var document = _documents[i];
+            var removedTexts = new List<string>();
+            var before = document.Entries.Count;
+            for (var j = document.Entries.Count - 1; j >= 0; j--)
+            {
+                var entry = document.Entries[j];
+                if (entry.SourceMessageIds.Any(idSet.Contains))
+                {
+                    removedTexts.AddRange(HomeworkDocumentMerger.SplitLines(entry.Text));
+                    document.Entries.RemoveAt(j);
+                }
+            }
+
+            var removed = before - document.Entries.Count;
+            if (removed == 0)
+            {
+                continue;
+            }
+
+            RemoveLinesFromManualText(document, removedTexts);
+            document.UpdatedAt = DateTimeOffset.Now;
+            if (document.IsEmpty)
+            {
+                _documents.RemoveAt(i);
+            }
+            else
+            {
+                touched.Add(document);
+            }
+
+            _logger.LogInformation(
+                "撤回联动：文档条目已移除（Subject={Subject}, Date={Date}, 移除条目={Removed}, 剩余={Left}）",
+                document.Subject, document.Date, removed, document.Entries.Count);
+        }
+
+        return touched;
+    }
+
+    /// <summary>从手工文本中移除与给定行归一化相同的行（调用方持锁）。</summary>
+    private static void RemoveLinesFromManualText(HomeworkDocument document, IReadOnlyList<string> removedLines)
+    {
+        if (document.ManualText is not { Length: > 0 } manual || removedLines.Count == 0)
+        {
+            return;
+        }
+
+        var keys = removedLines.Select(HomeworkDocumentMerger.Normalize)
+            .Where(k => k.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+        var kept = HomeworkDocumentMerger.SplitLines(manual)
+            .Where(line => !keys.Contains(HomeworkDocumentMerger.Normalize(line)))
+            .ToList();
+        if (kept.Count == HomeworkDocumentMerger.SplitLines(manual).Count)
+        {
+            return; // 用户已自行删改：不动
+        }
+
+        document.ManualText = kept.Count == 0 ? null : string.Join(Environment.NewLine, kept);
+    }
+
+    /// <summary>学科变更时把文档条目从旧学科文档迁到新学科文档（调用方持锁）。</summary>
+    private void MoveDocumentEntry(string messageId, string? oldSubject, string newSubject, DateTimeOffset createdAt)
+    {
+        if (_documents is null || string.IsNullOrWhiteSpace(messageId))
+        {
+            return;
+        }
+
+        var date = RetentionPolicies.BucketOf(createdAt);
+        for (var i = _documents.Count - 1; i >= 0; i--)
+        {
+            var document = _documents[i];
+            if (document.Date != date
+                || (oldSubject is not null && string.Equals(document.Subject, newSubject, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var index = document.Entries.FindIndex(e =>
+                e.SourceMessageIds.Contains(messageId, StringComparer.Ordinal));
+            if (index < 0)
+            {
+                continue;
+            }
+
+            var entry = document.Entries[index];
+            document.Entries.RemoveAt(index);
+            RemoveLinesFromManualText(document, HomeworkDocumentMerger.SplitLines(entry.Text));
+            document.UpdatedAt = DateTimeOffset.Now;
+            if (document.IsEmpty)
+            {
+                _documents.RemoveAt(i);
+            }
+
+            var target = GetOrCreateDocument(date, newSubject);
+            target.Entries.Add(entry);
+            target.UpdatedAt = DateTimeOffset.Now;
+            _logger.LogInformation(
+                "作业文档条目随学科修正迁移（MessageId={MessageId}, →{Subject}）", messageId, newSubject);
+            return;
+        }
     }
 
     /// <summary>
@@ -404,13 +930,63 @@ public sealed class HomeworkStore : IHomeworkStore
 
         var dto = JsonStoreFile.LoadOrRestore<HomeworkFileDto>(_filePath, _logger);
         _items = dto?.Items ?? [];
+        _documents = dto?.Documents ?? [];
+
+        // 向后兼容迁移：旧存档只有 items（无 documents）时，按学科+日期重建文档，
+        // 保证升级后立即可看到「每学科一份连续文档」的历史内容。
+        if (_documents.Count == 0 && _items.Count > 0)
+        {
+            RebuildDocumentsFromItems();
+            if (_documents.Count > 0)
+            {
+                Save();
+                _logger.LogInformation("作业文档结构迁移完成：由 {Count} 条历史作业重建 {Documents} 篇学科文档",
+                    _items.Count, _documents.Count);
+            }
+        }
+    }
+
+    /// <summary>由历史作业条目重建学科文档（每学科每日一篇，条目按时间正序）。</summary>
+    private void RebuildDocumentsFromItems()
+    {
+        foreach (var group in _items!
+                     .Where(i => !string.IsNullOrWhiteSpace(i.Content))
+                     .GroupBy(i => (Date: RetentionPolicies.BucketOf(i.CreatedAt),
+                         Subject: string.IsNullOrWhiteSpace(i.Subject) ? HomeworkSubjectResolver.Unclassified : i.Subject.Trim()))
+                     .OrderBy(g => g.Key.Date)
+                     .ThenBy(g => g.Key.Subject, StringComparer.CurrentCulture))
+        {
+            var document = new HomeworkDocument
+            {
+                Date = group.Key.Date,
+                Subject = group.Key.Subject,
+                UpdatedAt = DateTimeOffset.Now
+            };
+            foreach (var item in group.OrderBy(i => i.CreatedAt))
+            {
+                document.Entries.Add(new HomeworkDocumentEntry
+                {
+                    SourceMessageIds = [item.MessageId],
+                    MemberOpenId = item.MemberOpenId,
+                    SenderLabel = "",
+                    Text = item.Content,
+                    CreatedAt = item.CreatedAt
+                });
+            }
+
+            _documents!.Add(document);
+        }
     }
 
     private void Save()
     {
         try
         {
-            JsonStoreFile.SaveWithBackup(_filePath, JsonStoreFile.Serialize(new HomeworkFileDto { Items = _items! }));
+            JsonStoreFile.SaveWithBackup(_filePath, JsonStoreFile.Serialize(new HomeworkFileDto
+            {
+                Items = _items!,
+                Documents = _documents!
+            }));
         }
         catch (Exception ex)
         {
@@ -427,6 +1003,18 @@ public sealed class HomeworkStore : IHomeworkStore
         catch (Exception ex)
         {
             _logger.LogError(ex, "HomeworkStore.Changed 订阅者异常（已吞掉，不影响存储）");
+        }
+    }
+
+    private void RaiseDocumentChanged(HomeworkDocument document)
+    {
+        try
+        {
+            DocumentChanged?.Invoke(this, document);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "HomeworkStore.DocumentChanged 订阅者异常（已吞掉，不影响存储）");
         }
     }
 }

@@ -1,7 +1,9 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using CyberTechRep.Plugin.Services.Overlays;
 using CyberTechRep.Shared.Abstractions;
 using CyberTechRep.Shared.Models;
@@ -60,16 +62,23 @@ internal static class NoticeViewFilter
 /// SettingsChanged 双向同步勾选态；Store.Changed 触发 200ms debounce 合并刷新；
 /// 标题栏 BeginMoveDrag 拖拽、角部 Thumb 缩放；位置/大小由 <see cref="SuspensionWindowController"/> 持久化。
 /// </summary>
-public partial class NoticeSuspensionWindow : Window
+public partial class NoticeSuspensionWindow : Window, IOverlayInteractiveRegionProvider
 {
     /// <summary>Changed 事件合并刷新的 debounce 间隔（限流，避免刷屏）。</summary>
     internal static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(200);
 
     private readonly INoticeStore _store = null!;
+    private readonly IMessageReclassifyService? _reclassify;
     private readonly DispatcherTimer _debounceTimer = null!;
     private readonly OverlayQuickMenu _quickMenu = null!;
+
+    /// <summary>需求 6：右键菜单展开时记录的只读内容文本框（MenuItem 不在可视树内）。</summary>
+    private TextBox? _contextMenuTextBox;
     private int _refreshing;
     private NoticeListViewMode _viewMode = NoticeListViewMode.Unread;
+
+    /// <summary>可交互区域缓存（需求 6；穿透模式下 WM_NCHITTEST 高频读取，只做返回不做计算）。</summary>
+    private Rect _interactiveRegion;
 
     public NoticeSuspensionWindow()
     {
@@ -80,9 +89,11 @@ public partial class NoticeSuspensionWindow : Window
     public NoticeSuspensionWindow(
         INoticeStore store,
         ISuspensionWindowController? overlays = null,
-        ISettingsService? settingsService = null)
+        ISettingsService? settingsService = null,
+        IMessageReclassifyService? reclassify = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _reclassify = reclassify;
         InitializeComponent();
         _debounceTimer = new DispatcherTimer { Interval = RefreshDebounce };
         _debounceTimer.Tick += (_, _) =>
@@ -91,6 +102,11 @@ public partial class NoticeSuspensionWindow : Window
             _ = RefreshAsync();
         };
         _store.Changed += OnStoreChanged;
+
+        // 需求 6：维护「通知内容可交互区域」（滚动/布局变化后重算；穿透模式下命中测试据此分流）
+        LayoutUpdated += (_, _) => UpdateInteractiveRegion();
+        NoticeScroll.ScrollChanged += (_, _) => UpdateInteractiveRegion();
+        SizeChanged += (_, _) => UpdateInteractiveRegion();
 
         // 右上角「⋯」快捷菜单：置顶/固定/鼠标穿透开关与设置页等价（共享 OverlayQuickMenu），
         // 切换即时生效并回写 ISettingsService（经控制器的 ApplySettingsAsync 路径应用），
@@ -101,6 +117,83 @@ public partial class NoticeSuspensionWindow : Window
         QuickMenuButton.Flyout = _quickMenu.Flyout;
 
         _ = RefreshAsync();
+    }
+
+    /// <summary>
+    /// 需求 6：鼠标穿透开启时保留交互的区域 = 所有通知内容只读文本框的并集，裁剪到滚动视口内。
+    /// 窗口客户区逻辑坐标（DIP）；空矩形 = 整窗穿透（列表为空/未布局时）。
+    /// </summary>
+    public Rect GetInteractiveRegion() => _interactiveRegion;
+
+    /// <summary>重算可交互区域（UI 线程；布局/滚动/刷新后调用）。异常一律吞掉，退回整窗穿透。</summary>
+    private void UpdateInteractiveRegion()
+    {
+        try
+        {
+            var viewport = GetViewportInWindow();
+            if (viewport is not { Width: > 0, Height: > 0 } clip)
+            {
+                _interactiveRegion = default;
+                return;
+            }
+
+            var hasRegion = false;
+            double left = 0, top = 0, right = 0, bottom = 0;
+            foreach (var textBox in NoticeList.GetVisualDescendants().OfType<TextBox>())
+            {
+                if (!textBox.IsVisible || textBox.Bounds.Width <= 0 || textBox.Bounds.Height <= 0)
+                {
+                    continue;
+                }
+
+                var origin = textBox.TranslatePoint(new Point(0, 0), this);
+                if (origin is null)
+                {
+                    continue;
+                }
+
+                // 裁剪到滚动视口（滚出视口的行应保持穿透），再并入并集
+                var x1 = Math.Max(origin.Value.X, clip.X);
+                var y1 = Math.Max(origin.Value.Y, clip.Y);
+                var x2 = Math.Min(origin.Value.X + textBox.Bounds.Width, clip.Right);
+                var y2 = Math.Min(origin.Value.Y + textBox.Bounds.Height, clip.Bottom);
+                if (x2 <= x1 || y2 <= y1)
+                {
+                    continue;
+                }
+
+                if (!hasRegion)
+                {
+                    left = x1;
+                    top = y1;
+                    right = x2;
+                    bottom = y2;
+                    hasRegion = true;
+                }
+                else
+                {
+                    left = Math.Min(left, x1);
+                    top = Math.Min(top, y1);
+                    right = Math.Max(right, x2);
+                    bottom = Math.Max(bottom, y2);
+                }
+            }
+
+            _interactiveRegion = hasRegion
+                ? new Rect(left, top, right - left, bottom - top)
+                : default;
+        }
+        catch
+        {
+            _interactiveRegion = default; // 兜底：整窗穿透（不因 UI 异常导致「点不透」）
+        }
+    }
+
+    /// <summary>滚动视口在窗口客户区中的矩形（列表区域）；未布局完成返回 null。</summary>
+    private Rect? GetViewportInWindow()
+    {
+        var origin = NoticeScroll.TranslatePoint(new Point(0, 0), this);
+        return origin is null ? null : new Rect(origin.Value, NoticeScroll.Bounds.Size);
     }
 
     /// <summary>当前视图模式（测试用）。</summary>
@@ -164,6 +257,7 @@ public partial class NoticeSuspensionWindow : Window
             EmptyText.Text = _viewMode == NoticeListViewMode.Unread ? "暂无未读通知" : "今天没有已读通知";
             EmptyText.IsVisible = rows.Count == 0;
             NoticeList.ItemsSource = rows;
+            UpdateInteractiveRegion();
         }
         catch
         {
@@ -191,9 +285,57 @@ public partial class NoticeSuspensionWindow : Window
         _ = RefreshAsync();
     }
 
-    private async void OnRowActionButtonClick(object? sender, RoutedEventArgs e)
+    /// <summary>右键菜单展开时记录所属的只读文本框（MenuItem 不在可视树内，经 ContextMenu 的 PlacementTarget 取）。</summary>
+    private void OnNoticeContentMenuOpened(object? sender, RoutedEventArgs e)
     {
+        _contextMenuTextBox = sender is ContextMenu { PlacementTarget: TextBox box } ? box : null;
+    }
+
+    /// <summary>
+    /// 需求 6：复制通知内容。悬浮窗带 WS_EX_NOACTIVATE（不抢焦点），键盘 Ctrl+C 可能收不到，
+    /// 因此显式提供右键「复制」——有选中文本复制选中部分，无选中复制全文。
+    /// </summary>
+    private async void OnCopyNoticeContentClick(object? sender, RoutedEventArgs e)
+    {
+        var box = _contextMenuTextBox;
+        if (box is null)
+        {
+            return;
+        }
+
+        var text = box.SelectedText;
+        if (string.IsNullOrEmpty(text))
+        {
+            text = box.Text;
+        }
+
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
         try
+        {
+            var clipboard = TopLevel.GetTopLevel(box)?.Clipboard;
+            if (clipboard is not null)
+            {
+                await clipboard.SetTextAsync(text);
+            }
+        }
+        catch
+        {
+            // 剪贴板被其他进程占用等：复制失败不影响悬浮窗（用户可重试）
+        }
+    }
+
+    /// <summary>需求 6：全选通知内容（配合右键「复制」在无键盘焦点时也能整段复制）。</summary>
+    private void OnSelectAllNoticeContentClick(object? sender, RoutedEventArgs e)
+    {
+        _contextMenuTextBox?.SelectAll();
+    }
+
+    private async void OnRowActionButtonClick(object? sender, RoutedEventArgs e)
+    {        try
         {
             if (sender is not Button { DataContext: NoticeRow row })
             {
@@ -215,6 +357,61 @@ public partial class NoticeSuspensionWindow : Window
         {
             // 标记失败保持条目，不中断
         }
+    }
+
+    // ---- 需求 5：通知 → 作业一键换类 ----
+
+    /// <summary>「转为作业」候选学科（固定七学科 + 未分类；本条已有通知学科时置顶）。</summary>
+    internal static IReadOnlyList<string> BuildReclassifySubjectCandidates(string? noticeSubject)
+    {
+        var candidates = new List<string>();
+        var subject = noticeSubject?.Trim() ?? "";
+        if (subject.Length > 0 && !HomeworkSuspensionWindow.BaseSubjects.Contains(subject, StringComparer.Ordinal))
+        {
+            candidates.Add(subject);
+        }
+
+        candidates.AddRange(HomeworkSuspensionWindow.BaseSubjects);
+        if (!candidates.Contains("未分类", StringComparer.Ordinal))
+        {
+            candidates.Add("未分类");
+        }
+
+        return candidates;
+    }
+
+    /// <summary>
+    /// 「转为作业」：弹出学科菜单，选择后把该通知连同内容/来源/时间元信息迁入作业存档
+    /// （写入消息类型覆盖记录，重启后保持且重投不回摆）。
+    /// </summary>
+    private void OnNoticeToHomeworkClick(object? sender, RoutedEventArgs e)
+    {
+        if (_reclassify is null || sender is not Control { DataContext: NoticeRow row } target)
+        {
+            return;
+        }
+
+        var flyout = new MenuFlyout();
+        foreach (var subject in BuildReclassifySubjectCandidates(row.Item.Subject))
+        {
+            var item = new MenuItem { Header = subject };
+            var chosen = subject;
+            item.Click += async (_, _) =>
+            {
+                try
+                {
+                    await _reclassify.MoveNoticeToHomeworkAsync(row.Item.Id, chosen);
+                    // 通知存档移除 + 作业文档写入各自触发 Changed → 两窗 debounce 刷新
+                }
+                catch
+                {
+                    // 迁移失败保持现状，不中断悬浮窗
+                }
+            };
+            flyout.Items.Add(item);
+        }
+
+        flyout.ShowAt(target);
     }
 
     // ---- 右上角快捷菜单（与设置页等价的开关，即时生效 + 回写 ISettingsService）----

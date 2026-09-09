@@ -580,7 +580,7 @@ internal sealed class MessageDumpServiceTests_FakeNoticeStore : INoticeStore
 #pragma warning restore CS0067
 
     public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
-        string? groupOpenId = null, CancellationToken ct = default)
+        string? groupOpenId = null, DateTimeOffset? createdAt = null, CancellationToken ct = default)
     {
         var existing = Items.Find(i => i.MessageId == messageId);
         if (existing is not null)
@@ -613,4 +613,9 @@ internal sealed class MessageDumpServiceTests_FakeNoticeStore : INoticeStore
         Task.FromResult<IReadOnlyList<NoticeItem>>([.. Items]);
 
     public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
+
+    public Task<bool> RemoveAsync(Guid id, CancellationToken ct = default) => Task.FromResult(false);
+
+    public Task<bool> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+        => Task.FromResult(false);
 }

@@ -48,6 +48,9 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
 #pragma warning disable CS0067 // 测试替身：连接状态变化事件不触发
         public event EventHandler<ConnectionStatus>? StatusChanged;
+
+        // 测试替身：消息撤回事件不触发
+        public event EventHandler<MessageRecallEvent>? MessageRecalled;
 #pragma warning restore CS0067
 
         public Task StartAsync(CancellationToken ct = default)
@@ -62,6 +65,10 @@ public sealed class MessageDispatchServiceTests : IDisposable
             => Task.FromResult<IReadOnlyList<MessageRecord>>([]);
 
         public Task ReconnectAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<System.Text.Json.JsonElement?> CallProtocolApiAsync(
+            string action, IReadOnlyDictionary<string, object?> parameters, CancellationToken ct = default)
+            => Task.FromResult<System.Text.Json.JsonElement?>(null);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
@@ -117,7 +124,7 @@ public sealed class MessageDispatchServiceTests : IDisposable
         public event EventHandler<NoticeItem>? Changed;
 
         public async Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
-            string? groupOpenId = null, CancellationToken ct = default)
+            string? groupOpenId = null, DateTimeOffset? createdAt = null, CancellationToken ct = default)
         {
             if (OnAddOrUpdate is not null)
             {
@@ -163,6 +170,17 @@ public sealed class MessageDispatchServiceTests : IDisposable
                 Items.Where(i => DateOnly.FromDateTime(i.CreatedAt.LocalDateTime) == date).ToList());
 
         public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
+
+        public Task<bool> RemoveAsync(Guid id, CancellationToken ct = default) => Task.FromResult(false);
+
+        /// <summary>需求 1 撤回联动：记录被请求删除的消息 id（不改变既有删除语义）。</summary>
+        public List<string> RemoveByMessageIdCalls { get; } = [];
+
+        public Task<bool> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+        {
+            RemoveByMessageIdCalls.Add(messageId);
+            return Task.FromResult(false);
+        }
     }
 
     private sealed class FakeHomeworkStore : IHomeworkStore
@@ -172,6 +190,10 @@ public sealed class MessageDispatchServiceTests : IDisposable
         public List<(Guid Id, string Subject)> SetSubjectCalls { get; } = [];
 
         public event EventHandler<HomeworkItem>? Changed;
+
+#pragma warning disable CS0067 // 测试替身：文档变化事件不触发
+        public event EventHandler<HomeworkDocument>? DocumentChanged;
+#pragma warning restore CS0067
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
         {
@@ -223,6 +245,42 @@ public sealed class MessageDispatchServiceTests : IDisposable
                 Items.Where(i => DateOnly.FromDateTime(i.CreatedAt.LocalDateTime) == date).ToList());
 
         public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
+
+        public Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<HomeworkDocument>>([]);
+
+        public Task<HomeworkDocument> AppendDocumentEntryAsync(
+            string subject, HomeworkDocumentEntry entry, CancellationToken ct = default)
+        {
+            DocumentAppendCalls.Add((subject, entry));
+            return Task.FromResult(new HomeworkDocument
+            {
+                Date = RetentionPolicies.BucketOf(entry.CreatedAt),
+                Subject = subject,
+                Entries = [entry],
+                UpdatedAt = DateTimeOffset.Now
+            });
+        }
+
+        /// <summary>需求 1c：记录学科文档追加调用（学科 + 条目），用于断言回复链归并目标学科。</summary>
+        public List<(string Subject, HomeworkDocumentEntry Entry)> DocumentAppendCalls { get; } = [];
+
+        public Task<HomeworkDocument?> SaveDocumentTextAsync(
+            DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+            string? editBaseline = null)
+            => Task.FromResult<HomeworkDocument?>(null);
+
+        /// <summary>需求 1 撤回联动：记录被请求删除的消息 id（不改变既有删除语义）。</summary>
+        public List<string> RemoveByMessageIdCalls { get; } = [];
+
+        public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+        {
+            RemoveByMessageIdCalls.Add(messageId);
+            return Task.FromResult(0);
+        }
+
+        public Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default)
+            => Task.FromResult(0);
     }
 
     private sealed class FakeFilePipeline : IFilePipelineService
@@ -302,7 +360,8 @@ public sealed class MessageDispatchServiceTests : IDisposable
         RetryQueueService? retryQueue = null,
         FakeUpdateNotify? update = null,
         JsonPendingConfirmStore? pending = null,
-        INoticeStore? noticesOverride = null)
+        INoticeStore? noticesOverride = null,
+        ConnectionSettings? connectionSettings = null)
     {
         return new MessageDispatchService(
             ingest ?? new FakeIngestService(),
@@ -313,7 +372,9 @@ public sealed class MessageDispatchServiceTests : IDisposable
             files ?? new FakeFilePipeline(),
             retryQueue,
             update,
-            pending);
+            pending,
+            // 需求 1：撤回联动开关读取连接设置（null = 默认开启）
+            getConnectionSettings: connectionSettings is null ? null : () => connectionSettings);
     }
 
     // ============ 用例 ============
@@ -337,6 +398,162 @@ public sealed class MessageDispatchServiceTests : IDisposable
         Assert.Equal("m1", item.MessageId);
         Assert.Equal("停课通知：明天放假", item.Content);
         Assert.False(item.IsRead);
+    }
+
+    [Fact]
+    public async Task RecallEvent_RemovesFromNoticeAndHomeworkArchives()
+    {
+        // 需求 1：撤回联动——通知与作业两条存档路径都必须收到删除请求（协议端 notice.group_recall）
+        var notices = new FakeNoticeStore();
+        var homework = new FakeHomeworkStore();
+        var dispatch = CreateDispatch(notices: notices, homework: homework);
+
+        await dispatch.HandleRecallAsync(new MessageRecallEvent
+        {
+            MessageId = "m1",
+            GroupOpenId = "group-1",
+            SenderOpenId = "u1",
+            OperatorOpenId = "u1",
+            RecalledAt = DateTimeOffset.Now,
+            FromProtocolNotice = true
+        });
+
+        Assert.Contains("m1", notices.RemoveByMessageIdCalls);
+        Assert.Contains("m1", homework.RemoveByMessageIdCalls);
+    }
+
+    [Fact]
+    public async Task RecallEvent_DisabledBySetting_DoesNotTouchStores()
+    {
+        var notices = new FakeNoticeStore();
+        var homework = new FakeHomeworkStore();
+        var dispatch = CreateDispatch(
+            notices: notices, homework: homework,
+            connectionSettings: new ConnectionSettings { RecallSyncEnabled = false });
+
+        await dispatch.HandleRecallAsync(new MessageRecallEvent
+        {
+            MessageId = "m2", GroupOpenId = "group-1", RecalledAt = DateTimeOffset.Now, FromProtocolNotice = true
+        });
+
+        Assert.Empty(notices.RemoveByMessageIdCalls);
+        Assert.Empty(homework.RemoveByMessageIdCalls);
+    }
+
+    // ============ 需求 1c：回复链归并 ============
+
+    [Fact]
+    public async Task ReplyChain_RepliedHomework_AppendsToRepliedSubject_NotClassifierSubject()
+    {
+        // 需求 1c：回复（quote）一条已归档作业 → 本条按「被回复消息的学科」追加写入作业文档，
+        // 且优先于常规识别链（识别链会给出语文，回复链必须落数学），来源标 Manual（显式语义）
+        var homework = new FakeHomeworkStore();
+        homework.Items.Add(new HomeworkItem
+        {
+            MessageId = "hw-origin",
+            Content = "数学作业：练习册 P12",
+            Subject = "数学",
+            SubjectSource = SubjectSource.KeywordRule,
+            CreatedAt = DateTimeOffset.Now
+        });
+
+        var chain = new FakeSubjectChain
+        {
+            Handler = (_, _) => new SubjectResult
+            {
+                Subject = "语文", Confidence = 0.9, Source = SubjectSource.KeywordRule
+            }
+        };
+        // 常规分类器给出通知：回复链命中作业时不得走通知落档
+        var classifier = new FakeClassifier
+        {
+            Handler = m => new ClassifiedMessage
+            {
+                Source = m, Kind = MessageKind.Notice, Confidence = 1.0, MatchReason = "notice_hit"
+            }
+        };
+        var notices = new FakeNoticeStore();
+        var dispatch = CreateDispatch(classifier: classifier, chain: chain, notices: notices, homework: homework);
+
+        await dispatch.ProcessMessageAsync(new MessageRecord
+        {
+            MessageId = "reply-1",
+            GroupOpenId = "group-1",
+            ReceivedAt = DateTimeOffset.Now,
+            Segments = [Text("补充：还有一张卷子")],
+            ReplyToMessageId = "hw-origin"
+        });
+
+        // 作业条目落在被回复消息的学科
+        var appended = Assert.Single(homework.Items, i => i.MessageId == "reply-1");
+        Assert.Equal("数学", appended.Subject);
+        Assert.Equal(SubjectSource.Manual, appended.SubjectSource);
+
+        // 学科文档同步追加到同一学科（正文以连续文档样式展示）
+        var docCall = Assert.Single(homework.DocumentAppendCalls);
+        Assert.Equal("数学", docCall.Subject);
+        Assert.Equal("补充：还有一张卷子", docCall.Entry.Text);
+        Assert.Contains("reply-1", docCall.Entry.SourceMessageIds);
+
+        // 未走常规分类/通知落档
+        Assert.Empty(notices.Items);
+        Assert.Equal(0, classifier.CallCount);
+        Assert.Equal(0, chain.CallCount);
+    }
+
+    [Fact]
+    public async Task ReplyChain_RepliedNotice_WritesNoticeArchive()
+    {
+        // 需求 1c：回复一条已归档通知 → 本条按通知落档（不进入作业文档）
+        var notices = new FakeNoticeStore();
+        notices.Items.Add(new NoticeItem
+        {
+            MessageId = "notice-origin",
+            Content = "停课通知：明天放假",
+            CreatedAt = DateTimeOffset.Now
+        });
+        var homework = new FakeHomeworkStore();
+        var dispatch = CreateDispatch(notices: notices, homework: homework);
+
+        await dispatch.ProcessMessageAsync(new MessageRecord
+        {
+            MessageId = "reply-2",
+            GroupOpenId = "group-1",
+            ReceivedAt = DateTimeOffset.Now,
+            Segments = [Text("收到，谢谢老师")],
+            ReplyToMessageId = "notice-origin"
+        });
+
+        Assert.Contains(notices.Items, n => n.MessageId == "reply-2");
+        Assert.Empty(homework.Items);
+        Assert.Empty(homework.DocumentAppendCalls);
+    }
+
+    [Fact]
+    public async Task ReplyChain_UnresolvedTarget_FallsBackToNormalClassification()
+    {
+        // 被回复消息不在存档（未归档/已删除/非本插件接管）：回落常规分类路径，行为与旧版一致
+        var classifier = new FakeClassifier
+        {
+            Handler = m => new ClassifiedMessage
+            {
+                Source = m, Kind = MessageKind.Homework, Confidence = 1.0, MatchReason = "homework_hit"
+            }
+        };
+        var homework = new FakeHomeworkStore();
+        var dispatch = CreateDispatch(classifier: classifier, homework: homework);
+
+        await dispatch.ProcessMessageAsync(new MessageRecord
+        {
+            MessageId = "reply-3",
+            GroupOpenId = "group-1",
+            ReceivedAt = DateTimeOffset.Now,
+            Segments = [Text("今天的作业：口算一页")],
+            ReplyToMessageId = "not-archived"
+        });
+
+        Assert.Equal(1, classifier.CallCount);
+        Assert.Single(homework.Items, i => i.MessageId == "reply-3");
     }
 
     [Fact]

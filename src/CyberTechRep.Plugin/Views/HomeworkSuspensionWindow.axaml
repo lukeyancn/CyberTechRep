@@ -27,44 +27,72 @@
         </Grid>
       </Border>
 
-      <!-- 分组列表 / 空状态 -->
+      <!-- 学科文档列表 / 空状态：每学科一个撑满区块的文档方块（需求 1） -->
       <Panel Grid.Row="1">
         <TextBlock x:Name="EmptyText" Text="暂无作业" HorizontalAlignment="Center"
                    VerticalAlignment="Center" Opacity="0.6" IsVisible="True" />
-        <ScrollViewer Padding="8,4">
-          <ItemsControl x:Name="GroupList">
+        <ScrollViewer Padding="8,4" HorizontalScrollBarVisibility="Disabled">
+          <ItemsControl x:Name="GroupList" HorizontalAlignment="Stretch">
+            <ItemsControl.Styles>
+              <!-- 容器横向撑满：每个学科区块内的小方块撑满整个区块宽度 -->
+              <Style Selector="ItemsControl > ContentPresenter">
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+              </Style>
+            </ItemsControl.Styles>
             <ItemsControl.ItemTemplate>
-              <DataTemplate DataType="{x:Type vm:HomeworkGroup}">
-                <Expander Header="{Binding Subject}" IsExpanded="True" Margin="0,4">
-                  <ItemsControl ItemsSource="{Binding Items}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate DataType="{x:Type vm:HomeworkRow}">
-                        <Border Margin="0,2" CornerRadius="6" Background="#FFFFFFFF"
-                                BorderBrush="#22000000" BorderThickness="1" Padding="8">
-                          <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto">
-                            <TextBlock Grid.Column="0" Grid.Row="0" Text="{Binding Item.Content}"
-                                       TextWrapping="Wrap" />
-                            <!-- 学科修正/切换下拉已从 UI 移除（需求 1）：底层 SetSubjectAsync 修正
-                                 逻辑与 HomeworkRow.AvailableSubjects 候选构建保留，后续可从别处进入 -->
-                            <TextBlock Grid.Column="0" Grid.Row="1"
-                                       Text="{Binding AttachmentText}"
-                                       IsVisible="{Binding HasAttachments}"
-                                       FontSize="11" Opacity="0.7" Margin="0,4,0,0" />
-                            <TextBlock Grid.Column="0" Grid.Row="2"
-                                       Text="{Binding CreatedAtText}"
-                                       FontSize="11" Opacity="0.5" Margin="0,2,0,0" />
-                            <Button Grid.Column="1" Grid.Row="1"
-                                    Content="删除" Click="OnDeleteClick"
-                                    HorizontalAlignment="Right" Margin="0,4,0,0"
-                                    Padding="6,0" MinWidth="40" MinHeight="20" FontSize="11"
-                                    Background="Transparent" BorderThickness="0"
-                                    Foreground="#C0B3261E" ToolTip.Tip="删除该条作业（再次点击确认）" />
+              <DataTemplate DataType="{x:Type vm:HomeworkDocumentView}">
+                <Expander Header="{Binding Subject}" IsExpanded="True" Margin="0,4"
+                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                  <!-- 一个学科区块内只有这一个方块，横向撑满 -->
+                  <Border Margin="0,2" CornerRadius="6" Background="#FFFFFFFF"
+                          BorderBrush="#22000000" BorderThickness="1" Padding="8"
+                          HorizontalAlignment="Stretch">
+                    <Grid RowDefinitions="Auto,Auto,Auto">
 
-                          </Grid>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+                      <!-- 显示态：整篇文档（连续文本，鼠标可选中复制） -->
+                      <SelectableTextBlock Grid.Row="0" x:Name="DocumentView"
+                                           Text="{Binding Text}"
+                                           IsVisible="{Binding !IsEditing}"
+                                           TextWrapping="Wrap" MinHeight="48"
+                                           Cursor="IBeam"
+                                           PointerPressed="OnDocumentPointerPressed"
+                                           ToolTip.Tip="点击即可编辑本学科作业文档" />
+
+                      <!-- 编辑态：自由删改，失焦或停顿后实时回写存档 -->
+                      <TextBox Grid.Row="0" x:Name="DocumentEditor"
+                               Text="{Binding Text, Mode=TwoWay}"
+                               IsVisible="{Binding IsEditing}"
+                               AcceptsReturn="True" TextWrapping="Wrap" MinHeight="48"
+                               Background="Transparent" BorderThickness="0" Padding="0"
+                               TextChanged="OnDocumentTextChanged"
+                               LostFocus="OnDocumentEditorLostFocus"
+                               ToolTip.Tip="自由删改，停顿后自动保存；点击其他区域完成编辑" />
+
+                      <!-- 来源与时间元信息（存档里每条 Entry 都保留，这里折叠成一行摘要） -->
+                      <TextBlock Grid.Row="1" Text="{Binding SourceSummary}"
+                                 IsVisible="{Binding HasSourceSummary}"
+                                 FontSize="11" Opacity="0.6" Margin="0,6,0,0"
+                                 TextWrapping="Wrap" />
+
+                      <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,*" Margin="0,4,0,0">
+                        <Button Grid.Column="0" Content="转为通知"
+                                Click="OnDocumentToNoticeClick"
+                                Padding="6,0" MinHeight="20" FontSize="11"
+                                Background="Transparent" BorderThickness="0"
+                                ToolTip.Tip="把本学科今日作业整体转为通知（写入通知存档，作业存档移除）" />
+                        <Button Grid.Column="1" Content="{Binding ClearButtonText}"
+                                Click="OnClearDocumentClick" Margin="8,0,0,0"
+                                Padding="6,0" MinHeight="20" FontSize="11"
+                                Background="Transparent" BorderThickness="0"
+                                Foreground="#C0B3261E"
+                                ToolTip.Tip="清空本学科今日文档与作业条目（再次点击确认）" />
+                        <TextBlock Grid.Column="2" Text="{Binding EditHint}"
+                                   FontSize="11" Opacity="0.45"
+                                   VerticalAlignment="Center" HorizontalAlignment="Right" />
+                      </Grid>
+                    </Grid>
+                  </Border>
                 </Expander>
               </DataTemplate>
             </ItemsControl.ItemTemplate>
@@ -77,7 +105,7 @@
         <Button Grid.Column="0" x:Name="SendDigestButton" Content="整理并发送"
                 Click="OnSendDigestClick" HorizontalAlignment="Left"
                 Padding="10,4" MinHeight="26" FontSize="12"
-                ToolTip.Tip="按学科整理今日作业并发送到白名单群" />
+                ToolTip.Tip="按学科整理今日作业并发送到目标群" />
         <Thumb Grid.Column="1" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
                HorizontalAlignment="Right" VerticalAlignment="Bottom" Opacity="0.4"
                DragDelta="OnResizeDragDelta">
@@ -96,17 +124,36 @@
         </Panel.Background>
         <Border Background="#FFF7FBFB" CornerRadius="8" BorderBrush="#33000000" BorderThickness="1"
                 HorizontalAlignment="Stretch" VerticalAlignment="Center"
-                MaxWidth="340" MaxHeight="440" Margin="12" Padding="12">
-          <Grid RowDefinitions="Auto,*,Auto,Auto,Auto">
+                MaxWidth="340" MaxHeight="460" Margin="12" Padding="12">
+          <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto">
             <TextBlock Grid.Row="0" Text="整理并发送 · 确认" FontWeight="SemiBold" Margin="0,0,0,6" />
-            <ScrollViewer Grid.Row="1" MaxHeight="260" Margin="0,0,0,6">
+
+            <!-- 需求 3：常态化作业勾选（勾选即时进预览，取消即移除；点「发送」才落档） -->
+            <StackPanel Grid.Row="1" x:Name="StandingSection" Spacing="4" Margin="0,0,0,6"
+                        IsVisible="False">
+              <TextBlock Text="常态化作业（勾选后写入该学科末尾，点「发送」才落档）"
+                         FontSize="11" Opacity="0.75" TextWrapping="Wrap" />
+              <ItemsControl x:Name="StandingList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate DataType="{x:Type vm:StandingHomeworkView}">
+                    <CheckBox Content="{Binding DisplayText}"
+                              IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                              Click="OnStandingItemToggled"
+                              FontSize="12" MinHeight="22"
+                              ToolTip.Tip="{Binding Tooltip}" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="2" MaxHeight="240" Margin="0,0,0,6">
               <TextBlock x:Name="SendPreviewText" TextWrapping="Wrap" FontSize="12" LineHeight="18" />
             </ScrollViewer>
-            <TextBlock Grid.Row="2" x:Name="SendTargetText" TextWrapping="Wrap" FontSize="11"
+            <TextBlock Grid.Row="3" x:Name="SendTargetText" TextWrapping="Wrap" FontSize="11"
                        Opacity="0.7" Margin="0,0,0,6" />
-            <TextBlock Grid.Row="3" x:Name="SendResultText" TextWrapping="Wrap" FontSize="11"
+            <TextBlock Grid.Row="4" x:Name="SendResultText" TextWrapping="Wrap" FontSize="11"
                        IsVisible="False" Margin="0,0,0,6" Foreground="#C0B3261E" />
-            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
               <Button x:Name="SendCancelButton" Content="取消" Click="OnSendCancelClick" Padding="12,4" />
               <Button x:Name="SendConfirmButton" Content="发送" Click="OnSendConfirmClick"
                       Padding="12,4" Classes="accent" />

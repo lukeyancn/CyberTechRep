@@ -22,6 +22,18 @@ public sealed class HomeworkSendOptionsProvider
     /// </summary>
     public Func<bool>? GetEnabled { get; init; }
 
+    /// <summary>
+    /// 当前接入模式（null = Official）。NapCat 模式发送走 OneBot <c>send_group_msg</c>，
+    /// 不请求 AccessToken——这正是「NapCat 模式下报 AccessToken 缺字段」的根因之一。
+    /// </summary>
+    public Func<MessageConnectionMode>? GetMode { get; init; }
+
+    /// <summary>
+    /// 协议端原生 API 调用（NapCat 模式发送用；官方模式为 null）。
+    /// 接线 <c>IMessageIngestService.CallProtocolApiAsync</c>。
+    /// </summary>
+    public Func<string, IReadOnlyDictionary<string, object?>, CancellationToken, Task<JsonElement?>>? CallProtocolApi { get; init; }
+
     /// <summary>HTTP 调用器（默认内部 HttpClient；单元测试注入本地测试服务器）。</summary>
     public HttpMessageInvoker? HttpInvoker { get; set; }
 }
@@ -136,6 +148,14 @@ public sealed class HomeworkSendService : IHomeworkSendService
     private async Task SendToGroupAsync(
         ConnectionSettings settings, string groupOpenId, string content, string? msgId, CancellationToken ct)
     {
+        // NapCat（OneBot 11）模式：经当前 WS 连接调 send_group_msg，不请求 AccessToken、不走官方 REST。
+        // 修复根因之二：旧实现无论哪种模式都打官方 Token 接口，NapCat 模式下必然报「缺少 access_token」。
+        if (settings.Mode == MessageConnectionMode.NapCat)
+        {
+            await SendToNapCatGroupAsync(settings, groupOpenId, content, ct).ConfigureAwait(false);
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(settings.AppId)
             || string.IsNullOrWhiteSpace(settings.AppSecretProtected))
         {
@@ -180,7 +200,66 @@ public sealed class HomeworkSendService : IHomeworkSendService
         }
     }
 
-    /// <summary>获取缓存的 AccessToken（过期前 5 分钟自动刷新；逻辑与 WsClient 一致）。</summary>
+    /// <summary>
+    /// NapCat（OneBot 11）发送：<c>send_group_msg</c>，目标群按 NapCat 群号传入。
+    /// <para>
+    /// 说明：NapCat 的 <c>group_id</c> 是数字群号，与官方平台的群 OpenID 不是同一命名空间——
+    /// 因此 NapCat 模式下「整理并发送」目标群设置里要填群号（设置页已写明）。
+    /// 传了 OpenID 形态的串时直接给出可操作的错误提示，而不是让 NapCat 静默失败。
+    /// </para>
+    /// </summary>
+    private async Task SendToNapCatGroupAsync(
+        ConnectionSettings settings, string groupId, string content, CancellationToken ct)
+    {
+        var api = _provider.CallProtocolApi;
+        if (api is null)
+        {
+            throw new InvalidOperationException(
+                "NapCat 模式发送需要协议端连接（消息接入服务未启动或未接线 CallProtocolApi）");
+        }
+
+        if (!long.TryParse(groupId, out _))
+        {
+            throw new InvalidOperationException(
+                $"NapCat 模式的发送目标必须是 QQ 群号（纯数字），当前值「{groupId}」不是群号。" +
+                "请在「连接设置 → 作业清单发送目标群」中填写群号（与官方模式的群 OpenID 不同）。");
+        }
+
+        var parameters = new Dictionary<string, object?>
+        {
+            ["group_id"] = groupId,
+            ["message"] = new object[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "text",
+                    ["data"] = new Dictionary<string, object?> { ["text"] = content }
+                }
+            }
+        };
+
+        _logger.LogInformation("NapCat 模式发送作业清单：group={Group}", groupId);
+        var data = await api("send_group_msg", parameters, ct).ConfigureAwait(false);
+        if (data is null)
+        {
+            // CallApiAsync 契约：连接不可用/超时/retcode≠0 一律返回 null（错误细节在排错面板日志里）
+            throw new InvalidOperationException(
+                $"群 {groupId} 发送失败：NapCat 未返回成功结果（连接断开 / 超时 / retcode≠0）。" +
+                "请在「维护 → NapCat 日志」中查看具体原因。");
+        }
+
+        _logger.LogInformation("NapCat 发送成功：group={Group}, message_id={MessageId}",
+            groupId, data.Value.ValueKind == JsonValueKind.Object
+                && data.Value.TryGetProperty("message_id", out var mid) ? mid.ToString() : "(未返回)");
+    }
+
+    /// <summary>
+    /// 获取缓存的 AccessToken（过期前 5 分钟自动刷新；逻辑与 WsClient 一致）。
+    /// <para>
+    /// 兼容解析 + 诊断：见 <see cref="AccessTokenResponseParser"/>。失败时异常消息内含
+    /// <b>脱敏后的原始响应片段</b>与协议端错误码，同时写入结构化日志（便于排错面板定位）。
+    /// </para>
+    /// </summary>
     private async Task<string> EnsureTokenAsync(ConnectionSettings settings, CancellationToken ct)
     {
         lock (_tokenLock)
@@ -206,27 +285,34 @@ public sealed class HomeworkSendService : IHomeworkSendService
 
         using var resp = await invoker.SendAsync(req, timeoutCts.Token).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        // HTTP 非 2xx：带状态码 + 脱敏响应片段（此前只输出状态码，用户无从判断是 AppId 错还是网络错）
         if (!resp.IsSuccessStatusCode)
         {
-            // 脱敏：只输出状态码，不输出响应体（可能回显敏感信息）
-            throw new InvalidOperationException($"AccessToken 获取失败：HTTP {(int)resp.StatusCode}");
+            var httpDiagnostic =
+                $"AccessToken 获取失败：HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}；" +
+                $"响应片段：{AccessTokenResponseParser.SanitizeSnippet(body)}";
+            _logger.LogError("AccessToken 请求失败（发送用）：HTTP {Status}, Url={Url}, 响应片段={Snippet}",
+                (int)resp.StatusCode, settings.TokenApiUrl, AccessTokenResponseParser.SanitizeSnippet(body));
+            throw new InvalidOperationException(httpDiagnostic);
         }
 
-        var token = TryGetField(body, "access_token", out var t) ? t : null;
-        if (string.IsNullOrEmpty(token))
+        var parsed = AccessTokenResponseParser.Parse(body);
+        if (!parsed.Success)
         {
-            throw new InvalidOperationException("AccessToken 响应缺少 access_token 字段");
+            _logger.LogError("AccessToken 响应解析失败（发送用）：{Diagnostic}（Url={Url}, AppId={AppId}）",
+                parsed.Diagnostic, settings.TokenApiUrl, MaskAppId(settings.AppId));
+            throw new InvalidOperationException($"AccessToken 解析失败：{parsed.Diagnostic}");
         }
 
-        var expiresIn = TryGetField(body, "expires_in", out var e) && int.TryParse(e, out var s) ? s : 7200;
         lock (_tokenLock)
         {
-            _accessToken = token;
-            _tokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Max(expiresIn - 300, 60));
+            _accessToken = parsed.Token;
+            _tokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Max(parsed.ExpiresIn - 300, 60));
         }
 
-        _logger.LogInformation("AccessToken 获取成功（发送用），有效期 {Seconds}s", expiresIn);
-        return token;
+        _logger.LogInformation("AccessToken 获取成功（发送用），有效期 {Seconds}s", parsed.ExpiresIn);
+        return parsed.Token;
     }
 
     /// <summary>从平台响应提取错误说明（code/message），截断防日志膨胀。</summary>

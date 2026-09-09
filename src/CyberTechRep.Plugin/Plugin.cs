@@ -46,17 +46,33 @@ public class CyberTechRepPlugin : PluginBase
             SecretUnprotector = Utils.SecretProtector.Unprotect,
             DataDirectory = dataDir
         });
+        // ---- 需求 4：NapCat 消息断点续传（游标为主 + 启动核对兜底）----
+        // 游标存储：每群「已入档到哪条」；原子写 + .bak 恢复；1 秒防抖合并落盘。
+        services.AddSingleton(sp => new NapCatResumeCursorStore(
+            dataDir, sp.GetService<ILogger<NapCatResumeCursorStore>>()));
         services.AddSingleton(sp => new MessageIngestService(
             sp.GetRequiredService<IngestOptionsProvider>(),
-            sp.GetService<ILogger<MessageIngestService>>()));
+            sp.GetService<ILogger<MessageIngestService>>(),
+            configureClientOptions: null,
+            resumeCursor: sp.GetRequiredService<NapCatResumeCursorStore>()));
         services.AddSingleton<IMessageIngestService>(sp => sp.GetRequiredService<MessageIngestService>());
+
+        // 启动核对：连接确认可用（生命周期/心跳）后拉最近 N 条与游标核对，只补缺口、不重复显示。
+        services.AddSingleton(sp => new NapCatBackfillService(
+            sp.GetRequiredService<MessageIngestService>(),
+            sp.GetRequiredService<NapCatResumeCursorStore>(),
+            sp.GetRequiredService<IngestOptionsProvider>(),
+            sp.GetService<ILogger<NapCatBackfillService>>()));
+        services.AddHostedService(sp => sp.GetRequiredService<NapCatBackfillService>());
 
         // ---- NapCat 模式：一键启动服务（路径/端口校验 + 进程树管理；关停经 IHostedService 兜底终止）----
         // 自监听端口探测委托：避免「本插件反向监听占用端口」被误报为端口冲突
         services.AddSingleton(sp => new NapCatRunnerService(
             sp.GetRequiredService<IngestOptionsProvider>(),
             sp.GetService<ILogger<NapCatRunnerService>>(),
-            () => sp.GetRequiredService<MessageIngestService>().ActiveReverseListenerPort));
+            () => sp.GetRequiredService<MessageIngestService>().ActiveReverseListenerPort,
+            // 看门狗依据：NapCat 进程存活但反向 WS 断开超阈值 → 自动重启
+            () => sp.GetRequiredService<MessageIngestService>().Status));
         services.AddHostedService(sp => sp.GetRequiredService<NapCatRunnerService>());
 
         // 模块 2：通知/作业关键词分类器（词表外置 JSON，ReloadRules 热生效）
@@ -199,13 +215,30 @@ public class CyberTechRepPlugin : PluginBase
             userRules: sp.GetRequiredService<UserSubjectRuleStore>()));
         services.AddSingleton<IHomeworkStore>(sp => sp.GetRequiredService<HomeworkStore>());
 
+        // ---- 需求 5：通知/作业手动互换（message-kind-overrides.json 覆盖记录 + 跨存档迁移）----
+        // 覆盖记录与互换服务均为单例：设置页/悬浮窗 UI 与消息管道（重投/续传按覆盖类型落档）共用。
+        services.AddSingleton(sp => new MessageKindOverrideStore(
+            dataDir, sp.GetService<ILogger<MessageKindOverrideStore>>()));
+        services.AddSingleton(sp => new MessageReclassifyService(
+            sp.GetRequiredService<INoticeStore>(),
+            sp.GetRequiredService<IHomeworkStore>(),
+            dataDir,
+            sp.GetService<ILogger<MessageReclassifyService>>(),
+            sp.GetRequiredService<MessageKindOverrideStore>()));
+        services.AddSingleton<IMessageReclassifyService>(sp => sp.GetRequiredService<MessageReclassifyService>());
+
         // ---- 需求 2：作业清单「整理并发送」（QQ 官方机器人开放平台群消息 REST 发送）----
         // 目标群 = 连接设置 TargetGroupOpenIds（独立于消息接管白名单 GroupWhitelist）；发送开关 = 连接设置 HomeworkSendEnabled（默认 true，热生效）
-        services.AddSingleton(_ => new HomeworkSendOptionsProvider
+        services.AddSingleton(sp => new HomeworkSendOptionsProvider
         {
             GetSettings = () => settingsService.Current.Connection,
             SecretUnprotector = Utils.SecretProtector.Unprotect,
-            GetEnabled = () => settingsService.Current.Connection.HomeworkSendEnabled
+            GetEnabled = () => settingsService.Current.Connection.HomeworkSendEnabled,
+            // 需求 2 修复：NapCat 模式发送走 OneBot send_group_msg（不请求 AccessToken），
+            // 官方模式保持 REST + AccessToken 路径。两个委托均为热读取，模式切换后无需重建服务。
+            GetMode = () => settingsService.Current.Connection.Mode,
+            CallProtocolApi = (action, parameters, ct) =>
+                sp.GetRequiredService<IMessageIngestService>().CallProtocolApiAsync(action, parameters, ct)
         });
         services.AddSingleton(sp => new HomeworkSendService(
             sp.GetRequiredService<HomeworkSendOptionsProvider>(),
@@ -246,17 +279,20 @@ public class CyberTechRepPlugin : PluginBase
                 overlayKey => overlayKey switch
                 {
                     // 通知悬浮窗注入控制器与设置服务：右上角快捷菜单（置顶/固定/穿透）
-                    // 经控制器 ApplySettingsAsync 路径即时生效并回写 ISettingsService
+                    // 经控制器 ApplySettingsAsync 路径即时生效并回写 ISettingsService；
+                    // 另注入换类服务（需求 5：通知 → 作业）
                     SuspensionWindowController.NoticeKey => new NoticeSuspensionWindow(
                         sp.GetRequiredService<INoticeStore>(),
                         sp.GetRequiredService<ISuspensionWindowController>(),
-                        sp.GetRequiredService<ISettingsService>()),
+                        sp.GetRequiredService<ISettingsService>(),
+                        sp.GetRequiredService<IMessageReclassifyService>()),
                     SuspensionWindowController.HomeworkKey => new HomeworkSuspensionWindow(
                         sp.GetRequiredService<IHomeworkStore>(),
                         () => settingsService.Current.Overlays.HomeworkGroupOrder,
                         sp.GetRequiredService<ISettingsService>(),
                         sp.GetRequiredService<IHomeworkSendService>(),
-                        sp.GetRequiredService<ISuspensionWindowController>()),
+                        sp.GetRequiredService<ISuspensionWindowController>(),
+                        sp.GetRequiredService<IMessageReclassifyService>()),
                     SuspensionWindowController.FilesKey => sp.GetRequiredService<SubjectFilesSuspensionWindow>(),
                     SuspensionWindowController.CircleKey => (Window?)sp.GetRequiredService<SubjectCircleBarWindow>(),
                     // 第五悬浮窗（未绑定学科选择，需求 3）：单例窗，协调器触发时装载请求并经控制器显示
@@ -327,6 +363,8 @@ public class CyberTechRepPlugin : PluginBase
         services.AddSettingsPage<Controls.SettingsPages.AiSettingsPage>();
         // 需求 3：学科关键词规则（subjects.json）与消息分类关键词的可视化编辑入口
         services.AddSettingsPage<Controls.SettingsPages.SubjectRulesEditorPage>();
+        // 需求 3：常态化作业（按学科维护固定作业项，确认窗口可勾选落档）
+        services.AddSettingsPage<Controls.SettingsPages.StandingHomeworkSettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.OverlaySettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.FileSettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.MaintenanceSettingsPage>();
@@ -363,6 +401,8 @@ public class CyberTechRepPlugin : PluginBase
             sp.GetRequiredService<INoKeywordFallbackClassifier>(),
             sp.GetRequiredService<MemberSubjectBindingStore>(),
             () => settingsService.Current.SubjectRecognition,
+            sp.GetRequiredService<IMessageReclassifyService>(),
+            () => settingsService.Current.Connection,
             sp.GetService<ILogger<Services.Pipeline.MessageDispatchService>>()));
         services.AddHostedService(sp =>
         {

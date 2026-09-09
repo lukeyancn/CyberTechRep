@@ -24,6 +24,13 @@
     <PackageReference Include="Avalonia" Version="11.3.17" />
     <!-- 悬浮窗门控测试需要构造 Window 实例：Headless 平台无需显示设备 -->
     <PackageReference Include="Avalonia.Headless" Version="11.3.17" />
+    <!-- 需求 6：通知悬浮窗真实布局测试要测量文本（可交互区域来自文本框坐标），
+         Headless 默认的空渲染后端没有字体管理器，文本排版会抛 fonts:SystemFonts 缺失；
+         启用 Skia 渲染后端即可用系统字体完成测量（仅测试工程引用，不进插件包） -->
+    <PackageReference Include="Avalonia.Skia" Version="11.3.17" />
+    <!-- 需求 6：ItemsControl 的数据模板要生成条目容器必须有控件主题（无主题则无 ItemsPresenter）。
+         测试内按需给当前测试应用实例挂上，不改变其他测试的会话环境 -->
+    <PackageReference Include="Avalonia.Themes.Simple" Version="11.3.17" />
   </ItemGroup>
 
   <ItemGroup>

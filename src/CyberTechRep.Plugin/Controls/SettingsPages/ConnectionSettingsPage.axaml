@@ -52,7 +52,7 @@
                 <TextBlock Text="access token（与 NapCat 配置一致；DPAPI 加密存储，脱敏显示；留空 = 不校验）" FontWeight="SemiBold"/>
                 <TextBox Text="{Binding NapCatAccessTokenPlain, Mode=TwoWay}" PasswordChar="●" Watermark="token"/>
 
-                <Expander Header="NapCat 一键启动（插件不内置 NapCat 本体，请自行下载后填写路径）" IsExpanded="False">
+                <Expander Header="NapCat 一键启动（后台运行：登录方式 / 自动启动 / WebUI）" IsExpanded="False">
                     <StackPanel Spacing="10" Margin="0,6">
                         <TextBlock Text="NapCat 可执行文件路径（exe / bat / 启动器脚本）" FontWeight="SemiBold"/>
                         <TextBox Text="{Binding Settings.Connection.NapCatExePath}" Watermark="例如 D:\NapCat\NapCat.Win32.bat"/>
@@ -60,13 +60,34 @@
                         <TextBlock Text="工作目录（可选；留空 = 可执行文件所在目录）" FontWeight="SemiBold"/>
                         <TextBox Text="{Binding Settings.Connection.NapCatWorkDirectory}" Watermark="可选"/>
 
+                        <TextBlock Text="登录方式" FontWeight="SemiBold"/>
+                        <StackPanel Orientation="Horizontal" Spacing="24">
+                            <RadioButton Content="扫码登录（新电脑首次登录推荐）" GroupName="ctrNapCatLogin"
+                                         IsChecked="{Binding IsScanQrLogin}"/>
+                            <RadioButton Content="QQ 号快速登录" GroupName="ctrNapCatLogin"
+                                         IsChecked="{Binding IsQuickLogin}"/>
+                        </StackPanel>
+                        <StackPanel Spacing="6" IsVisible="{Binding IsQuickLogin}">
+                            <TextBlock Text="快速登录 QQ 号（每次启动自动传入该 QQ 号跳过扫码；新电脑首次使用建议先扫码登录一次）"
+                                       FontWeight="SemiBold"/>
+                            <TextBox Text="{Binding Settings.Connection.NapCatQuickLoginQQ}" Watermark="机器人 QQ 号（纯数字）"/>
+                        </StackPanel>
+
+                        <ToggleSwitch Content="ClassIsland 启动后自动后台拉起 NapCat（随插件退出自动结束）"
+                                      IsChecked="{Binding Settings.Connection.NapCatAutoStart}"/>
+                        <ToggleSwitch Content="NapCat 启动后自动用浏览器打开 WebUI（登录/管理页面）"
+                                      IsChecked="{Binding Settings.Connection.NapCatOpenWebUiOnStart}"/>
+
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <Button Content="启动 NapCat" Click="OnStartNapCatClicked"/>
                             <Button Content="停止 NapCat" Click="OnStopNapCatClicked"/>
+                            <Button Content="打开 WebUI" Click="OnOpenWebUiClicked" IsEnabled="{Binding HasWebUiUrl}"/>
                             <TextBlock Text="{Binding NapCatRunnerStatusText}" VerticalAlignment="Center"
                                        Opacity="0.9" TextWrapping="Wrap"/>
                         </StackPanel>
-                        <TextBlock Text="说明：停止与插件关停会终止整个 NapCat 进程树；消息接入由上方连接设置（正向/反向 WS）独立承担。"
+                        <TextBlock Text="{Binding NapCatWebUiUrlText}" FontStyle="Italic" Opacity="0.8"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Text="说明：停止与插件关停会终止整个 NapCat 进程树；进程存活但反向 WS 断开超过 5 分钟会自动重启；消息接入由上方连接设置（正向/反向 WS）独立承担。"
                                    FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Expander>

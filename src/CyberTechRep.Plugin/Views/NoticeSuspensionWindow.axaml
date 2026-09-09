@@ -31,18 +31,46 @@
       <Panel Grid.Row="1">
         <TextBlock x:Name="EmptyText" Text="暂无未读通知" HorizontalAlignment="Center"
                    VerticalAlignment="Center" Opacity="0.6" IsVisible="True" />
-        <ScrollViewer Padding="8,4">
+        <ScrollViewer x:Name="NoticeScroll" Padding="8,4">
           <ItemsControl x:Name="NoticeList">
             <ItemsControl.ItemTemplate>
               <DataTemplate DataType="{x:Type vm:NoticeRow}">
                 <Border Margin="0,4" CornerRadius="6" Background="#FFFFFFFF" BorderBrush="#22000000"
                         BorderThickness="1" Padding="8">
                   <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
-                    <TextBlock Grid.Column="0" Grid.Row="0" Text="{Binding Item.Content}"
-                               TextWrapping="Wrap" VerticalAlignment="Center" />
-                    <Button Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
-                            Content="{Binding ButtonText}"
-                            Click="OnRowActionButtonClick" Margin="8,0,0,0" Padding="8,3" />
+                    <!-- 需求 6：通知内容鼠标可选中复制、不可编辑。
+                         只读 TextBox（IsReadOnly=true，不显示光标，IsTabStop=false 不抢焦点），
+                         显式给 SelectionBrush 保证选中高亮可见。
+                         穿透模式下整窗不再一律穿透：本窗实现 IOverlayInteractiveRegionProvider，
+                         把下面这些只读文本框的并集（裁剪到滚动视口内）作为可交互区域，
+                         经 DesktopLevelPinner 的 WM_NCHITTEST 分流保留鼠标——区域内可选中复制，
+                         区域外（标题栏/按钮/空白）仍然穿透。 -->
+                    <TextBox Grid.Column="0" Grid.Row="0" Classes="notice-content"
+                             Text="{Binding Item.Content, Mode=OneWay}"
+                             IsReadOnly="True" IsTabStop="False"
+                             AcceptsReturn="True" TextWrapping="Wrap"
+                             Background="Transparent" BorderThickness="0" Padding="0"
+                             MinHeight="0" Cursor="IBeam" VerticalAlignment="Center"
+                             SelectionBrush="#5C2F6FEB" SelectionForegroundBrush="#FF101010"
+                             ToolTip.Tip="可选中复制（内容不可编辑）">
+                      <!-- 悬浮窗带 WS_EX_NOACTIVATE（不抢焦点），键盘 Ctrl+C 可能收不到：
+                           显式提供右键「复制/全选」菜单，保证选中复制在任何交互模式下都可用。 -->
+                      <TextBox.ContextMenu>
+                        <ContextMenu Opened="OnNoticeContentMenuOpened">
+                          <MenuItem Header="复制" InputGesture="Ctrl+C" Click="OnCopyNoticeContentClick" />
+                          <MenuItem Header="全选" InputGesture="Ctrl+A" Click="OnSelectAllNoticeContentClick" />
+                        </ContextMenu>
+                      </TextBox.ContextMenu>
+                    </TextBox>
+                    <StackPanel Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
+                                Orientation="Horizontal" Spacing="4" Margin="8,0,0,0">
+                      <Button Content="{Binding ButtonText}"
+                              Click="OnRowActionButtonClick" Padding="8,3" />
+                      <Button Content="转为作业" Click="OnNoticeToHomeworkClick"
+                              Padding="8,3" FontSize="11" VerticalAlignment="Center"
+                              Background="Transparent" BorderThickness="0"
+                              ToolTip.Tip="把该通知转为作业：选择学科后写入作业存档，通知存档移除" />
+                    </StackPanel>
                     <TextBlock Grid.Column="0" Grid.Row="1" Text="{Binding TimeText}"
                                FontSize="11" Opacity="0.5" Margin="0,4,0,0" />
                   </Grid>

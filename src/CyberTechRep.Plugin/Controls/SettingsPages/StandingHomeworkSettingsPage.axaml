@@ -1,0 +1,55 @@
+<local:CyberTechRepSettingsPageBase
+    x:Class="CyberTechRep.Plugin.Controls.SettingsPages.StandingHomeworkSettingsPage"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:CyberTechRep.Plugin.Controls.SettingsPages"
+    mc:Ignorable="d" d:DesignWidth="640" d:DesignHeight="700">
+
+    <ScrollViewer>
+        <StackPanel Margin="24" MaxWidth="820" Spacing="10">
+
+            <TextBlock Text="常态化作业" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+
+            <TextBlock TextWrapping="Wrap" FontStyle="Italic" Opacity="0.8"
+                       Text="按学科维护固定作业项（如数学「校本往后做一课」）。作业悬浮窗「整理并发送 · 确认」窗口会列出启用项并支持勾选：勾选即时进入预览、取消即从预览移除，点「发送」才写入该学科作业文档末尾。"/>
+
+            <!-- 常态化作业列表：学科 / 内容 / 启用 / 删除 -->
+            <ItemsControl x:Name="ItemList" ItemsSource="{Binding Items}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type local:StandingHomeworkRow}">
+                        <Border Margin="0,3" CornerRadius="6" Background="#0A000000" Padding="8">
+                            <Grid ColumnDefinitions="150,*,Auto,Auto" ColumnSpacing="8">
+                                <ComboBox Grid.Column="0" HorizontalAlignment="Stretch"
+                                          ItemsSource="{Binding SubjectCandidates}"
+                                          SelectedItem="{Binding Subject, Mode=TwoWay}"
+                                          ToolTip.Tip="学科（决定写入哪份学科文档）"/>
+                                <TextBox Grid.Column="1" HorizontalAlignment="Stretch"
+                                         Text="{Binding Content, Mode=TwoWay}"
+                                         Watermark="作业内容，例如：校本往后做一课"/>
+                                <CheckBox Grid.Column="2" Content="启用"
+                                          IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                          ToolTip.Tip="关闭后确认窗口不列出该项（存档保留）"/>
+                                <Button Grid.Column="3" Content="删除" Click="OnDeleteClick"
+                                        Padding="8,2" FontSize="12"
+                                        Background="Transparent" BorderThickness="0"
+                                        Foreground="#C0B3261E"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <TextBlock x:Name="EmptyHint" Text="还没有常态化作业项，点下方「添加一条」开始配置。"
+                       Opacity="0.6" IsVisible="False" TextWrapping="Wrap"/>
+
+            <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,6,0,0">
+                <Button Content="添加一条" Click="OnAddClick"/>
+                <Button Content="保存并应用" Click="OnSaveClicked"/>
+                <TextBlock Text="{Binding Feedback}" VerticalAlignment="Center"
+                           Opacity="0.85" TextWrapping="Wrap"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</local:CyberTechRepSettingsPageBase>

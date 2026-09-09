@@ -82,7 +82,7 @@ public sealed class NoticeStore : INoticeStore
 
     /// <inheritdoc />
     public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
-        string? groupOpenId = null, CancellationToken ct = default)
+        string? groupOpenId = null, DateTimeOffset? createdAt = null, CancellationToken ct = default)
     {
         NoticeItem item;
         bool changed = false;
@@ -100,7 +100,8 @@ public sealed class NoticeStore : INoticeStore
                     MemberOpenId = memberOpenId ?? "",
                     GroupOpenId = groupOpenId ?? "",
                     Subject = subject,
-                    CreatedAt = DateTimeOffset.Now
+                    // 需求 5：换类迁移可指定原始时间；常规路径为 null → 当前时间（行为不变）
+                    CreatedAt = createdAt ?? DateTimeOffset.Now
                 };
                 _items!.Add(item);
                 changed = true;
@@ -165,6 +166,59 @@ public sealed class NoticeStore : INoticeStore
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task<bool> RemoveAsync(Guid id, CancellationToken ct = default)
+    {
+        NoticeItem? removed = null;
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            var index = _items!.FindIndex(i => i.Id == id);
+            if (index < 0)
+            {
+                _logger.LogWarning("删除通知失败：条目不存在 Id={Id}", id);
+                return Task.FromResult(false);
+            }
+
+            removed = _items[index];
+            _items.RemoveAt(index);
+            Save();
+            _logger.LogInformation("通知已删除 Id={Id}, MessageId={MessageId}", removed.Id, removed.MessageId);
+        }
+
+        // 锁外触发：悬浮窗合并刷新（被删条目从视图移除）
+        RaiseChanged(removed);
+        return Task.FromResult(true);
+    }
+
+    /// <inheritdoc />
+    public Task<bool> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(messageId))
+        {
+            return Task.FromResult(false);
+        }
+
+        NoticeItem? removed = null;
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            var index = _items!.FindIndex(i => string.Equals(i.MessageId, messageId, StringComparison.Ordinal));
+            if (index < 0)
+            {
+                return Task.FromResult(false);
+            }
+
+            removed = _items[index];
+            _items.RemoveAt(index);
+            Save();
+            _logger.LogInformation("通知已按来源消息删除（撤回联动）MessageId={MessageId}", messageId);
+        }
+
+        RaiseChanged(removed);
+        return Task.FromResult(true);
     }
 
     /// <inheritdoc />

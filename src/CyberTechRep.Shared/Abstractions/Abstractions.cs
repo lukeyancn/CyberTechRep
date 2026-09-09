@@ -13,6 +13,12 @@ public interface IMessageIngestService : IAsyncDisposable
     /// <summary>收到新消息（已做消息 id 幂等去重 + 群白名单过滤）。</summary>
     event EventHandler<MessageRecord>? MessageReceived;
 
+    /// <summary>
+    /// 收到消息撤回（NapCat 模式：notice.group_recall / friend_recall；官方模式当前无此事件）。
+    /// 与 <see cref="MessageReceived"/> 同样先经群白名单过滤与幂等去重。
+    /// </summary>
+    event EventHandler<MessageRecallEvent>? MessageRecalled;
+
     /// <summary>连接状态变化（供托盘/排错面板提示）。</summary>
     event EventHandler<ConnectionStatus>? StatusChanged;
 
@@ -27,6 +33,14 @@ public interface IMessageIngestService : IAsyncDisposable
 
     /// <summary>手动重连（排错面板用）。</summary>
     Task ReconnectAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// 经当前协议端连接调用原生 API（仅 NapCat / OneBot 11 模式支持；官方模式返回 null）。
+    /// 供断点续传（get_group_msg_history / get_msg）与 NapCat 模式发送（send_group_msg）使用。
+    /// 失败/超时返回 null，不抛异常、不断连接。
+    /// </summary>
+    Task<System.Text.Json.JsonElement?> CallProtocolApiAsync(
+        string action, IReadOnlyDictionary<string, object?> parameters, CancellationToken ct = default);
 }
 
 // ============ 模块 2：消息分类管道 ============
@@ -116,16 +130,29 @@ public interface INoticeStore
 {
     /// <summary>幂等写入变化通知：悬浮窗据此合并刷新（限流由悬浮窗侧负责）。</summary>
     event EventHandler<NoticeItem>? Changed;
-
     /// <summary>按消息 id 幂等添加或更新。
     /// <paramref name="memberOpenId"/>：发送者成员 OpenID——该发送者已绑定学科映射且
     /// ClassificationSettings.NoticeSubjectPrefix 开启时，写入内容前附加「学科：」前缀
     /// （无映射不加，已有前缀不重复添加）；更新提示等无发送者场景传 null。
-    /// <paramref name="groupOpenId"/>：来源群 OpenID——成员绑定群作用域解析与回溯归因用。</summary>
+    /// <paramref name="groupOpenId"/>：来源群 OpenID——成员绑定群作用域解析与回溯归因用。
+    /// <paramref name="createdAt"/>：原始时间（需求 5：作业→通知互换时连同时间元信息迁移）；
+    /// null = 当前时间（常规消息路径行为不变）。</summary>
     Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
-        string? groupOpenId = null, CancellationToken ct = default);
+        string? groupOpenId = null, DateTimeOffset? createdAt = null, CancellationToken ct = default);
 
     Task MarkReadAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>
+    /// 删除单条通知（需求 5：通知→作业互换时从原存档移除；撤回联动同用）。
+    /// 返回是否实际删除；删除成功后触发 <see cref="Changed"/> 供悬浮窗刷新。
+    /// </summary>
+    Task<bool> RemoveAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>
+    /// 按来源消息 id 删除（撤回联动；同 MessageId 最多一条）。
+    /// 返回是否实际删除；删除成功后触发 <see cref="Changed"/>。
+    /// </summary>
+    Task<bool> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default);
 
     /// <summary>标记未读（已读视图「标记未读」入口；与 MarkReadAsync 对称，状态持久化）。</summary>
     Task MarkUnreadAsync(Guid id, CancellationToken ct = default);
@@ -148,6 +175,9 @@ public interface INoticeStore
 public interface IHomeworkStore
 {
     event EventHandler<HomeworkItem>? Changed;
+
+    /// <summary>学科文档变化（追加/编辑/删除/撤回）：悬浮窗据此刷新文档区块。</summary>
+    event EventHandler<HomeworkDocument>? DocumentChanged;
 
     Task<HomeworkItem> UpsertAsync(HomeworkItem item, CancellationToken ct = default);
 
@@ -172,6 +202,68 @@ public interface IHomeworkStore
     /// 返回是否实际删除（条目不存在时为 false）；删除成功后触发 <see cref="Changed"/> 供悬浮窗刷新。
     /// </summary>
     Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
+
+    // ---- 需求 1：学科文档（每学科每日一份连续文档，追加写入 + 手工编辑共用存档）----
+
+    /// <summary>按归档日取全部学科文档（时间正序，空文档不返回）。</summary>
+    Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default);
+
+    /// <summary>
+    /// 追加写入一条作业文档条目（<paramref name="entry"/> 的 CreatedAt 本地日期决定归属日）。
+    /// 去重合并由存储层调用 <c>HomeworkDocumentMerger</c> 决策：完全重复 → 跳过（返回原文档，
+    /// 条目不新增）；部分重叠 → 并入已有条目（并集增量）；否则新增条目。
+    /// 文档已有手工编辑文本时，按「末尾增量追加」并入 ManualText，保留用户删改。
+    /// 返回写入后的文档（跳过时返回未变化的文档）。
+    /// </summary>
+    Task<HomeworkDocument> AppendDocumentEntryAsync(
+        string subject, HomeworkDocumentEntry entry, CancellationToken ct = default);
+
+    /// <summary>
+    /// 手工编辑整篇文档文本并即时回写存档（null/空 = 清除手工文本，回到按条目渲染）。
+    /// 文档不存在时按需创建（仅当 manualText 非空）。返回写入后的文档或 null。
+    /// <para>
+    /// <paramref name="editBaseline"/>：进入编辑态时文档的渲染文本（编辑器基线）。
+    /// 传入后做「三方合并」——编辑期间新到达并落档的条目行（不在基线、也不在编辑稿中）
+    /// 按末尾增量并入，用户对基线内容的删改保留；不传则整篇覆盖（旧行为）。
+    /// </para>
+    /// </summary>
+    Task<HomeworkDocument?> SaveDocumentTextAsync(
+        DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+        string? editBaseline = null);
+
+    /// <summary>
+    /// 按来源消息 id 从作业条目与学科文档中移除（撤回联动；需求 1）。
+    /// 返回删除的作业条目数；文档条目命中的来源 id 一并移除（文档为空则整篇删除）。
+    /// </summary>
+    Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default);
+
+    /// <summary>
+    /// 清空某学科某日的整份文档及其作业条目（需求 5：文档→通知互换时从作业存档移除）。
+    /// 返回移除的作业条目数。
+    /// </summary>
+    Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default);
+}
+
+/// <summary>
+/// 通知 / 作业手动互换（需求 5）：误识别的消息一键换类，连同内容、来源、时间元信息
+/// 迁移到对方存档，并写入「消息类型覆盖」持久化记录，重启后保持（且重投/重放不回摆）。
+/// </summary>
+public interface IMessageReclassifyService
+{
+    /// <summary>通知 → 作业（指定学科；空学科归入「未分类」）。返回是否成功。</summary>
+    Task<bool> MoveNoticeToHomeworkAsync(Guid noticeId, string subject, CancellationToken ct = default);
+
+    /// <summary>作业条目 → 通知。返回是否成功。</summary>
+    Task<bool> MoveHomeworkToNoticeAsync(Guid homeworkId, CancellationToken ct = default);
+
+    /// <summary>
+    /// 整份学科文档（某日）→ 通知：手工编辑过则整篇作为一条通知，
+    /// 否则逐条来源消息各生成一条通知。返回迁移条数。
+    /// </summary>
+    Task<int> MoveDocumentToNoticeAsync(DateOnly date, string subject, CancellationToken ct = default);
+
+    /// <summary>该消息是否已被人工换类（管道写入前查询，命中即按覆盖后的类型落档）。</summary>
+    bool TryGetKindOverride(string messageId, out MessageKind kind);
 }
 
 /// <summary>单群发送结果（逐群汇总，供 UI 反馈失败清单）。</summary>

@@ -44,6 +44,9 @@ public sealed class MessageDumpServiceTests : IDisposable
 
 #pragma warning disable CS0067 // 测试替身：连接状态变化事件不触发
         public event EventHandler<ConnectionStatus>? StatusChanged;
+
+        // 测试替身：消息撤回事件不触发
+        public event EventHandler<MessageRecallEvent>? MessageRecalled;
 #pragma warning restore CS0067
 
         public Task StartAsync(CancellationToken ct = default) => Task.CompletedTask;
@@ -55,6 +58,10 @@ public sealed class MessageDumpServiceTests : IDisposable
 
         public Task ReconnectAsync(CancellationToken ct = default) => Task.CompletedTask;
 
+        public Task<System.Text.Json.JsonElement?> CallProtocolApiAsync(
+            string action, IReadOnlyDictionary<string, object?> parameters, CancellationToken ct = default)
+            => Task.FromResult<System.Text.Json.JsonElement?>(null);
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
         public void Raise(MessageRecord message) => MessageReceived?.Invoke(this, message);
@@ -65,6 +72,12 @@ public sealed class MessageDumpServiceTests : IDisposable
         public List<HomeworkItem> Items { get; } = [];
 
         public event EventHandler<HomeworkItem>? Changed
+        {
+            add { }
+            remove { }
+        }
+
+        public event EventHandler<HomeworkDocument>? DocumentChanged
         {
             add { }
             remove { }
@@ -94,6 +107,28 @@ public sealed class MessageDumpServiceTests : IDisposable
             var removed = Items.RemoveAll(i => i.Id == id);
             return Task.FromResult(removed > 0);
         }
+
+        public Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<HomeworkDocument>>([]);
+
+        public Task<HomeworkDocument> AppendDocumentEntryAsync(
+            string subject, HomeworkDocumentEntry entry, CancellationToken ct = default)
+            => Task.FromResult(new HomeworkDocument
+            {
+                Date = DateOnly.FromDateTime(DateTime.Now),
+                Subject = subject
+            });
+
+        public Task<HomeworkDocument?> SaveDocumentTextAsync(
+            DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+            string? editBaseline = null)
+            => Task.FromResult<HomeworkDocument?>(null);
+
+        public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+            => Task.FromResult(0);
+
+        public Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default)
+            => Task.FromResult(0);
     }
 
     private sealed class FakeNoticeStore : INoticeStore
@@ -107,12 +142,13 @@ public sealed class MessageDumpServiceTests : IDisposable
         }
 
         public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
-            string? groupOpenId = null, CancellationToken ct = default)
+            string? groupOpenId = null, DateTimeOffset? createdAt = null, CancellationToken ct = default)
         {
             var item = new NoticeItem
             {
                 MessageId = messageId, Content = content,
-                MemberOpenId = memberOpenId ?? "", GroupOpenId = groupOpenId ?? ""
+                MemberOpenId = memberOpenId ?? "", GroupOpenId = groupOpenId ?? "",
+                CreatedAt = createdAt ?? DateTimeOffset.Now
             };
             Items.Add(item);
             return Task.FromResult(item);
@@ -132,6 +168,11 @@ public sealed class MessageDumpServiceTests : IDisposable
             => Task.FromResult<IReadOnlyList<NoticeItem>>([.. Items]);
 
         public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
+
+        public Task<bool> RemoveAsync(Guid id, CancellationToken ct = default) => Task.FromResult(false);
+
+        public Task<bool> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+            => Task.FromResult(false);
     }
 
     private sealed class FakeFilePipeline : IFilePipelineService
@@ -335,6 +376,12 @@ public sealed class MessageDumpServiceTests : IDisposable
             remove { }
         }
 
+        public event EventHandler<HomeworkDocument>? DocumentChanged
+        {
+            add { }
+            remove { }
+        }
+
         public Task<HomeworkItem> UpsertAsync(HomeworkItem item, CancellationToken ct = default)
             => throw new InvalidOperationException("boom");
 
@@ -354,5 +401,27 @@ public sealed class MessageDumpServiceTests : IDisposable
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
             => throw new InvalidOperationException("boom");
+
+        public Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<HomeworkDocument>>([]);
+
+        public Task<HomeworkDocument> AppendDocumentEntryAsync(
+            string subject, HomeworkDocumentEntry entry, CancellationToken ct = default)
+            => Task.FromResult(new HomeworkDocument
+            {
+                Date = DateOnly.FromDateTime(DateTime.Now),
+                Subject = subject
+            });
+
+        public Task<HomeworkDocument?> SaveDocumentTextAsync(
+            DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+            string? editBaseline = null)
+            => Task.FromResult<HomeworkDocument?>(null);
+
+        public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+            => Task.FromResult(0);
+
+        public Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default)
+            => Task.FromResult(0);
     }
 }

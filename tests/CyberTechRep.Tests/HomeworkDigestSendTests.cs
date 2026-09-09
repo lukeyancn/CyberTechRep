@@ -289,6 +289,71 @@ public sealed class HomeworkDigestSendTests : IDisposable
         Assert.Empty(handler.Requests);
     }
 
+    // ---------- 需求 2 修复：NapCat 模式发送走 OneBot send_group_msg（不请求 AccessToken） ----------
+
+    [Fact]
+    public async Task Send_NapCatMode_UsesSendGroupMsg_AndNeverCallsAccessToken()
+    {
+        // 任何 HTTP 请求都视为回归（NapCat 模式不应打官方 Token/群消息接口）
+        var handler = new StubHttpHandler
+        {
+            Responder = (_, _) => throw new InvalidOperationException("NapCat 模式不得发起任何 HTTP 请求")
+        };
+        var settings = Settings("888888");
+        settings.Mode = MessageConnectionMode.NapCat;
+        var calls = new List<(string Action, IReadOnlyDictionary<string, object?> Parameters)>();
+        var service = new HomeworkSendService(new HomeworkSendOptionsProvider
+        {
+            GetSettings = () => settings,
+            HttpInvoker = new HttpMessageInvoker(handler),
+            GetMode = () => MessageConnectionMode.NapCat,
+            CallProtocolApi = (action, parameters, ct) =>
+            {
+                calls.Add((action, parameters));
+                return Task.FromResult<System.Text.Json.JsonElement?>(
+                    System.Text.Json.JsonDocument.Parse("""{"message_id":123}""").RootElement.Clone());
+            }
+        });
+
+        var results = await service.SendTextToTargetGroupsAsync("清单内容");
+
+        var ok = Assert.Single(results);
+        Assert.True(ok.Success, ok.Error);
+        var call = Assert.Single(calls);
+        Assert.Equal("send_group_msg", call.Action);
+        Assert.Equal("888888", call.Parameters["group_id"]);
+
+        // message 为 OneBot 段数组：[{type:text, data:{text:...}}]
+        var segments = Assert.IsType<object[]>(call.Parameters["message"]);
+        var segment = Assert.IsType<Dictionary<string, object?>>(Assert.Single(segments));
+        Assert.Equal("text", segment["type"]);
+        var data = Assert.IsType<Dictionary<string, object?>>(segment["data"]);
+        Assert.Equal("清单内容", data["text"]);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Send_NapCatMode_NonNumericTarget_ReportsActionableError()
+    {
+        var handler = new StubHttpHandler { Responder = (_, _) => Task.FromResult(Json(new { })) };
+        var settings = Settings("GROUP-OPENID-1");
+        settings.Mode = MessageConnectionMode.NapCat;
+        var service = new HomeworkSendService(new HomeworkSendOptionsProvider
+        {
+            GetSettings = () => settings,
+            HttpInvoker = new HttpMessageInvoker(handler),
+            GetMode = () => MessageConnectionMode.NapCat,
+            CallProtocolApi = (_, _, _) => Task.FromResult<System.Text.Json.JsonElement?>(null)
+        });
+
+        var results = await service.SendTextToTargetGroupsAsync("内容");
+
+        var failure = Assert.Single(results);
+        Assert.False(failure.Success);
+        Assert.Contains("群号", failure.Error);
+    }
+
     // ---------- 连接设置 HomeworkSendEnabled 开关接线（默认 true = 现状不变） ----------
 
     [Fact]

@@ -75,6 +75,21 @@
                     <Button Content="重放选中条目" Click="OnReplayClicked" HorizontalAlignment="Left"/>
                     <TextBlock Text="在重试队列列表中选中一条后点击重放；重放会重置尝试计数并立即执行。"
                                FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
+
+                    <Separator Margin="0,6,0,0"/>
+
+                    <TextBlock Text="NapCat 日志（后台实时）" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding NapCatStatusText}" TextWrapping="Wrap" FontSize="12" Opacity="0.85"/>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <ToggleSwitch Content="暂停滚动" IsChecked="{Binding NapCatLogPaused, Mode=TwoWay}"/>
+                        <Button Content="清空日志" Click="OnClearNapCatLogClicked" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding NapCatDroppedText}" VerticalAlignment="Center"
+                                   FontSize="12" Opacity="0.8" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <TextBox x:Name="NapCatLogView" Text="{Binding NapCatLogText, Mode=OneWay}"
+                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                             FontFamily="Consolas" FontSize="12" Height="200"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
                 </StackPanel>
             </Expander>
 

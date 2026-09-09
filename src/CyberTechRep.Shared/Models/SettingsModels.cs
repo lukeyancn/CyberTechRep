@@ -27,6 +27,35 @@ public sealed class AppSettings
     public FileSettings Files { get; set; } = new();
 
     public MaintenanceSettings Maintenance { get; set; } = new();
+
+    /// <summary>常态化作业（按学科配置的固定作业项，整理并发送确认窗口可勾选落档）。</summary>
+    public StandingHomeworkSettings StandingHomework { get; set; } = new();
+}
+
+/// <summary>常态化作业设置（需求 3）：按学科维护的固定作业项，设置页可增删改。</summary>
+public sealed class StandingHomeworkSettings
+{
+    /// <summary>常态化作业项（顺序即确认窗口与落档顺序）。</summary>
+    public IReadOnlyList<StandingHomeworkItem> Items { get; set; } = [];
+}
+
+/// <summary>
+/// 单条常态化作业（如数学「校本往后做一课」）：
+/// 在「整理并发送·确认」窗口以可勾选形式列出，勾选后写入该学科作业文档末尾，
+/// <b>点「发送」才落档</b>（勾选只影响预览，取消勾选即从预览移除，不写存档）。
+/// </summary>
+public sealed class StandingHomeworkItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>学科（写入目标文档的学科名；空学科不参与确认窗口列表）。</summary>
+    public string Subject { get; set; } = "";
+
+    /// <summary>作业内容（追加到该学科文档末尾的一行/一段文本）。</summary>
+    public string Content { get; set; } = "";
+
+    /// <summary>启用状态（false = 确认窗口不列出，存档保留）。</summary>
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>
@@ -40,6 +69,17 @@ public enum MessageConnectionMode
 
     /// <summary>NapCat（OneBot 11）：正向 WS 连接 NapCat 服务端，或反向 WS 监听 NapCat 接入。</summary>
     NapCat = 1
+}
+
+/// <summary>NapCat 登录方式（启动参数决定）：扫码 = 不传 QQ 号，二维码经 WebUI/控制台展示；
+/// 快速登录 = 每次启动把 QQ 号作为启动参数传入，跳过扫码。</summary>
+public enum NapCatLoginMode
+{
+    /// <summary>扫码登录（默认；新电脑首次登录用，成功后 NapCat 自身会记住会话）。</summary>
+    ScanQrCode = 0,
+
+    /// <summary>QQ 号快速登录（每次启动默认使用该 QQ 号）。</summary>
+    QuickLoginQQ = 1
 }
 
 /// <summary>连接设置（QQ 官方机器人开放平台）。</summary>
@@ -105,6 +145,49 @@ public sealed class ConnectionSettings
 
     /// <summary>NapCat 工作目录（可选；为空时使用可执行文件所在目录）。</summary>
     public string NapCatWorkDirectory { get; set; } = "";
+
+    /// <summary>
+    /// NapCat 登录方式：扫码（默认；新电脑首次登录推荐，二维码在 NapCat WebUI 展示）/
+    /// QQ 号快速登录（每次启动把该 QQ 号作为启动参数传入，跳过扫码）。
+    /// </summary>
+    public NapCatLoginMode NapCatLoginMode { get; set; } = NapCatLoginMode.ScanQrCode;
+
+    /// <summary>快速登录 QQ 号（NapCatLoginMode = QuickLoginQQ 时每次启动作为参数传入启动器）。</summary>
+    public string NapCatQuickLoginQQ { get; set; } = "";
+
+    /// <summary>ClassIsland 启动后自动后台拉起 NapCat（无窗口；仅 NapCat 模式且已配置可执行文件时生效）。</summary>
+    public bool NapCatAutoStart { get; set; }
+
+    /// <summary>NapCat 启动成功后自动用系统默认浏览器打开 WebUI（登录/管理页面）。</summary>
+    public bool NapCatOpenWebUiOnStart { get; set; }
+
+    /// <summary>
+    /// 排错面板 NapCat 日志环形缓冲行数上限（默认 2000；超出丢弃最旧行，内存占用有界）。
+    /// 进程 stdout/stderr 经异步重定向接入，UI 侧 300ms 批量合并渲染。
+    /// </summary>
+    public int NapCatLogBufferLines { get; set; } = 2000;
+
+    /// <summary>
+    /// 断点续传：连接建立后自动拉取历史消息补齐缺口（NapCat 模式，get_group_msg_history）。
+    /// 默认开启；游标续传为主、本项为启动核对兜底。
+    /// </summary>
+    public bool NapCatBackfillOnConnect { get; set; } = true;
+
+    /// <summary>启动核对单群最多回溯条数（默认 100；过大将拖慢首次同步）。</summary>
+    public int NapCatBackfillCount { get; set; } = 100;
+
+    /// <summary>
+    /// 撤回联动：收到协议端撤回事件（notice.group_recall / friend_recall）时，
+    /// 自动从通知/作业存档与学科文档中删除对应消息。默认开启。
+    /// </summary>
+    public bool RecallSyncEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 撤回核对兜底（默认关闭）：定期用 get_msg 探测当日已归档消息是否仍存在，
+    /// 不存在则视为已撤回并删除。用于 NapCat 不上报非 API 撤回（issue #1171）的场景；
+    /// 因探测存在误判风险（消息超期后 get_msg 也会失败），默认关闭需用户显式开启。
+    /// </summary>
+    public bool RecallReconcileEnabled { get; set; }
 
     /// <summary>
     /// 作业清单「整理并发送」总开关（作业悬浮窗「整理并发送」入口与实际发送行为；

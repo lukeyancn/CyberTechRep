@@ -51,9 +51,12 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
     private readonly INoKeywordFallbackClassifier? _noKeywordFallback;
     private readonly MemberSubjectBindingStore? _memberBindings;
     private readonly Func<SubjectRecognitionSettings>? _getSubjectRecognitionSettings;
+    private readonly IMessageReclassifyService? _reclassify;
+    private readonly Func<ConnectionSettings>? _getConnectionSettings;
     private readonly ILogger _logger;
 
     private EventHandler<MessageRecord>? _messageHandler;
+    private EventHandler<MessageRecallEvent>? _recallHandler;
     private EventHandler<UpdateInfo>? _updateHandler;
     private Func<PendingConfirmItem, CancellationToken, Task>? _resolvedHook;
     private SemaphoreSlim? _processingGate;
@@ -79,6 +82,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         INoKeywordFallbackClassifier? noKeywordFallback = null,
         MemberSubjectBindingStore? memberBindings = null,
         Func<SubjectRecognitionSettings>? getSubjectRecognitionSettings = null,
+        IMessageReclassifyService? reclassify = null,
+        Func<ConnectionSettings>? getConnectionSettings = null,
         ILogger? logger = null)
     {
         _ingest = ingest;
@@ -93,6 +98,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         _noKeywordFallback = noKeywordFallback;
         _memberBindings = memberBindings;
         _getSubjectRecognitionSettings = getSubjectRecognitionSettings;
+        _reclassify = reclassify;
+        _getConnectionSettings = getConnectionSettings;
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -125,6 +132,16 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 _ = ProcessMessageAsync(message, CancellationToken.None);
             };
             _ingest.MessageReceived += _messageHandler;
+
+            // 需求 1：撤回联动（NapCat notice.group_recall / friend_recall → 删除通知/作业存档与学科文档）
+            _recallHandler = (_, recall) =>
+            {
+                if (recall is not null)
+                {
+                    _ = HandleRecallAsync(recall, CancellationToken.None);
+                }
+            };
+            _ingest.MessageRecalled += _recallHandler;
         }
 
         // ④ 更新检测 → 通知悬浮窗
@@ -162,6 +179,11 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         if (_ingest is not null && _messageHandler is not null)
         {
             _ingest.MessageReceived -= _messageHandler;
+        }
+
+        if (_ingest is not null && _recallHandler is not null)
+        {
+            _ingest.MessageRecalled -= _recallHandler;
         }
 
         if (_updateNotify is not null && _updateHandler is not null)
@@ -224,25 +246,71 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
 
     private async Task ProcessMessageCoreAsync(MessageRecord message, CancellationToken ct)
     {
-        // ① 通知/作业二分（模块 2；内部异常已返回 Unknown）
-        ClassifiedMessage classified;
-        try
-        {
-            classified = await _classifier!.ClassifyAsync(message, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "消息分类失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}），本条消息跳过",
-                message.MessageId, message.GroupOpenId);
-            return;
-        }
-
         var text = KeywordMessageClassifier.ExtractPlainText(message.Segments);
 
-        // ② 文件/图片/视频段 → 文件管道（与通知/作业类型无关，均入队）
+        // ① 文件/图片/视频段 → 文件管道（与通知/作业类型无关，均入队）
         var attachmentIds = await EnqueueFileSegmentsAsync(message, ct).ConfigureAwait(false);
 
-        switch (classified.Kind)
+        // 需求 5：人工换类覆盖——同一消息被手动换类后，重投/重放/续传补齐一律按覆盖后的类型落档，
+        // 不会被识别链重新摆回原类型（覆盖记录持久化，重启后保持）。纯本地查询，无网络/AI 调用。
+        MessageKind? overrideKind = null;
+        if (_reclassify?.TryGetKindOverride(message.MessageId, out var forcedKind) == true)
+        {
+            overrideKind = forcedKind;
+        }
+
+        // 需求 1：回复链归并——回复的是一条已归档的作业/通知消息时，按被回复消息的类型与学科处理
+        //（即使本条消息不含任何关键词）。优先级：人工换类覆盖 > 回复链 > 关键词/AI 识别链。
+        // 回复链命中后直接完成落档并返回：不再调用消息分类器（避免 AI/关键词链把回复消息
+        // 判成无关类型，也避免分类器异常导致回复消息被整条丢弃）。
+        if (overrideKind is null)
+        {
+            var replyTarget = await ResolveReplyTargetAsync(message, ct).ConfigureAwait(false);
+            if (replyTarget is { } target)
+            {
+                _logger.LogInformation(
+                    "回复链归并命中（MessageId={MessageId}, ReplyTo={ReplyTo}, TargetKind={Kind}, TargetSubject={Subject}）",
+                    message.MessageId, message.ReplyToMessageId, target.Kind, target.Subject);
+                if (await ProcessReplyChainedAsync(message, text, attachmentIds, target, ct).ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                // 归并失败（存储异常等）→ 落回常规分类路径，保证消息不丢
+                _logger.LogWarning(
+                    "回复链归并未完成，回落到常规分类路径（MessageId={MessageId}）", message.MessageId);
+            }
+        }
+
+        // ③ 通知/作业二分（模块 2；内部异常已返回 Unknown）
+        MessageKind kind;
+        string matchReason;
+        if (overrideKind is { } forced)
+        {
+            // 人工换类是显式语义：跳过识别链，直接按覆盖类型落档（识别链不可用也不影响人工修正）
+            kind = forced;
+            matchReason = "kind_override";
+            _logger.LogInformation(
+                "消息类型按人工换类覆盖处理（MessageId={MessageId}, 覆盖={Override}）",
+                message.MessageId, kind);
+        }
+        else
+        {
+            try
+            {
+                var classified = await _classifier!.ClassifyAsync(message, ct).ConfigureAwait(false);
+                kind = classified.Kind;
+                matchReason = classified.MatchReason;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "消息分类失败（MessageId={MessageId}, GroupOpenId={GroupOpenId}），本条消息跳过",
+                    message.MessageId, message.GroupOpenId);
+                return;
+            }
+        }
+
+        switch (kind)
         {
             case MessageKind.Notice:
                 await WriteNoticeAsync(message, text, ct).ConfigureAwait(false);
@@ -273,7 +341,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 {
                     _logger.LogDebug(
                         "消息未分类，忽略（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Reason={Reason}）",
-                        message.MessageId, message.GroupOpenId, classified.MatchReason);
+                        message.MessageId, message.GroupOpenId, matchReason);
                 }
 
                 // 需求（后续文件走绑定）：兜底未识别出学科 → 发送者文件按显式绑定二次归档；
@@ -294,6 +362,93 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 break;
         }
     }
+
+    /// <summary>
+    /// 需求 1：解析回复链目标——被回复消息是否为已归档的作业/通知。
+    /// 作业优先（同一 id 在两个存档都命中时按作业处理，与识别链默认语义一致）。
+    /// 未命中/存储未接线返回 null（调用方走常规分类路径，行为与旧版一致）。
+    /// </summary>
+    private async Task<ReplyTarget?> ResolveReplyTargetAsync(MessageRecord message, CancellationToken ct)
+    {
+        var replyTo = message.ReplyToMessageId;
+        if (string.IsNullOrWhiteSpace(replyTo) || _homeworkStore is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var homework = (await _homeworkStore.GetAllAsync(ct).ConfigureAwait(false))
+                .FirstOrDefault(h => string.Equals(h.MessageId, replyTo, StringComparison.Ordinal));
+            if (homework is not null)
+            {
+                return new ReplyTarget(MessageKind.Homework, homework.Subject ?? "");
+            }
+
+            if (_noticeStore is not null)
+            {
+                var notice = (await _noticeStore.GetAllAsync(ct).ConfigureAwait(false))
+                    .FirstOrDefault(n => string.Equals(n.MessageId, replyTo, StringComparison.Ordinal));
+                if (notice is not null)
+                {
+                    return new ReplyTarget(MessageKind.Notice, "");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // 回复链解析失败不影响主流程：回落常规分类
+            _logger.LogWarning(ex, "回复链目标解析失败（MessageId={MessageId}, ReplyTo={ReplyTo}）",
+                message.MessageId, replyTo);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 需求 1：回复链落档。被回复的是作业 → 本条按同一学科追加写入作业文档
+    /// （<see cref="SubjectSource.Manual"/>：回复链是显式语义，不应被后续识别链回摆）；
+    /// 被回复的是通知 → 本条按通知落档。返回是否成功完成（false = 调用方回落常规路径）。
+    /// </summary>
+    private async Task<bool> ProcessReplyChainedAsync(
+        MessageRecord message, string text, IReadOnlyList<Guid> attachmentIds, ReplyTarget target,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (target.Kind == MessageKind.Notice)
+            {
+                await WriteNoticeAsync(message, text, ct).ConfigureAwait(false);
+                return true;
+            }
+
+            var subject = string.IsNullOrWhiteSpace(target.Subject)
+                ? HomeworkSubjectResolver.Unclassified
+                : target.Subject;
+            await WriteHomeworkAsync(message, text, subject, 1.0, SubjectSource.Manual, attachmentIds, ct)
+                .ConfigureAwait(false);
+            await ReassignFilesSafeAsync(message.MessageId, subject, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "回复链归并写入失败（MessageId={MessageId}, TargetKind={Kind}, Subject={Subject}）",
+                message.MessageId, target.Kind, target.Subject);
+            return false;
+        }
+    }
+
+    /// <summary>回复链目标（被回复消息的类型与学科）。</summary>
+    internal readonly record struct ReplyTarget(MessageKind Kind, string Subject);
 
     /// <summary>作业：学科链识别 → HomeworkStore 写入 → 文件二次归档到学科目录。</summary>
     private async Task ProcessHomeworkAsync(
@@ -404,7 +559,108 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         _logger.LogInformation(
             "作业已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Subject={Subject}, Source={Source}, Confidence={Confidence}, Attachments={Count}）",
             messageId, message.GroupOpenId, subject, source, confidence, attachmentIds.Count);
+
+        // 需求 1：同步追加写入该学科连续文档（去重合并由 HomeworkStore 决策）
+        await AppendDocumentEntrySafeAsync(
+            messageId, message.MemberOpenId, message.SenderNickname, message.ReceivedAt, text, subject, ct)
+            .ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// 需求 1：把一条作业消息追加写入对应学科的连续文档（重复内容跳过、部分重叠并集合并，
+    /// 决策在 <c>HomeworkStore.AppendDocumentEntryAsync</c> 内完成）。
+    /// 失败只记日志——作业条目已落档，历史文档可由结构迁移重建，不阻断主流程、不投重试队列。
+    /// </summary>
+    private async Task AppendDocumentEntrySafeAsync(
+        string messageId, string memberOpenId, string senderLabel, DateTimeOffset createdAt,
+        string text, string subject, CancellationToken ct)
+    {
+        if (_homeworkStore is null || string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        try
+        {
+            await _homeworkStore.AppendDocumentEntryAsync(subject, new HomeworkDocumentEntry
+            {
+                SourceMessageIds = string.IsNullOrWhiteSpace(messageId) ? [] : [messageId],
+                MemberOpenId = memberOpenId,
+                SenderLabel = senderLabel,
+                Text = text,
+                CreatedAt = createdAt
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "作业文档追加写入失败（MessageId={MessageId}, Subject={Subject}）；作业条目已落档，文档可由后续消息/迁移补齐",
+                messageId, subject);
+        }
+    }
+
+    /// <summary>
+    /// 需求 1 撤回联动：把被撤回消息从通知/作业存档与学科文档中删除。
+    /// 触发源 = 协议端撤回上报（NapCat <c>notice.group_recall</c> / <c>friend_recall</c>）；
+    /// 非 API 撤回存在协议端不上报的已知缺陷，由手动删除与可选核对兜底（见交付说明）。
+    /// </summary>
+    internal async Task HandleRecallAsync(MessageRecallEvent recall, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(recall);
+        if (!IsRecallSyncEnabled())
+        {
+            _logger.LogInformation(
+                "撤回联动已关闭（ConnectionSettings.RecallSyncEnabled=false），忽略撤回事件 MessageId={MessageId}",
+                recall.MessageId);
+            return;
+        }
+
+        var notices = 0;
+        var homework = 0;
+        try
+        {
+            if (_noticeStore is not null
+                && await _noticeStore.RemoveByMessageIdAsync(recall.MessageId, ct).ConfigureAwait(false))
+            {
+                notices++;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "撤回联动：删除通知失败（MessageId={MessageId}）", recall.MessageId);
+        }
+
+        try
+        {
+            if (_homeworkStore is not null)
+            {
+                homework = await _homeworkStore.RemoveByMessageIdAsync(recall.MessageId, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "撤回联动：删除作业与文档条目失败（MessageId={MessageId}）", recall.MessageId);
+        }
+
+        _logger.LogInformation(
+            "撤回联动完成（MessageId={MessageId}, Group={Group}, Operator={Operator}, 通知={Notices}, 作业={Homework}）",
+            recall.MessageId, recall.GroupOpenId, recall.OperatorOpenId, notices, homework);
+    }
+
+    /// <summary>撤回联动开关（设置未接线时默认开启）。</summary>
+    private bool IsRecallSyncEnabled() => _getConnectionSettings?.Invoke().RecallSyncEnabled ?? true;
 
     /// <summary>
     /// MemberSelection 模式下取成员显式绑定学科（群作用域优先于全局）。
@@ -639,6 +895,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             _logger.LogInformation(
                 "无关键词兜底作业已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Subject={Subject}, Source={Source}, Confidence={Confidence}）",
                 messageId, message.GroupOpenId, subject.Subject, subject.Source, subject.Confidence);
+            await AppendDocumentEntrySafeAsync(
+                messageId, message.MemberOpenId, message.SenderNickname, message.ReceivedAt, text, subject.Subject, ct)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -666,7 +925,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         var memberOpenId = message.MemberOpenId;
         try
         {
-            await _noticeStore!.AddOrUpdateAsync(messageId, text, memberOpenId, message.GroupOpenId, ct)
+            await _noticeStore!.AddOrUpdateAsync(messageId, text, memberOpenId, message.GroupOpenId, null, ct)
                 .ConfigureAwait(false);
             _logger.LogInformation(
                 "通知已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Length={Length}）",
@@ -837,7 +1096,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         {
             // 幂等键：同版本只产生一条通知
             await _noticeStore.AddOrUpdateAsync($"update:{info.LatestVersion}", content, memberOpenId: null,
-                groupOpenId: null, ct).ConfigureAwait(false);
+                groupOpenId: null, createdAt: null, ct).ConfigureAwait(false);
             _logger.LogInformation("更新提示已写入通知（Version={Version}）", info.LatestVersion);
         }
         catch (Exception ex)
@@ -931,6 +1190,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 CreatedAt = DateTimeOffset.Now
             };
             await _homeworkStore.UpsertAsync(item, ct).ConfigureAwait(false);
+            await AppendDocumentEntrySafeAsync(
+                item.MessageId, item.MemberOpenId, "", item.CreatedAt, item.Content, result.Subject, ct)
+                .ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -969,7 +1231,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 case StoreWriteKind.NoticeUpsert when _noticeStore is not null:
                     await _noticeStore
                         .AddOrUpdateAsync(payload.MessageId, payload.Content ?? "", payload.MemberOpenId,
-                            payload.GroupOpenId, ct)
+                            payload.GroupOpenId, null, ct)
                         .ConfigureAwait(false);
                     break;
 
@@ -978,7 +1240,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                     var result = await _subjectChain
                         .ClassifyAsync(payload.Content ?? "", payload.MessageId, ct).ConfigureAwait(false);
                     var attachments = await GetAttachmentIdsSafeAsync(payload.MessageId, ct).ConfigureAwait(false);
-                    await _homeworkStore.UpsertAsync(new HomeworkItem
+                    var retryItem = new HomeworkItem
                     {
                         MessageId = payload.MessageId,
                         MemberOpenId = payload.MemberOpenId ?? "",
@@ -988,7 +1250,11 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                         SubjectSource = result.Source,
                         AttachmentIds = attachments,
                         CreatedAt = DateTimeOffset.Now
-                    }, ct).ConfigureAwait(false);
+                    };
+                    await _homeworkStore.UpsertAsync(retryItem, ct).ConfigureAwait(false);
+                    await AppendDocumentEntrySafeAsync(
+                        retryItem.MessageId, retryItem.MemberOpenId, "", retryItem.CreatedAt,
+                        retryItem.Content, result.Subject, ct).ConfigureAwait(false);
                     break;
                 }
 

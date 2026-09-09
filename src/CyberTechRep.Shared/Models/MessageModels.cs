@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace CyberTechRep.Shared.Models;
 
 /// <summary>一条已幂等去重后的群消息记录（持久化最小单元）。</summary>
@@ -19,11 +21,56 @@ public sealed class MessageRecord
 
     public DateTimeOffset ReceivedAt { get; init; }
 
+    /// <summary>
+    /// 协议端原始时间戳（Unix 秒；0 = 协议端未提供，如 QQ 官方平台事件）。
+    /// <para>
+    /// 需求 4：续传游标的时间基准必须与启动核对（<c>get_group_msg_history</c> 的 <c>time</c>）
+    /// 同源，否则「接收时刻（本地时钟）」与「消息时刻（服务端时钟）」混用会因网络延迟/时钟偏差
+    /// 把未入档的旧消息误判为已覆盖而漏补。故 NapCat 规范化器透传 OneBot <c>time</c>，
+    /// 游标只在该值 &gt; 0 时推进时间线（缺失时仅按消息 id 去重）。
+    /// </para>
+    /// </summary>
+    public long SourceTimestampUnix { get; init; }
+
     /// <summary>消息段列表（文本/图片/文件等，已规范化）。</summary>
     public IReadOnlyList<MessageSegment> Segments { get; init; } = [];
 
+    /// <summary>
+    /// 被回复消息 id（需求 1 回复链归并）：NapCat <c>reply</c> 段携带；
+    /// 官方平台事件不提供该字段（恒为空）。为空 = 非回复消息。
+    /// </summary>
+    public string ReplyToMessageId { get; init; } = "";
+
     /// <summary>原始 JSON 快照（已脱敏：不含 AppId/AppSecret/Token）。</summary>
     public string RawJsonSnapshot { get; init; } = "";
+}
+
+/// <summary>
+/// 消息撤回事件（OneBot 11 <c>notice.group_recall</c> / <c>notice.friend_recall</c>）。
+/// <para>
+/// 查证结论（详见交付说明）：协议层支持且 NapCat 会下发，但 NapCat 对
+/// 「非 API 方式撤回」（如在手机 QQ 上撤回）存在已知缺陷不上报（NapCatQQ issue #1171），
+/// 因此本事件只覆盖「能收到上报」的场景；未收到上报时由手动删除与可选核对兜底。
+/// </para>
+/// </summary>
+public sealed class MessageRecallEvent
+{
+    /// <summary>被撤回消息的 id（与 <see cref="MessageRecord.MessageId"/> 同一命名空间）。</summary>
+    public required string MessageId { get; init; }
+
+    /// <summary>来源群 OpenID / 群号（私聊撤回为空）。</summary>
+    public string GroupOpenId { get; init; } = "";
+
+    /// <summary>原消息发送者。</summary>
+    public string SenderOpenId { get; init; } = "";
+
+    /// <summary>执行撤回者（自己撤回时与发送者相同）。</summary>
+    public string OperatorOpenId { get; init; } = "";
+
+    public DateTimeOffset RecalledAt { get; init; } = DateTimeOffset.Now;
+
+    /// <summary>是否来自协议端撤回上报（false = 本地核对兜底推断）。</summary>
+    public bool FromProtocolNotice { get; init; } = true;
 }
 
 /// <summary>规范化消息段（屏蔽协议端具体段格式差异）。</summary>
@@ -117,6 +164,72 @@ public sealed class HomeworkItem
 
     /// <summary>人工标记已完成/已处理。</summary>
     public bool IsResolved { get; set; }
+}
+
+/// <summary>
+/// 学科作业文档条目：一条（或合并后的多条同源）作业消息在学科文档中的一次追加。
+/// <para>
+/// <see cref="SourceMessageIds"/> 是撤回联动的锚点：撤回任一来源消息即删除该条目
+/// （合并条目会随任一来源被撤回而整体移除——合并语义下无法只删其中一段，
+/// 已在交付说明中列为可容忍边界）。
+/// </para>
+/// </summary>
+public sealed class HomeworkDocumentEntry
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+
+    /// <summary>来源消息 id 集合（去重合并后可能包含多条；撤回联动按此匹配）。</summary>
+    public IReadOnlyList<string> SourceMessageIds { get; set; } = [];
+
+    /// <summary>发送者成员 OpenID（来源元信息，仅同一发送者才允许合并）。</summary>
+    public string MemberOpenId { get; init; } = "";
+
+    /// <summary>发送者展示名（昵称；为空时显示「成员」）。</summary>
+    public string SenderLabel { get; init; } = "";
+
+    /// <summary>追加进文档的正文（连续文档样式，可含换行）。</summary>
+    public string Text { get; set; } = "";
+
+    public DateTimeOffset CreatedAt { get; init; }
+
+    /// <summary>该条目是否为「常态化作业」勾选落档（元信息，供发送/回溯区分）。</summary>
+    public bool IsStanding { get; init; }
+}
+
+/// <summary>
+/// 学科作业文档（每个学科、每个归档日一份连续文档）。
+/// <para>
+/// 显示口径：<see cref="ManualText"/> 非空时以用户手工编辑结果为准（<b>存档为单一事实源</b>），
+/// 否则由 <see cref="Entries"/> 按时间正序拼接渲染。追加写入在 ManualText 非空时
+/// 以「末尾增量追加」方式并入 ManualText（既保留用户删改，又不丢新消息）。
+/// </para>
+/// </summary>
+public sealed class HomeworkDocument
+{
+    /// <summary>归档日（条目 CreatedAt 的本地日期；与作业按天分桶口径一致）。</summary>
+    public DateOnly Date { get; init; }
+
+    public required string Subject { get; init; }
+
+    /// <summary>追加写入的条目（时间正序）。</summary>
+    public List<HomeworkDocumentEntry> Entries { get; set; } = [];
+
+    /// <summary>用户手工编辑后的整篇文本（null/空 = 未编辑，按 Entries 渲染）。</summary>
+    public string? ManualText { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>渲染文本（不参与序列化）：ManualText 优先，否则按条目拼接。</summary>
+    [JsonIgnore]
+    public string Render => ManualText is { Length: > 0 } manual
+        ? manual
+        : string.Join(
+            Environment.NewLine,
+            Entries.Select(e => e.Text).Where(t => !string.IsNullOrWhiteSpace(t)));
+
+    /// <summary>该文档是否为空（无条目且无手工文本）。</summary>
+    [JsonIgnore]
+    public bool IsEmpty => Entries.Count == 0 && string.IsNullOrWhiteSpace(ManualText);
 }
 
 /// <summary>文件归档记录。持久化于 files.json + MD5 索引。</summary>

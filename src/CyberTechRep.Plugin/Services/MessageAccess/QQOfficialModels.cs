@@ -65,6 +65,9 @@ public sealed class GroupMessageEvent
     /// <summary>附件列表（图片/文件/视频/语音，带下载直链）。</summary>
     public IReadOnlyList<GroupAttachment> Attachments { get; init; } = [];
 
+    /// <summary>被回复消息 id（NapCat 规范化时注入的 <c>reply_to</c>；官方事件恒为空）。</summary>
+    public string ReplyToMessageId { get; init; } = "";
+
     public string RawTimestamp { get; init; } = "";
 
     /// <summary>从事件 JSON（d 字段）容错解析。</summary>
@@ -112,6 +115,8 @@ public sealed class GroupMessageEvent
             SenderNickname = nickname,
             Content = GetStr(d, "content"),
             Attachments = attachments,
+            // NapCat 规范化器注入的被回复消息 id（官方平台无此字段 → 空串，行为不变）
+            ReplyToMessageId = GetStr(d, "reply_to"),
             RawTimestamp = GetStr(d, "timestamp")
         };
     }

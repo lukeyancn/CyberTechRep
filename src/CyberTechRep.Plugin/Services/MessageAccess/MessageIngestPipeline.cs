@@ -25,6 +25,9 @@ public sealed class MessageIngestPipeline
     /// <summary>管道输出：通过白名单与幂等检查的新消息。</summary>
     public event EventHandler<MessageRecord>? MessageReceived;
 
+    /// <summary>管道输出：通过群白名单过滤的撤回事件。</summary>
+    public event EventHandler<MessageRecallEvent>? MessageRecalled;
+
     /// <summary>设置热更新（设置页修改群白名单后即时生效）。</summary>
     public void UpdateSettings(ConnectionSettings settings)
     {
@@ -40,7 +43,10 @@ public sealed class MessageIngestPipeline
     /// <summary>
     /// 处理一条分发事件。返回处理结果（供日志/测试断言），事件通过 <see cref="MessageReceived"/> 输出。
     /// </summary>
-    public PipelineResult HandleDispatch(string eventType, string dataJson)
+    /// <param name="eventType">官方事件类型。</param>
+    /// <param name="dataJson">事件 JSON。</param>
+    /// <param name="receivedAt">消息时间覆盖（断点续传补齐历史消息时传原始时间；null = 当前时间）。</param>
+    public PipelineResult HandleDispatch(string eventType, string dataJson, DateTimeOffset? receivedAt = null)
     {
         if (eventType is not (GroupEventTypes.GroupMessageCreate or GroupEventTypes.GroupAtMessageCreate))
         {
@@ -85,7 +91,7 @@ public sealed class MessageIngestPipeline
             }
         }
 
-        var record = MapToRecord(ev, dataJson);
+        var record = MapToRecord(ev, dataJson, receivedAt);
         _logger?.LogInformation(
             "群消息：id={Id} group={Group} sender={Sender} text={Text} attachments={Attachments}",
             record.MessageId, record.GroupOpenId, record.MemberOpenId,
@@ -95,8 +101,46 @@ public sealed class MessageIngestPipeline
         return PipelineResult.Accepted();
     }
 
+    /// <summary>
+    /// 处理一条撤回事件：群白名单过滤（与消息同一口径）。
+    /// 撤回不做幂等去重——同一消息重复上报撤回是幂等删除操作，重复删除无副作用。
+    /// </summary>
+    public PipelineResult HandleRecall(MessageRecallEvent recall)
+    {
+        ArgumentNullException.ThrowIfNull(recall);
+        if (string.IsNullOrEmpty(recall.MessageId))
+        {
+            return PipelineResult.Dropped("撤回事件缺少 message_id", null);
+        }
+
+        lock (_settingsLock)
+        {
+            if (_groupWhitelist.Count > 0
+                && recall.GroupOpenId.Length > 0
+                && !_groupWhitelist.Contains(recall.GroupOpenId))
+            {
+                _logger?.LogDebug("撤回事件被群白名单过滤：group={Group} id={Id}",
+                    recall.GroupOpenId, recall.MessageId);
+                return PipelineResult.Ignored($"群不在白名单：{recall.GroupOpenId}");
+            }
+        }
+
+        _logger?.LogInformation("撤回事件：id={Id} group={Group} operator={Operator}",
+            recall.MessageId, recall.GroupOpenId, recall.OperatorOpenId);
+        MessageRecalled?.Invoke(this, recall);
+        return PipelineResult.Accepted();
+    }
+
     /// <summary>事件体 → MessageRecord（含脱敏原始快照）。</summary>
-    public static MessageRecord MapToRecord(GroupMessageEvent ev, string rawJson)
+    /// <param name="ev">事件体。</param>
+    /// <param name="rawJson">原始 JSON（脱敏快照）。</param>
+    /// <param name="receivedAt">
+    /// 时间覆盖（断点续传补齐历史消息时传原始时间）。为 null 时优先采用协议端原始时间
+    /// <see cref="GroupMessageEvent.RawTimestamp"/>（NapCat 透传 OneBot <c>time</c>），
+    /// 缺失/非法才回落到本地当前时间——保证「实时」与「历史补齐」两条路径的时间基准同源。
+    /// </param>
+    public static MessageRecord MapToRecord(GroupMessageEvent ev, string rawJson,
+        DateTimeOffset? receivedAt = null)
     {
         var segments = new List<MessageSegment>();
         if (!string.IsNullOrEmpty(ev.Content))
@@ -123,20 +167,48 @@ public sealed class MessageIngestPipeline
             });
         }
 
+        var sourceTimestamp = ParseSourceTimestamp(ev.RawTimestamp);
+        var resolvedReceivedAt = receivedAt
+            ?? (sourceTimestamp > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(sourceTimestamp).ToLocalTime()
+                : DateTimeOffset.Now);
+
         return new MessageRecord
         {
             MessageId = ev.Id,
             GroupOpenId = ev.GroupOpenId,
             MemberOpenId = ev.MemberOpenId,
             SenderNickname = ev.SenderNickname,
-            ReceivedAt = DateTimeOffset.Now,
+            ReceivedAt = resolvedReceivedAt,
+            SourceTimestampUnix = sourceTimestamp,
             Segments = segments,
-            RawJsonSnapshot = Sanitize(rawJson)
+            ReplyToMessageId = ev.ReplyToMessageId,
+            RawJsonSnapshot = SanitizeRawSnapshot(rawJson)
         };
     }
 
-    /// <summary>原始事件快照脱敏：本层不写入任何凭据字段（凭据只在 HTTP 头/表单），此处做长度兜底。</summary>
-    private static string Sanitize(string rawJson)
+    /// <summary>协议端原始时间戳解析（Unix 秒）：缺失/非法/明显异常（2000 年前或未来 1 天以上）→ 0。</summary>
+    internal static long ParseSourceTimestamp(string? rawTimestamp)
+    {
+        if (!long.TryParse(rawTimestamp, out var seconds) || seconds <= 0)
+        {
+            return 0;
+        }
+
+        const long Year2000 = 946684800;
+        var upperBound = DateTimeOffset.UtcNow.AddDays(1).ToUnixTimeSeconds();
+        return seconds is >= Year2000 and var s && s <= upperBound ? seconds : 0;
+    }
+
+    /// <summary>
+    /// 原始事件快照脱敏：本层不写入任何凭据字段（凭据只在 HTTP 头/表单），此处做长度兜底。
+    /// <para>
+    /// internal：<see cref="NapCatBackfillService"/> 计算续传游标的稳定键时必须用同一函数处理
+    /// 事件 JSON，否则实时路径（记录 <see cref="MessageRecord.RawJsonSnapshot"/>）与核对路径
+    /// 的哈希输入不一致，同秒兜底去重会失效。
+    /// </para>
+    /// </summary>
+    internal static string SanitizeRawSnapshot(string rawJson)
     {
         return rawJson.Length <= 64 * 1024 ? rawJson : rawJson[..(64 * 1024)] + "…(截断)";
     }

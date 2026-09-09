@@ -28,6 +28,7 @@ public sealed class MessageIngestService : IMessageIngestService
     private readonly IngestOptionsProvider _provider;
     private readonly ILogger? _logger;
     private readonly Action<QQOfficialWsClientOptions>? _configureClientOptions;
+    private readonly NapCatResumeCursorStore? _resumeCursor;
     private readonly object _lock = new();
     private QQOfficialWsClient? _client;
 
@@ -40,11 +41,13 @@ public sealed class MessageIngestService : IMessageIngestService
     private volatile bool _started;
 
     public MessageIngestService(IngestOptionsProvider provider, ILogger? logger = null,
-        Action<QQOfficialWsClientOptions>? configureClientOptions = null)
+        Action<QQOfficialWsClientOptions>? configureClientOptions = null,
+        NapCatResumeCursorStore? resumeCursor = null)
     {
         _provider = provider;
         _logger = logger;
         _configureClientOptions = configureClientOptions;
+        _resumeCursor = resumeCursor;
     }
 
     public ConnectionStatus Status => _gateway?.Status ?? ConnectionStatus.Disconnected;
@@ -57,6 +60,42 @@ public sealed class MessageIngestService : IMessageIngestService
 
     public event EventHandler<MessageRecord>? MessageReceived;
 
+    /// <inheritdoc />
+    public event EventHandler<MessageRecallEvent>? MessageRecalled;
+
+    /// <summary>
+    /// 推进 NapCat 续传游标（需求 4）：仅在 NapCat 模式下记录，且只在消息已通过管道
+    /// （白名单 + 幂等）并即将交付下游之后调用——即「已入档」语义。
+    /// 时间基准必须与 <see cref="NapCatBackfillService"/> 的启动核对完全一致：统一取
+    /// <see cref="MessageRecord.SourceTimestampUnix"/>（协议端原始 <c>time</c>），
+    /// 内容指纹统一取<b>规范化后的事件 JSON</b>（<see cref="MessageRecord.RawJsonSnapshot"/>）。
+    /// 早期实现取「本地接收时刻 + 拼接文本」，与核对路径的「服务端时刻 + 事件 JSON」
+    /// 是两套口径：同一条消息在实时路径与核对路径算出的稳定键永不相等，
+    /// <c>IsCovered</c> 的同秒兜底判定失效，重启核对会把同一秒的消息重复补齐。
+    /// 协议端未提供时间（<c>SourceTimestampUnix == 0</c>）时只靠消息 id 去重，不推进时间线。
+    /// </summary>
+    private void RecordResumeCursor(MessageRecord message)
+    {
+        if (_resumeCursor is null || _gateway is not NapCatWsClient)
+        {
+            return;
+        }
+
+        try
+        {
+            var timestamp = message.SourceTimestampUnix;
+            _resumeCursor.Record(
+                message.GroupOpenId, message.MessageId, timestamp,
+                NapCatResumeCursorStore.ContentHashKey(timestamp, message.RawJsonSnapshot));
+        }
+        catch (Exception ex)
+        {
+            // 游标推进失败绝不影响消息交付（下次核对窗口兜底）
+            _logger?.LogWarning(ex, "NapCat 续传游标推进失败（MessageId={MessageId}）", message.MessageId);
+        }
+    }
+
+    /// <summary>连接状态：供看门狗/核对服务订阅。</summary>
     public event EventHandler<ConnectionStatus>? StatusChanged;
 
     public Task StartAsync(CancellationToken ct = default)
@@ -74,7 +113,13 @@ public sealed class MessageIngestService : IMessageIngestService
             Directory.CreateDirectory(_provider.DataDirectory);
             _store = new MessageIdempotencyStore(_provider.DataDirectory, CreateStoreLogger());
             _pipeline = new MessageIngestPipeline(_store, CreatePipelineLogger());
-            _pipeline.MessageReceived += (_, m) => MessageReceived?.Invoke(this, m);
+            _pipeline.MessageReceived += (_, m) =>
+            {
+                // 需求 4：实时消息成功入档后推进续传游标（NapCat 模式；防抖 1 秒原子落盘）
+                RecordResumeCursor(m);
+                MessageReceived?.Invoke(this, m);
+            };
+            _pipeline.MessageRecalled += (_, r) => MessageRecalled?.Invoke(this, r);
             _pipeline.UpdateSettings(settings);
 
             // 模式分发：官方模式走原路径（_client 保持原语义，ApplySettings 热重连逻辑不变）；
@@ -132,6 +177,19 @@ public sealed class MessageIngestService : IMessageIngestService
             await gateway.StopAsync().ConfigureAwait(false);
         }
 
+        // 需求 4：停止前把续传游标落盘（正常退出路径；强杀由防抖刷新 + 启动核对兜底）
+        if (_resumeCursor is not null)
+        {
+            try
+            {
+                await _resumeCursor.FlushAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "NapCat 续传游标落盘失败（下次启动由核对窗口兜底）");
+            }
+        }
+
         _logger?.LogInformation("消息接入服务已停止");
     }
 
@@ -140,6 +198,22 @@ public sealed class MessageIngestService : IMessageIngestService
         // 能力缺口（调研文档已声明）：官方平台不提供历史消息补拉 API。
         _logger?.LogWarning("官方机器人平台无历史消息补拉 API，FetchHistoryAsync({Days}) 返回空（历史回放能力暂缺）", days);
         return Task.FromResult<IReadOnlyList<MessageRecord>>([]);
+    }
+
+    /// <summary>
+    /// 断点续传补齐入口（需求 4）：把历史消息按原始事件 JSON 注入接入管道——
+    /// 复用群白名单与消息 id 幂等去重（重复消息不会二次显示/二次落档），
+    /// 并按原始消息时间入档（保证学科文档按天分桶与展示时间正确）。
+    /// </summary>
+    public PipelineResult InjectHistoricalMessage(string eventType, string dataJson, DateTimeOffset receivedAt)
+    {
+        var pipeline = _pipeline;
+        if (pipeline is null)
+        {
+            return PipelineResult.Dropped("接入服务未启动，历史消息注入跳过", null);
+        }
+
+        return pipeline.HandleDispatch(eventType, dataJson, receivedAt);
     }
 
     public async Task ReconnectAsync(CancellationToken ct = default)
@@ -292,6 +366,52 @@ public sealed class MessageIngestService : IMessageIngestService
             }
         };
         gateway.DispatchReceived += OnDispatch;
+        gateway.MessageRecalled += OnRecall;
+    }
+
+    /// <summary>撤回事件入口：经管道白名单过滤后广播（单条失败不影响网关接收循环）。</summary>
+    private void OnRecall(object? sender, MessageRecallEvent recall)
+    {
+        try
+        {
+            _pipeline?.HandleRecall(recall);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "撤回事件处理失败：id={Id}", recall.MessageId);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<JsonElement?> CallProtocolApiAsync(
+        string action, IReadOnlyDictionary<string, object?> parameters, CancellationToken ct = default)
+    {
+        IMessageGatewayClient? gateway;
+        lock (_lock)
+        {
+            gateway = _gateway;
+        }
+
+        if (gateway is null)
+        {
+            _logger?.LogDebug("原生 API 调用跳过（接入服务未启动）：{Action}", action);
+            return null;
+        }
+
+        try
+        {
+            return await gateway.CallApiAsync(action, parameters, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // 协议端调用失败绝不向调用方抛异常（调用方按 null 走降级路径）
+            _logger?.LogWarning(ex, "原生 API 调用失败：{Action}", action);
+            return null;
+        }
     }
 
     // internal：供单测直接验证连接参数差异判定

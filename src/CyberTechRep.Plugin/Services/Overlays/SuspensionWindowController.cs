@@ -380,7 +380,11 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         // 穿透由钉底器处理。穿透按契约「仅固定模式下生效」：未固定时即便开了穿透也
         // 不生效——否则悬浮窗既不能点也不能拖，只能去设置页才能救回来。
         Views.OverlayBehaviors.SetFixed(window, pinned);
-        GetOrCreatePinner(overlayKey, window).Apply(settings.ClickThrough && pinned, settings.Topmost);
+        var pinner = GetOrCreatePinner(overlayKey, window);
+        // 需求 6：通知悬浮窗注册「可交互区域」——穿透开启时通知内容区仍可鼠标选中复制，
+        // 区域外保持穿透；其余悬浮窗未注册，维持既有「整窗穿透」契约。
+        pinner.SetInteractiveRegionProvider(window as IOverlayInteractiveRegionProvider);
+        pinner.Apply(settings.ClickThrough && pinned, settings.Topmost);
 
         // DPI 适配：持久化的是逻辑坐标（DIP），落地时按窗口缩放系数换算为像素。
         // 值未变化时跳过赋值，避免 PositionChanged → CaptureBounds → Save → SettingsChanged →

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
 
@@ -23,6 +24,10 @@ namespace CyberTechRep.Plugin.Services.Overlays;
 /// - 鼠标穿透（clickThrough）：<c>WS_EX_TRANSPARENT</c> 让鼠标点击直接穿过悬浮窗落到
 ///   下方窗口；窗口未启用层叠合成时补 <c>WS_EX_LAYERED</c> +
 ///   <c>SetLayeredWindowAttributes(255)</c>（该补位由本类负责移除）。
+///   若窗口注册了可交互区域（<see cref="IOverlayInteractiveRegionProvider"/>，需求 6：
+///   通知内容需在穿透模式下仍可选中复制），则改用 <c>WM_NCHITTEST</c> 分流——
+///   区域内返回 <c>HTCLIENT</c>（接收鼠标），区域外返回 <c>HTTRANSPARENT</c>（穿透），
+///   此时不设 <c>WS_EX_TRANSPARENT</c>（该样式会让窗口完全收不到鼠标消息）。
 /// </para>
 /// <para>
 /// 设计取舍：未采用「拦截 WM_WINDOWPOSCHANGING 取代周期重申」——外来窗口插入/宿主重申
@@ -48,6 +53,26 @@ internal sealed class DesktopLevelPinner
     /// <summary>系统进入/退出模态移动或缩放循环（拖拽标题栏/边框期间）。</summary>
     private const uint WmEnterSizeMove = 0x0231;
     private const uint WmExitSizeMove = 0x0232;
+
+    /// <summary>鼠标命中测试（需求 6：按可交互区域决定「接收」还是「穿透」）。</summary>
+    private const uint WmNcHitTest = 0x0084;
+
+    /// <summary>WM_NCHITTEST 返回值：客户区（接收鼠标）。</summary>
+    private static readonly IntPtr HtClient = IntPtr.Zero;
+
+    /// <summary>WM_NCHITTEST 返回值：透明（鼠标消息交给下方窗口）。</summary>
+    private static readonly IntPtr HtTransparent = new(-1);
+
+    /// <summary>屏幕坐标点（ScreenToClient 用）。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point32
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool ScreenToClient(IntPtr hWnd, ref Point32 lpPoint);
 
     /// <summary>ShowWindow 命令：显示/还原但不激活（配合 WS_EX_NOACTIVATE，绝不抢焦点）。</summary>
     private const int SwShownoactivate = 8;
@@ -96,6 +121,8 @@ internal sealed class DesktopLevelPinner
     private bool _layeredByUs;
     private bool _topmost;
     private bool _inSystemMoveSizeLoop;
+    private volatile bool _clickThrough;
+    private volatile IOverlayInteractiveRegionProvider? _interactiveRegionProvider;
 
     public DesktopLevelPinner(Window window)
     {
@@ -104,10 +131,10 @@ internal sealed class DesktopLevelPinner
 
         // 跟踪系统模态移动/缩放循环：拖拽期间恢复/压底必须让路，避免兜底计时器的
         // SetWindowPos 与 Avalonia BeginMoveDrag 的模态移动循环打架（拖拽中被重排 Z 序
-        // 会中断拖拽会话）。
+        // 会中断拖拽会话）。同一钩子同时承担需求 6 的命中测试分流。
         if (OperatingSystem.IsWindows())
         {
-            Win32Properties.AddWndProcHookCallback(window, TrackMoveSizeLoop);
+            Win32Properties.AddWndProcHookCallback(window, WndProcHook);
         }
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -124,19 +151,74 @@ internal sealed class DesktopLevelPinner
         };
     }
 
-    /// <summary>WndProc 钩子：仅记录进入/退出系统移动缩放循环，不吞任何消息。</summary>
-    private IntPtr TrackMoveSizeLoop(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    /// <summary>
+    /// 设置「可交互区域」提供者（需求 6，UI 线程调用）：非 null 时穿透改为命中测试分流
+    /// （区域内接收鼠标、区域外穿透），不再整窗 <c>WS_EX_TRANSPARENT</c>；
+    /// 传 null 恢复既有「整窗穿透」契约。设置后需再次 <see cref="Apply"/> 生效。
+    /// </summary>
+    public void SetInteractiveRegionProvider(IOverlayInteractiveRegionProvider? provider)
+        => _interactiveRegionProvider = provider;
+
+    /// <summary>WndProc 钩子：记录系统移动缩放循环 + 穿透模式的命中测试分流，不吞其他消息。</summary>
+    private IntPtr WndProcHook(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg == WmEnterSizeMove)
         {
             _inSystemMoveSizeLoop = true;
+            return IntPtr.Zero;
         }
-        else if (msg == WmExitSizeMove)
+
+        if (msg == WmExitSizeMove)
         {
             _inSystemMoveSizeLoop = false;
+            return IntPtr.Zero;
+        }
+
+        if (msg == WmNcHitTest && _clickThrough && _interactiveRegionProvider is not null)
+        {
+            return HitTestWithInteractiveRegion(hWnd, lParam, ref handled);
         }
 
         return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// 命中测试：把屏幕坐标换算到客户区逻辑坐标，落在可交互区域内返回 HTCLIENT（接收），
+    /// 否则返回 HTTRANSPARENT（穿透到下方窗口）。提供者异常/句柄失效一律按「交回默认处理」兜底。
+    /// 分流判定与坐标换算本身是纯逻辑，见 <see cref="OverlayHitTestRouter"/>（可单测）。
+    /// </summary>
+    private IntPtr HitTestWithInteractiveRegion(IntPtr hWnd, IntPtr lParam, ref bool handled)
+    {
+        Rect region;
+        try
+        {
+            region = _interactiveRegionProvider!.GetInteractiveRegion();
+        }
+        catch
+        {
+            return IntPtr.Zero; // 提供者异常：交回默认处理（避免悬浮窗变「点不透」）
+        }
+
+        if (region.Width <= 0 || region.Height <= 0)
+        {
+            handled = true;
+            return HtTransparent;
+        }
+
+        var (screenX, screenY) = OverlayHitTestRouter.UnpackScreenPoint(lParam);
+        var point = new Point32
+        {
+            X = screenX,
+            Y = screenY
+        };
+        if (!ScreenToClient(hWnd, ref point))
+        {
+            return IntPtr.Zero;
+        }
+
+        var logical = OverlayHitTestRouter.ToClientLogical(point.X, point.Y, _window.RenderScaling);
+        handled = true;
+        return OverlayHitTestRouter.IsInteractive(region, logical) ? HtClient : HtTransparent;
     }
 
     /// <summary>
@@ -152,10 +234,16 @@ internal sealed class DesktopLevelPinner
             return;
         }
 
+        _clickThrough = clickThrough;
+
+        // 需求 6：有「可交互区域」提供者时走命中测试分流（WM_NCHITTEST），
+        // 不能设 WS_EX_TRANSPARENT——该样式会让窗口完全收不到鼠标消息，命中测试也无从谈起。
+        var useHitTestRouting = clickThrough && _interactiveRegionProvider is not null;
+
         var exStyle = GetWindowLong(hwnd, GwlExStyle);
         exStyle |= WsExNoActivate;
 
-        if (clickThrough)
+        if (clickThrough && !useHitTestRouting)
         {
             if ((exStyle & WsExLayered) == 0)
             {

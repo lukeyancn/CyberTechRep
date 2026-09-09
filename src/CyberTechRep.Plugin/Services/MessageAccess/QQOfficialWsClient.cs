@@ -61,7 +61,24 @@ public sealed class QQOfficialWsClient : IMessageGatewayClient
     /// <summary>分发事件透传：(t, d 原始 JSON 文本)。</summary>
     public event EventHandler<(string Type, string Data)>? DispatchReceived;
 
+    /// <summary>
+    /// 官方平台当前无消息撤回事件（QQ 机器人开放平台不推送撤回），事件永不触发；
+    /// NapCat 模式由 <see cref="NapCatWsClient"/> 提供。撤回联动因此仅在 NapCat 模式生效。
+    /// </summary>
+    public event EventHandler<MessageRecallEvent>? MessageRecalled;
+
     public event EventHandler<ConnectionStatus>? ConnectionStateChanged;
+
+    /// <summary>
+    /// 官方平台不提供「任意原生 API」透传通道（能力缺口）：恒返回 null 并记警告。
+    /// NapCat 模式由 <see cref="NapCatWsClient"/> 实现（历史拉取/发送）。
+    /// </summary>
+    public Task<JsonElement?> CallApiAsync(
+        string action, IReadOnlyDictionary<string, object?> parameters, CancellationToken ct = default)
+    {
+        _logger?.LogDebug("官方机器人模式不支持原生 API 透传，已忽略：{Action}", action);
+        return Task.FromResult<JsonElement?>(null);
+    }
 
     public QQOfficialWsClient(QQOfficialWsClientOptions options, ILogger? logger = null)
     {
@@ -362,29 +379,27 @@ public sealed class QQOfficialWsClient : IMessageGatewayClient
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
-            // 脱敏：只输出状态码，不输出响应体（可能回显敏感信息）
-            throw new InvalidOperationException($"AccessToken 获取失败：HTTP {(int)resp.StatusCode}");
+            // 带脱敏响应片段：此前只输出状态码，用户无从判断是 AppId/Secret 错还是网络/代理问题
+            _logger?.LogError("AccessToken 请求失败：HTTP {Status}, Url={Url}, 响应片段={Snippet}",
+                (int)resp.StatusCode, url, AccessTokenResponseParser.SanitizeSnippet(body));
+            throw new InvalidOperationException(
+                $"AccessToken 获取失败：HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}；" +
+                $"响应片段：{AccessTokenResponseParser.SanitizeSnippet(body)}");
         }
 
-        using var doc = JsonDocument.Parse(body);
-        var token = doc.RootElement.TryGetProperty("access_token", out var at) ? at.GetString() : null;
-        var expiresIn = 7200;
-        if (doc.RootElement.TryGetProperty("expires_in", out var ei))
+        // 兼容解析（顶层/嵌套/驼峰/双编码 + 协议端错误码），失败诊断含脱敏原始响应片段
+        var parsed = AccessTokenResponseParser.Parse(body);
+        if (!parsed.Success)
         {
-            // 官方响应 expires_in 可能为字符串，容错解析
-            expiresIn = ei.ValueKind == JsonValueKind.String && int.TryParse(ei.GetString(), out var e1) ? e1
-                : ei.TryGetInt32(out var e2) ? e2 : 7200;
+            _logger?.LogError("AccessToken 响应解析失败：{Diagnostic}（Url={Url}, AppId={AppId}）",
+                parsed.Diagnostic, url, MaskAppId(_options.AppId));
+            throw new InvalidOperationException($"AccessToken 解析失败：{parsed.Diagnostic}");
         }
 
-        if (string.IsNullOrEmpty(token))
-        {
-            throw new InvalidOperationException("AccessToken 响应缺少 access_token 字段");
-        }
-
-        _accessToken = token;
-        _tokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Max(expiresIn - 300, 60));
-        _logger?.LogInformation("AccessToken 获取成功，有效期 {Seconds}s（提前 5 分钟刷新）", expiresIn);
-        return token;
+        _accessToken = parsed.Token;
+        _tokenExpiry = DateTimeOffset.UtcNow.AddSeconds(Math.Max(parsed.ExpiresIn - 300, 60));
+        _logger?.LogInformation("AccessToken 获取成功，有效期 {Seconds}s（提前 5 分钟刷新）", parsed.ExpiresIn);
+        return parsed.Token;
     }
 
     /// <summary>获取 WebSocket 网关地址。</summary>

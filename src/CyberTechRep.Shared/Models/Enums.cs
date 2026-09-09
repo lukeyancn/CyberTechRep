@@ -73,8 +73,22 @@ public enum RetryOperationType
 public enum ConnectionStatus
 {
     Disconnected,
+
+    /// <summary>正在建立连接（拨号 / 反向监听等待接入）。</summary>
     Connecting,
+
+    /// <summary>
+    /// 传输层已就绪但尚未确认 OneBot 侧可用（等待生命周期/心跳 meta_event）。
+    /// NapCat 模式不得仅凭 TCP/WS 握手成功就判定「已连接」——握手成功只代表管道通了。
+    /// </summary>
+    Authenticating,
+
+    /// <summary>已连接：已收到 OneBot 生命周期（lifecycle）或心跳（heartbeat）事件。</summary>
     Connected,
+
+    /// <summary>鉴权失败（access token 不匹配 / 401 / 403）：需要用户改配置，不是暂时性抖动。</summary>
+    AuthenticationFailed,
+
     Reconnecting,
     Faulted
 }

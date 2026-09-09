@@ -182,6 +182,8 @@ public sealed class AiRoutingTests : IDisposable
 
 #pragma warning disable CS0067
         public event EventHandler<HomeworkItem>? Changed;
+
+        public event EventHandler<HomeworkDocument>? DocumentChanged;
 #pragma warning restore CS0067
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
@@ -208,6 +210,30 @@ public sealed class AiRoutingTests : IDisposable
             => Task.FromResult<IReadOnlyList<HomeworkItem>>(Items);
 
         public Task<int> CleanupAsync(CancellationToken ct = default) => Task.FromResult(0);
+
+        public Task<IReadOnlyList<HomeworkDocument>> GetDocumentsAsync(DateOnly date, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<HomeworkDocument>>([]);
+
+        public Task<HomeworkDocument> AppendDocumentEntryAsync(
+            string subject, HomeworkDocumentEntry entry, CancellationToken ct = default)
+            => Task.FromResult(new HomeworkDocument
+            {
+                Date = RetentionPolicies.BucketOf(entry.CreatedAt),
+                Subject = subject,
+                Entries = [entry],
+                UpdatedAt = DateTimeOffset.Now
+            });
+
+        public Task<HomeworkDocument?> SaveDocumentTextAsync(
+            DateOnly date, string subject, string? manualText, CancellationToken ct = default,
+            string? editBaseline = null)
+            => Task.FromResult<HomeworkDocument?>(null);
+
+        public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
+            => Task.FromResult(0);
+
+        public Task<int> RemoveDocumentAsync(DateOnly date, string subject, CancellationToken ct = default)
+            => Task.FromResult(0);
     }
 
     private sealed class FakeFilePipeline : IFilePipelineService

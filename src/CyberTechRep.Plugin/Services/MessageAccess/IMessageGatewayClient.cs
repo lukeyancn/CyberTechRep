@@ -18,7 +18,21 @@ public interface IMessageGatewayClient : IAsyncDisposable
     /// </summary>
     event EventHandler<(string Type, string Data)>? DispatchReceived;
 
+    /// <summary>
+    /// 消息撤回（NapCat 模式：OneBot 11 <c>notice.group_recall</c> / <c>friend_recall</c>）。
+    /// 官方模式当前无该事件（不触发）。接入层据此联动删除通知/作业存档。
+    /// </summary>
+    event EventHandler<MessageRecallEvent>? MessageRecalled;
+
     event EventHandler<ConnectionStatus>? ConnectionStateChanged;
+
+    /// <summary>
+    /// 经当前连接调用一次协议端原生 API（OneBot 11 <c>{action, params, echo}</c>）。
+    /// 仅 NapCat 客户端支持；官方客户端返回 null（能力缺口，不抛异常）。
+    /// 失败/超时/未连接一律返回 null，不抛异常、不断连接。
+    /// </summary>
+    Task<System.Text.Json.JsonElement?> CallApiAsync(
+        string action, IReadOnlyDictionary<string, object?> parameters, CancellationToken ct = default);
 
     /// <summary>启动客户端（非阻塞；内部长循环，随 StopAsync/Dispose 结束）。</summary>
     Task StartAsync(CancellationToken ct = default);
