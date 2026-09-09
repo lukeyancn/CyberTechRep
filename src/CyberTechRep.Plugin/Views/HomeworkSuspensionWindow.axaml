@@ -50,14 +50,15 @@
                           HorizontalAlignment="Stretch">
                     <Grid RowDefinitions="Auto,Auto,Auto">
 
-                      <!-- 显示态：整篇文档（连续文本，鼠标可选中复制） -->
-                      <SelectableTextBlock Grid.Row="0" x:Name="DocumentView"
-                                           Text="{Binding Text}"
-                                           IsVisible="{Binding !IsEditing}"
-                                           TextWrapping="Wrap" MinHeight="48"
-                                           Cursor="IBeam"
-                                           PointerPressed="OnDocumentPointerPressed"
-                                           ToolTip.Tip="点击即可编辑本学科作业文档" />
+                      <!-- 显示态：整篇文档（连续文本，鼠标可选中复制）；方块空白处也能点进编辑态 -->
+                      <Border Grid.Row="0" IsVisible="{Binding !IsEditing}"
+                              Background="Transparent" Cursor="IBeam"
+                              Tapped="OnDocumentTapped"
+                              ToolTip.Tip="点击即可编辑本学科作业文档">
+                        <SelectableTextBlock x:Name="DocumentView"
+                                             Text="{Binding Text}"
+                                             TextWrapping="Wrap" MinHeight="48" />
+                      </Border>
 
                       <!-- 编辑态：自由删改，失焦或停顿后实时回写存档 -->
                       <TextBox Grid.Row="0" x:Name="DocumentEditor"

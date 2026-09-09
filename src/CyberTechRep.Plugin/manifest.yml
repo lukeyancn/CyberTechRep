@@ -4,5 +4,5 @@ description: QQ 群消息接管与课堂信息分发系统：接收班级群消�
 entranceAssembly: "CyberTechRep.Plugin.dll"
 url: https://github.com/lukeyancn/CyberTechRep
 apiVersion: 2.0.0.0
-version: 2.0.0.0-beta.5
+version: 2.0.0.0-beta.6
 author: CyberTechRep

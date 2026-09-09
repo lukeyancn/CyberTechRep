@@ -232,11 +232,7 @@ public partial class HomeworkSuspensionWindow : Window
         _documentSaveTimer.Tick += async (_, _) =>
         {
             _documentSaveTimer.Stop();
-            var view = _pendingSave ?? _editing;
-            if (view is not null)
-            {
-                await PersistDocumentTextAsync(view);
-            }
+            await FlushPendingDocumentSaveAsync();
         };
         _store.Changed += OnStoreItemChanged;
         _store.DocumentChanged += OnStoreDocumentChanged;
@@ -374,15 +370,23 @@ public partial class HomeworkSuspensionWindow : Window
 
     // ---------- 需求 1：文档点击编辑 / 实时回写 ----------
 
-    private void OnDocumentPointerPressed(object? sender, PointerPressedEventArgs e)
+    /// <summary>
+    /// 点击文档文本进入编辑态（处理器挂在包着文本的透明 Border 上）。
+    /// <para>
+    /// 必须用 <see cref="Tapped"/> 而不是 <c>PointerPressed</c>：<see cref="SelectableTextBlock"/>
+    /// 为了做选中/复制在 <c>OnPointerPressed</c> 里把事件标记为已处理（并捕获指针），
+    /// XAML 事件属性默认不看已处理事件，挂在它身上的 PointerPressed 永远不触发。
+    /// Tapped 只在「按下+抬起且未拖动」时触发，拖动选中复制仍然照常。
+    /// </para>
+    /// <para>
+    /// 另外 <see cref="SelectableTextBlock"/> 只在文字字形上命中，方块内空白处点不到它，
+    /// 所以外面套一层透明 Border 承接整块区域的点击。
+    /// </para>
+    /// </summary>
+    private void OnDocumentTapped(object? sender, TappedEventArgs e)
     {
         if (sender is not Control { DataContext: HomeworkDocumentView view }
-            || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
-        {
-            return;
-        }
-
-        if (ReferenceEquals(_editing, view))
+            || ReferenceEquals(_editing, view))
         {
             return;
         }
@@ -426,6 +430,14 @@ public partial class HomeworkSuspensionWindow : Window
             return;
         }
 
+        // 只有编辑态下的文本变化才算用户输入：列表重建时绑定回填 Text 同样会触发 TextChanged，
+        // 那不是用户编辑，绝不能据此把渲染文本写进存档（否则文档被冻结成手工文本，
+        // 并引发「写存档 → 重建列表 → 再写存档」的反复重建卡顿）
+        if (!view.IsEditing)
+        {
+            return;
+        }
+
         _pendingSave = view;
         _documentSaveTimer.Stop();
         _documentSaveTimer.Start();
@@ -454,9 +466,17 @@ public partial class HomeworkSuspensionWindow : Window
         }
     }
 
+    /// <summary>立即落档待保存的编辑稿（防抖计时器触发时调用；测试也用它跳过计时器）。</summary>
+    internal Task FlushPendingDocumentSaveAsync()
+    {
+        var view = _pendingSave ?? _editing;
+        return view is null ? Task.CompletedTask : PersistDocumentTextAsync(view);
+    }
+
     /// <summary>
     /// 把文档文本回写存档（存档为单一事实源）；空文本 = 清除手工文本、回到按条目渲染。
     /// 传入进入编辑态时的基线做三方合并：编辑期间新到达的消息行补齐到末尾，用户删改保留。
+    /// 与基线相同（点进编辑态没输入 / 改回原样）不写存档，保持「按条目渲染」口径。
     /// 保存失败保留用户输入（不静默丢改动），下次失焦/停顿再试。
     /// </summary>
     private async Task PersistDocumentTextAsync(HomeworkDocumentView view)
@@ -466,16 +486,28 @@ public partial class HomeworkSuspensionWindow : Window
             _pendingSave = null;
         }
 
+        var text = view.Text;
+        var baseline = view.EditBaseline;
+        if (!HasUserChanges(text, baseline))
+        {
+            return;
+        }
+
         try
         {
-            await _store.SaveDocumentTextAsync(
-                view.Date, view.Subject, view.Text, CancellationToken.None, view.EditBaseline);
+            await _store.SaveDocumentTextAsync(view.Date, view.Subject, text, CancellationToken.None, baseline);
+            // 落档成功后以「已落档的那一版」为新基线：用户再改回上一版也能正确判定为有改动
+            view.EditBaseline = text;
         }
         catch
         {
             // 保留用户输入，不静默丢改动
         }
     }
+
+    /// <summary>编辑稿与进入编辑态时的基线是否不同（相同 = 用户没改，无需回写存档）。</summary>
+    internal static bool HasUserChanges(string? editorText, string? editBaseline)
+        => !string.Equals(editorText, editBaseline, StringComparison.Ordinal);
 
     // ---------- 需求 5：文档 → 通知 ----------
 
