@@ -183,6 +183,7 @@ public partial class HomeworkSuspensionWindow : Window
     private readonly IHomeworkSendService? _sendService;
     private readonly ISettingsService? _settingsService;
     private readonly IMessageReclassifyService? _reclassify;
+    private readonly ISuspensionWindowController? _overlays;
     private readonly Func<IReadOnlyList<string>?>? _groupOrderProvider;
     private readonly DispatcherTimer _debounceTimer = null!;
     private readonly DispatcherTimer _documentSaveTimer = null!;
@@ -214,6 +215,7 @@ public partial class HomeworkSuspensionWindow : Window
         _sendService = sendService;
         _settingsService = settingsService;
         _reclassify = reclassify;
+        _overlays = overlays;
         InitializeComponent();
         // 右上角「⋯」快捷菜单（与通知窗共用 OverlayQuickMenu：置顶/固定/穿透，即时生效并回写设置）
         _quickMenu = new OverlayQuickMenu(
@@ -402,25 +404,33 @@ public partial class HomeworkSuspensionWindow : Window
         _editing = view;
         view.EditBaseline = view.Text;
         view.IsEditing = true;
-        FocusEditor(sender);
+        // 编辑需要真实键盘输入：临时让悬浮窗可被激活（WS_EX_NOACTIVATE 的窗口收不到键盘消息）
+        _overlays?.SetOverlayEditing(SuspensionWindowController.HomeworkKey, editing: true);
+        if (!FocusEditor(sender))
+        {
+            // 真实窗口上「清除 WS_EX_NOACTIVATE + 置前台」到 Avalonia 收到激活存在消息时序，
+            // 首次聚焦可能因窗口尚未激活而落空：补一次输入优先级重试。
+            Dispatcher.UIThread.Post(() => FocusEditor(sender), DispatcherPriority.Input);
+        }
     }
 
-    /// <summary>进入编辑态后把焦点与光标放到同方块内的编辑框末尾。</summary>
-    private static void FocusEditor(object? displayControl)
+    /// <summary>进入编辑态后把焦点与光标放到同方块内的编辑框末尾；返回是否成功聚焦。</summary>
+    private static bool FocusEditor(object? displayControl)
     {
         if (displayControl is not Control control || control.Parent is not Panel panel)
         {
-            return;
+            return false;
         }
 
         var editor = panel.Children.OfType<TextBox>().FirstOrDefault();
         if (editor is null)
         {
-            return;
+            return false;
         }
 
-        editor.Focus();
+        var focused = editor.Focus();
         editor.CaretIndex = editor.Text?.Length ?? 0;
+        return focused;
     }
 
     private void OnDocumentTextChanged(object? sender, TextChangedEventArgs e)
@@ -456,6 +466,9 @@ public partial class HomeworkSuspensionWindow : Window
         if (ReferenceEquals(_editing, view))
         {
             _editing = null;
+            // 退出编辑态：恢复「不抢焦点、钉在桌面层」契约（切换到别的文档时不动，
+            // 那边的进入编辑态逻辑已重新开启）
+            _overlays?.SetOverlayEditing(SuspensionWindowController.HomeworkKey, editing: false);
         }
 
         // 编辑期间挂起的刷新（新消息/其他窗口改动）现在补做

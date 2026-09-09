@@ -1009,6 +1009,10 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
         public void NotifyHostStopping()
         {
         }
+
+        public void SetOverlayEditing(string overlayKey, bool editing)
+        {
+        }
     }
 
     /// <summary>带 SetSubjectAsync 的最小作业存储替身（复用 SubjectRecognitionRoutingTests 的 FakeHomeworkStore 不可见，此处独立实现）。</summary>

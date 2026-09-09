@@ -338,6 +338,13 @@ public interface ISuspensionWindowController
     /// settings.json，导致重启后所有悬浮窗默认全关。用户主动 ×/设置页隐藏仍正常持久化。
     /// </summary>
     void NotifyHostStopping();
+
+    /// <summary>
+    /// 悬浮窗文档编辑态开关（UI 线程调度）：编辑态需要真实键盘输入，控制器会临时允许该窗
+    /// 被激活（清掉 <c>WS_EX_NOACTIVATE</c> 并置前台）并暂停 Z 序归位，退出编辑态后恢复
+    /// 「不抢焦点、钉在桌面层」的既有契约。非 Windows/窗口未创建时静默忽略。
+    /// </summary>
+    void SetOverlayEditing(string overlayKey, bool editing);
 }
 
 // ============ 模块 8：更新与排错 ============

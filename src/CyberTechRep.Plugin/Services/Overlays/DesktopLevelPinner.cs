@@ -98,6 +98,9 @@ internal sealed class DesktopLevelPinner
     private static extern int SetWindowLong(IntPtr hWnd, int index, int value);
 
     [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     private static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint colorKey, byte alpha, uint flags);
 
     [DllImport("user32.dll")]
@@ -121,6 +124,7 @@ internal sealed class DesktopLevelPinner
     private bool _layeredByUs;
     private bool _topmost;
     private bool _inSystemMoveSizeLoop;
+    private volatile bool _editing;
     private volatile bool _clickThrough;
     private volatile IOverlayInteractiveRegionProvider? _interactiveRegionProvider;
 
@@ -158,6 +162,32 @@ internal sealed class DesktopLevelPinner
     /// </summary>
     public void SetInteractiveRegionProvider(IOverlayInteractiveRegionProvider? provider)
         => _interactiveRegionProvider = provider;
+
+    /// <summary>
+    /// 文档编辑态开关（UI 线程调用）。编辑需要真实键盘输入：<c>WS_EX_NOACTIVATE</c> 的窗口
+    /// 永远不是前台窗口，键盘消息根本不会送到它（悬浮窗「点得动但打不了字」的根因），
+    /// 因此编辑期间临时清掉该样式并激活窗口；同时暂停 Z 序归位，避免编辑中窗口被压回
+    /// 桌面层、被其它应用盖住。退出编辑态即恢复「不抢焦点、钉在桌面层」的既有契约。
+    /// </summary>
+    public void SetEditing(bool editing)
+    {
+        _editing = editing;
+        var hwnd = GetHandle();
+        if (hwnd == IntPtr.Zero || !OperatingSystem.IsWindows())
+        {
+            // 句柄未创建（Show 之前）/非 Windows：状态已记住，下次 Apply 生效
+            return;
+        }
+
+        var exStyle = GetWindowLong(hwnd, GwlExStyle);
+        exStyle = editing ? exStyle & ~WsExNoActivate : exStyle | WsExNoActivate;
+        SetWindowLong(hwnd, GwlExStyle, exStyle);
+        if (editing)
+        {
+            // 用户刚点过本窗口（收到最后一次输入事件），前台窗口锁允许我们把它激活
+            SetForegroundWindow(hwnd);
+        }
+    }
 
     /// <summary>WndProc 钩子：记录系统移动缩放循环 + 穿透模式的命中测试分流，不吞其他消息。</summary>
     private IntPtr WndProcHook(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -241,7 +271,16 @@ internal sealed class DesktopLevelPinner
         var useHitTestRouting = clickThrough && _interactiveRegionProvider is not null;
 
         var exStyle = GetWindowLong(hwnd, GwlExStyle);
-        exStyle |= WsExNoActivate;
+        // 编辑态例外：WS_EX_NOACTIVATE 的窗口收不到键盘消息（无法输入），
+        // 用户正在改文档时改为可激活（SetEditing 已临时置位并激活窗口）
+        if (_editing)
+        {
+            exStyle &= ~WsExNoActivate;
+        }
+        else
+        {
+            exStyle |= WsExNoActivate;
+        }
 
         if (clickThrough && !useHitTestRouting)
         {
@@ -350,6 +389,12 @@ internal sealed class DesktopLevelPinner
     {
         // 置顶模式不打扰 Z 序（Avalonia Topmost 已置 HWND_TOPMOST）；仅非置顶时归位
         if (_topmost)
+        {
+            return;
+        }
+
+        // 文档编辑态：用户正在悬浮窗里打字，压回桌面层会把窗口藏到其它应用后面，让路
+        if (_editing)
         {
             return;
         }

@@ -257,6 +257,41 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// <inheritdoc />
     public void NotifyHostStopping() => _suppressVisiblePersist = true;
 
+    /// <inheritdoc />
+    public void SetOverlayEditing(string overlayKey, bool editing)
+    {
+        if (!IsKnownKey(overlayKey))
+        {
+            _logger.LogWarning("SetOverlayEditing 未知 overlayKey={Key}", overlayKey);
+            return;
+        }
+
+        void ApplyOnUiThread()
+        {
+            Window? window;
+            lock (_lock)
+            {
+                _windows.TryGetValue(overlayKey, out window);
+            }
+
+            if (window is null)
+            {
+                return;
+            }
+
+            GetOrCreatePinner(overlayKey, window).SetEditing(editing);
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            ApplyOnUiThread();
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(ApplyOnUiThread);
+        }
+    }
+
     /// <summary>
     /// 宿主关闭守卫第二道闸：桌面生存期发出 ShutdownRequested（显式退出/关闭流程开始，
     /// 早于生存期批量关闭各窗口）时即置位退出抑制。与 <see cref="NotifyHostStopping"/>

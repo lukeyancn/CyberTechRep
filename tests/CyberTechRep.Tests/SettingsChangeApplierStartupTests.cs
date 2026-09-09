@@ -91,6 +91,10 @@ public sealed class SettingsChangeApplierStartupTests : IDisposable
         {
         }
 
+        public void SetOverlayEditing(string overlayKey, bool editing)
+        {
+        }
+
         public int ShownCount(string overlayKey)
         {
             lock (_lock)
