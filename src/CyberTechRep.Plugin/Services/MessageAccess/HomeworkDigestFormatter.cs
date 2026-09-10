@@ -77,9 +77,14 @@ public static class HomeworkDigestFormatter
     /// </summary>
     /// <param name="documents">学科文档（调用方按展示顺序传入；空文档跳过）。</param>
     /// <param name="standingItems">已勾选的常态化作业（null/空 = 无）。</param>
+    /// <param name="numberLines">
+    /// 是否自动给条目补填序号（<c>1. 2. …</c>；接线连接设置 <c>NumberDigestLines</c>，默认开）。
+    /// 关闭时原样输出条目文本，适合老师要自己控制排版的场景。
+    /// </param>
     public static string FormatDocuments(
         IEnumerable<HomeworkDocument> documents,
-        IReadOnlyList<StandingHomeworkItem>? standingItems = null)
+        IReadOnlyList<StandingHomeworkItem>? standingItems = null,
+        bool numberLines = true)
     {
         ArgumentNullException.ThrowIfNull(documents);
 
@@ -145,7 +150,8 @@ public static class HomeworkDigestFormatter
             var lines = groupLines[groupOrder[g]];
             for (var i = 0; i < lines.Count; i++)
             {
-                sb.AppendLine($"{i + 1}. {lines[i]}");
+                // 自动补填序号可关闭（连接设置 NumberDigestLines）：关掉则原样输出条目文本
+                sb.AppendLine(numberLines ? $"{i + 1}. {lines[i]}" : lines[i]);
             }
         }
 

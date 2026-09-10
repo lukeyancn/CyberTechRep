@@ -239,6 +239,16 @@ public partial class HomeworkSuspensionWindow : Window, IOverlayContentFontSizeA
     private IReadOnlyList<HomeworkDocument> _documents = [];
     private IReadOnlyList<StandingHomeworkView> _standingViews = [];
     private HomeworkDocumentView? _editing;
+
+    /// <summary>待发文本是否被手动编辑过（编辑后勾选变更不覆盖文本，需点「重新生成清单」重建）。</summary>
+    internal bool SendPreviewEdited =>
+        !string.Equals(SendPreviewEditor.Text ?? "", _generatedPreview, StringComparison.Ordinal);
+
+    /// <summary>当前待发文本是否为「今天还没有作业」占位（未手动编辑时不可发送）。</summary>
+    private bool _sendPreviewPlaceholder;
+
+    /// <summary>上一次程序生成的清单文本（与编辑框当前文本比对即可判断是否被手动改过）。</summary>
+    private string _generatedPreview = "";
     private HomeworkDocumentView? _pendingSave;
     private bool _refreshPending;
     private bool _sending;
@@ -674,8 +684,8 @@ public partial class HomeworkSuspensionWindow : Window, IOverlayContentFontSizeA
     internal void OpenSendOverlay()
     {
         BuildStandingViews();
-        SendPreviewText.Text = BuildDigest();
-        SendConfirmButton.IsEnabled = HasSendableContent();
+        // 每次打开都给一份生成的清单，老师随后可直接在编辑框里改
+        ApplyGeneratedPreview();
 
         var groups = SettingsServiceGroupWhitelist();
         SendTargetText.Text = groups.Count == 0
@@ -684,10 +694,61 @@ public partial class HomeworkSuspensionWindow : Window, IOverlayContentFontSizeA
         SendResultText.IsVisible = false;
         SendResultText.Text = "";
         SendConfirmOverlay.IsVisible = true;
+
+        // 待发消息要能直接打字：临时解除 WS_EX_NOACTIVATE 并置前（与文档编辑态同一机制）——
+        // 无边框悬浮窗默认不抢焦点、收不到键盘消息（此前「编辑态打不了字」的同类问题）
+        _overlays?.SetOverlayEditing(SuspensionWindowController.HomeworkKey, editing: true);
+        var focused = SendPreviewEditor.Focus();
+        SendPreviewEditor.CaretIndex = SendPreviewEditor.Text?.Length ?? 0;
+        if (!focused)
+        {
+            // 宿主窗口激活存在消息时序：首次聚焦可能落空，补一次输入优先级重试
+            Dispatcher.UIThread.Post(() => SendPreviewEditor.Focus(), DispatcherPriority.Input);
+        }
     }
 
-    /// <summary>确认浮层里的预览文本（测试用；预览即实际发送内容）。</summary>
-    internal string SendPreview => SendPreviewText.Text ?? "";
+    /// <summary>确认浮层里的待发文本（测试用；待发即实际发送内容）。</summary>
+    internal string SendPreview => SendPreviewEditor.Text ?? "";
+
+    /// <summary>「今天还没有作业」占位文本（未手动编辑时不可发送，避免把提示语发出去）。</summary>
+    internal const string EmptyDigestText = "（今天还没有作业，无可发送内容）";
+
+    /// <summary>把生成的清单写入待发编辑框（并记住生成文本，供「是否被手动改过」判定）。</summary>
+    private void ApplyGeneratedPreview()
+    {
+        var text = BuildDigest();
+        _generatedPreview = text;
+        _sendPreviewPlaceholder = string.Equals(text, EmptyDigestText, StringComparison.Ordinal);
+        SendPreviewEditor.Text = text;
+        SendConfirmButton.IsEnabled = CanSendPreview();
+    }
+
+    /// <summary>待发文本变化：刷新发送按钮可用性（文本框由老师直接编辑，无需额外状态）。</summary>
+    private void OnSendPreviewTextChanged(object? sender, TextChangedEventArgs e)
+        => SendConfirmButton.IsEnabled = CanSendPreview();
+
+    /// <summary>按当前作业与勾选项重建清单（会覆盖手动编辑；XAML 按钮与测试共用）。</summary>
+    internal void RegeneratePreview() => ApplyGeneratedPreview();
+
+    private void OnRegeneratePreviewClick(object? sender, RoutedEventArgs e) => RegeneratePreview();
+
+    /// <summary>待发编辑框（测试用：模拟老师在确认窗里直接编辑待发消息）。</summary>
+    internal TextBox SendPreviewEditorForTest => SendPreviewEditor;
+
+    /// <summary>
+    /// 可否发送：待发文本非空；未手动编辑时「今天还没有作业」占位不可发送（避免把提示语发出去），
+    /// 手动编辑过则以老师的文本为准（哪怕当天没有作业，也可以直接写一条发出去）。
+    /// </summary>
+    internal bool CanSendPreview()
+    {
+        var text = SendPreviewEditor.Text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        return SendPreviewEdited || !_sendPreviewPlaceholder;
+    }
 
     /// <summary>勾选列表数据源（测试用）。</summary>
     internal IReadOnlyList<StandingHomeworkView> StandingViews => _standingViews;
@@ -740,36 +801,58 @@ public partial class HomeworkSuspensionWindow : Window, IOverlayContentFontSizeA
 
     private void OnStandingItemToggled(object? sender, RoutedEventArgs e) => RefreshSendPreview();
 
-    /// <summary>勾选变化后刷新预览与发送按钮（XAML 事件与测试共用同一路径）。</summary>
+    /// <summary>勾选变化后刷新待发文本与发送按钮（XAML 事件与测试共用同一路径）。</summary>
     internal void RefreshSendPreview()
     {
-        // 勾选即时刷新预览（取消勾选即从预览移除）；落档仍只在点「发送」时发生
-        SendPreviewText.Text = BuildDigest();
-        SendConfirmButton.IsEnabled = HasSendableContent();
+        // 勾选即时刷新清单（取消勾选即从清单移除）；落档仍只在点「发送」时发生。
+        // 老师已手动编辑过待发消息时不覆盖其文本——需要重建时点「重新生成清单」。
+        if (SendPreviewEdited)
+        {
+            SendConfirmButton.IsEnabled = CanSendPreview();
+            return;
+        }
+
+        ApplyGeneratedPreview();
     }
 
-    private bool HasSendableContent() =>
-        _documents.Any(d => !d.IsEmpty) || _standingViews.Any(v => v.IsChecked);
-
-    /// <summary>预览与实际发送共用的同一份清单文本（预览即所得）。</summary>
+    /// <summary>按当前文档与勾选项生成清单文本（自动补填序号按连接设置 NumberDigestLines）。</summary>
     private string BuildDigest()
     {
         var checkedItems = _standingViews.Where(v => v.IsChecked).Select(v => v.Item).ToList();
         if (_documents.Count == 0 && checkedItems.Count == 0)
         {
-            return "（今天还没有作业，无可发送内容）";
+            return EmptyDigestText;
         }
 
-        return HomeworkDigestFormatter.FormatDocuments(_documents, checkedItems);
+        return HomeworkDigestFormatter.FormatDocuments(_documents, checkedItems, NumberDigestLines());
+    }
+
+    /// <summary>「整理并发送：自动补填序号」开关（连接设置 NumberDigestLines，缺省开）。</summary>
+    private bool NumberDigestLines()
+    {
+        try
+        {
+            return _settingsService?.Current.Connection.NumberDigestLines ?? true;
+        }
+        catch
+        {
+            return true; // 设置读取失败按默认（开）处理，不影响发送
+        }
     }
 
     private void OnSendCancelClick(object? sender, RoutedEventArgs e) => HideSendOverlay();
 
-    private void HideSendOverlay()
+    /// <summary>关闭确认浮层（取消、发送完成自动收起；测试也用它验证编辑态恢复）。</summary>
+    internal void HideSendOverlay()
     {
         SendConfirmOverlay.IsVisible = false;
         SendResultText.IsVisible = false;
         SendResultText.Text = "";
+        // 退出待发编辑：恢复「不抢焦点、钉在桌面层」契约（文档编辑态仍在进行时不动它）
+        if (_editing is null)
+        {
+            _overlays?.SetOverlayEditing(SuspensionWindowController.HomeworkKey, editing: false);
+        }
     }
 
     private async void OnSendConfirmClick(object? sender, RoutedEventArgs e)
@@ -829,8 +912,14 @@ public partial class HomeworkSuspensionWindow : Window, IOverlayContentFontSizeA
             return ("发送失败：整理并发送未启用", false);
         }
 
-        // 预览即所得：先取用户看到的清单文本（含勾选的常态化作业行），再落档。
-        var digest = BuildDigest();
+        if (!CanSendPreview())
+        {
+            return ("发送失败：待发内容为空（今天还没有作业，或待发消息被清空）", false);
+        }
+
+        // 待发即所得：发送的就是确认窗里那段文本（老师可能已手动修改）。
+        // 顺序不可颠倒：先取文本、再落档常态化作业（落档后重新格式化会再追加一遍）。
+        var digest = SendPreview;
 
         // 需求 3 落档时机：点「发送」才把勾选的常态化作业写入该学科文档末尾
         // （勾选只影响预览）。写入幂等：同一天同学科同内容已存在时由合并器判为完全重复而跳过。

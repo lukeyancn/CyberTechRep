@@ -101,6 +101,9 @@
             <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗展示发送入口，确认后发送当天作业清单到目标群；仅官方模式可用）"
                           IsChecked="{Binding Settings.Connection.HomeworkSendEnabled}"/>
 
+            <ToggleSwitch Content="整理并发送：自动补填序号（清单条目加「1. 2. 3. …」；关闭后按原样输出，可在确认窗里自行编辑）"
+                          IsChecked="{Binding Settings.Connection.NumberDigestLines}"/>
+
             <TextBlock Text="作业清单发送目标群（群 OpenID，一行一个；与消息接管白名单相互独立，需单独填写）" FontWeight="SemiBold"/>
             <TextBox Text="{Binding TargetGroupsText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
                      Watermark="每一行一个群 OpenID（整理并发送专用）"/>

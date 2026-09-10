@@ -123,7 +123,10 @@ public sealed class MessageReclassifyServiceTests : IDisposable
         var notices = new NoticeStore(_dir);
         var homework = new HomeworkStore(_dir);
         var service = new MessageReclassifyService(notices, homework, _dir);
-        var created = DateTimeOffset.Now.AddDays(-2);
+        // 固定到「两天前的本地上午 9:00」：不能用 Now.AddDays(-2)+AddMinutes(5)——
+        // 在深夜（如 23:55）运行时会跨过午夜，两条条目落到不同归档日，迁移数变 1（时间陷阱）
+        var localNow = DateTimeOffset.Now;
+        var created = new DateTimeOffset(localNow.Date.AddDays(-2).AddHours(9), localNow.Offset);
         var later = created.AddMinutes(5);
         var date = RetentionPolicies.BucketOf(created);
         await homework.AppendDocumentEntryAsync("数学", new HomeworkDocumentEntry
@@ -200,7 +203,9 @@ public sealed class MessageReclassifyServiceTests : IDisposable
         var notices = new NoticeStore(_dir);
         var homework = new HomeworkStore(_dir);
         var service = new MessageReclassifyService(notices, homework, _dir);
-        var created = DateTimeOffset.Now.AddDays(-1);
+        // 固定到「一天前的本地上午 9:00」：避免 AddMinutes 在深夜运行时跨过午夜（见上一条用例）
+        var localNow = DateTimeOffset.Now;
+        var created = new DateTimeOffset(localNow.Date.AddDays(-1).AddHours(9), localNow.Offset);
         var date = RetentionPolicies.BucketOf(created);
         await homework.AppendDocumentEntryAsync("数学", new HomeworkDocumentEntry
         {

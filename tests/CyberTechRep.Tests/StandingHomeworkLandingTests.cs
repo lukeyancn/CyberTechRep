@@ -6,6 +6,7 @@ using Avalonia.Themes.Simple;
 using Avalonia.Threading;
 using CyberTechRep.Plugin.Services.Maintenance;
 using CyberTechRep.Plugin.Services.MessageAccess;
+using CyberTechRep.Plugin.Services.Overlays;
 using CyberTechRep.Plugin.Services.Stores;
 using CyberTechRep.Plugin.Views;
 using CyberTechRep.Shared.Abstractions;
@@ -166,8 +167,164 @@ public sealed class StandingHomeworkLandingTests : IDisposable
         }, CancellationToken.None);
     }
 
-    // ---------- 测试夹具 ----------
+    [Fact]
+    public Task 待发消息可编辑_发送的就是编辑后的文本()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(() =>
+        {
+            var store = SeedStore(withStandingEntry: false);
+            var window = BuildWindow(store, out var send);
+            try
+            {
+                window.OpenSendOverlay();
+                Assert.Contains("练习册 P12", window.SendPreview);
+                Assert.True(window.CanSendPreview());
 
+                // 模拟老师在确认窗里直接改写待发消息
+                window.SendPreviewEditorForTest.Text = "数学：练习册 P12（老师手动整理）";
+                Assert.True(window.CanSendPreview());
+
+                var (summary, _) = window.ConfirmSendAsync().GetAwaiter().GetResult();
+
+                Assert.Equal("数学：练习册 P12（老师手动整理）", send.LastSent);
+                Assert.Contains("发送完成", summary);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task 手动编辑后_勾选变更不覆盖待发文本_重新生成可恢复()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(() =>
+        {
+            var store = SeedStore(withStandingEntry: false);
+            var window = BuildWindow(store, out _);
+            try
+            {
+                window.OpenSendOverlay();
+                window.SendPreviewEditorForTest.Text = "自定义文本";
+
+                // 勾选常态化作业 → 刷新路径不得覆盖老师已改的文本
+                var view = Assert.Single(window.StandingViews);
+                view.IsChecked = true;
+                window.RefreshSendPreview();
+                Assert.Equal("自定义文本", window.SendPreview);
+
+                // 点「重新生成清单」→ 回到按当前作业与勾选生成的清单（含常态化行）
+                window.RegeneratePreview();
+                Assert.Contains("练习册 P12", window.SendPreview);
+                Assert.Contains($"{StandingContent}（常态化）", window.SendPreview);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task 自动补填序号关闭_清单不带序号_开启时带序号()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(() =>
+        {
+            var store = SeedStore(withStandingEntry: false);
+            var window = BuildWindow(store, out _, numberDigestLines: false);
+            try
+            {
+                window.OpenSendOverlay();
+                Assert.Contains("【数学】", window.SendPreview);
+                Assert.Contains("练习册 P12", window.SendPreview);
+                Assert.DoesNotContain("1. ", window.SendPreview);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task 自动补填序号开启_清单默认带序号()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(() =>
+        {
+            var store = SeedStore(withStandingEntry: false);
+            var window = BuildWindow(store, out _);
+            try
+            {
+                window.OpenSendOverlay();
+                Assert.Contains("1. 练习册 P12", window.SendPreview);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task 没有作业时_占位提示不可发送_手写内容后可发送()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(() =>
+        {
+            var store = new HomeworkStore(_dir); // 当天没有作业
+            var window = BuildWindow(store, out var send);
+            try
+            {
+                window.OpenSendOverlay();
+                Assert.Equal(HomeworkSuspensionWindow.EmptyDigestText, window.SendPreview);
+                Assert.False(window.CanSendPreview()); // 占位提示不可发送
+
+                var (blocked, _) = window.ConfirmSendAsync().GetAwaiter().GetResult();
+                Assert.Contains("待发内容为空", blocked);
+                Assert.Null(send.LastSent);
+
+                // 老师手写一条 → 可发送，且发送的就是这段
+                window.SendPreviewEditorForTest.Text = "今天没有书面作业，请预习第 3 课";
+                Assert.True(window.CanSendPreview());
+                window.ConfirmSendAsync().GetAwaiter().GetResult();
+                Assert.Equal("今天没有书面作业，请预习第 3 课", send.LastSent);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task 打开确认窗_启用可编辑模式_关闭后恢复()
+    {
+        // 回归：无边框悬浮窗默认 WS_EX_NOACTIVATE，收不到键盘消息——
+        // 待发消息要能直接打字，打开确认窗必须切到「可编辑」模式，关闭后恢复（与文档编辑态同一机制）
+        return AvaloniaTestSetup.Session.Dispatch(() =>
+        {
+            var store = SeedStore(withStandingEntry: false);
+            var controller = new RecordingWindowController();
+            var window = BuildWindow(store, out _, overlays: controller);
+            try
+            {
+                window.OpenSendOverlay();
+                var opened = Assert.Single(controller.EditingCalls);
+                Assert.Equal(SuspensionWindowController.HomeworkKey, opened.Key);
+                Assert.True(opened.Editing);
+
+                window.HideSendOverlay();
+                Assert.Equal(2, controller.EditingCalls.Count);
+                Assert.False(controller.EditingCalls[1].Editing);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    // ---------- 测试夹具 ----------
     private HomeworkStore SeedStore(bool withStandingEntry)
     {
         var store = new HomeworkStore(_dir);
@@ -197,7 +354,9 @@ public sealed class StandingHomeworkLandingTests : IDisposable
         return store;
     }
 
-    private HomeworkSuspensionWindow BuildWindow(HomeworkStore store, out CapturingSendService send)
+    private HomeworkSuspensionWindow BuildWindow(
+        HomeworkStore store, out CapturingSendService send, bool numberDigestLines = true,
+        ISuspensionWindowController? overlays = null)
     {
         EnsureControlTheme();
         var settings = new SettingsService(_dir);
@@ -206,8 +365,9 @@ public sealed class StandingHomeworkLandingTests : IDisposable
             new StandingHomeworkItem { Subject = "数学", Content = StandingContent, Enabled = true }
         ];
         settings.Current.Connection.TargetGroupOpenIds = ["10001"];
+        settings.Current.Connection.NumberDigestLines = numberDigestLines;
         send = new CapturingSendService();
-        var window = new HomeworkSuspensionWindow(store, null, settings, send) { Width = 380, Height = 560 };
+        var window = new HomeworkSuspensionWindow(store, null, settings, send, overlays) { Width = 380, Height = 560 };
         window.Show();
         window.UpdateLayout();
         // 构造里的首轮 RefreshAsync 需要一次 Dispatcher 泵才落到 ItemsSource
@@ -253,6 +413,29 @@ public sealed class StandingHomeworkLandingTests : IDisposable
         }
 
         return count;
+    }
+
+    /// <summary>记录「可编辑模式」开关调用的控制器替身（其余成员为占位实现）。</summary>
+    private sealed class RecordingWindowController : ISuspensionWindowController
+    {
+        public List<(string Key, bool Editing)> EditingCalls { get; } = [];
+
+        public Task ShowAsync(string overlayKey, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task HideAsync(string overlayKey, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task ResetPositionAsync(string overlayKey, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task ApplySettingsAsync(string overlayKey, OverlayWindowSettings settings, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public bool IsOnScreen(string overlayKey) => true;
+
+        public void NotifyHostStopping()
+        {
+        }
+
+        public void SetOverlayEditing(string overlayKey, bool editing) => EditingCalls.Add((overlayKey, editing));
     }
 
     private sealed class CapturingSendService : IHomeworkSendService

@@ -145,7 +145,7 @@
         <Border Background="#FFF7FBFB" CornerRadius="8" BorderBrush="#33000000" BorderThickness="1"
                 HorizontalAlignment="Stretch" VerticalAlignment="Center"
                 MaxWidth="340" MaxHeight="460" Margin="12" Padding="12">
-          <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto">
+          <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto">
             <TextBlock Grid.Row="0" Text="整理并发送 · 确认" FontWeight="SemiBold" Margin="0,0,0,6" />
 
             <!-- 需求 3：常态化作业勾选（勾选即时进预览，取消即移除；点「发送」才落档） -->
@@ -167,14 +167,28 @@
               </ItemsControl>
             </StackPanel>
 
-            <ScrollViewer Grid.Row="2" MaxHeight="240" Margin="0,0,0,6">
-              <TextBlock x:Name="SendPreviewText" TextWrapping="Wrap" FontSize="12" LineHeight="18" />
+            <!-- 待发消息：可直接编辑（预览即所发；发出的就是这段文本） -->
+            <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,0,0,4">
+              <TextBlock Grid.Column="0" Text="待发消息（可直接编辑，发出的就是这段文本）"
+                         FontSize="11" Opacity="0.75" TextWrapping="Wrap" VerticalAlignment="Center" />
+              <Button Grid.Column="1" Content="重新生成清单" Click="OnRegeneratePreviewClick"
+                      Padding="6,0" MinHeight="20" FontSize="11" Background="Transparent"
+                      BorderThickness="0" VerticalAlignment="Center"
+                      ToolTip.Tip="按当前作业与勾选的常态化作业重建清单（会覆盖手动编辑）" />
+            </Grid>
+            <ScrollViewer Grid.Row="3" MaxHeight="240" Margin="0,0,0,6">
+              <TextBox x:Name="SendPreviewEditor"
+                       AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72"
+                       FontSize="12" LineHeight="18"
+                       Background="Transparent" BorderThickness="0" Padding="0"
+                       TextChanged="OnSendPreviewTextChanged"
+                       ToolTip.Tip="可直接修改要发送的内容；点「发送」发出的就是你看到的这段文本" />
             </ScrollViewer>
-            <TextBlock Grid.Row="3" x:Name="SendTargetText" TextWrapping="Wrap" FontSize="11"
+            <TextBlock Grid.Row="4" x:Name="SendTargetText" TextWrapping="Wrap" FontSize="11"
                        Opacity="0.7" Margin="0,0,0,6" />
-            <TextBlock Grid.Row="4" x:Name="SendResultText" TextWrapping="Wrap" FontSize="11"
+            <TextBlock Grid.Row="5" x:Name="SendResultText" TextWrapping="Wrap" FontSize="11"
                        IsVisible="False" Margin="0,0,0,6" Foreground="#C0B3261E" />
-            <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
               <Button x:Name="SendCancelButton" Content="取消" Click="OnSendCancelClick" Padding="12,4" />
               <Button x:Name="SendConfirmButton" Content="发送" Click="OnSendConfirmClick"
                       Padding="12,4" Classes="accent" />

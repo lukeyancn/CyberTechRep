@@ -194,6 +194,12 @@ public sealed class ConnectionSettings
     /// 默认 true = 现状开启）。关闭后悬浮窗隐藏发送入口，且发送服务拒绝发送。
     /// </summary>
     public bool HomeworkSendEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 整理并发送：是否自动给清单条目补填序号（<c>1. 2. 3. …</c>；默认 true）。
+    /// 关闭后清单按原样输出条目文本，方便老师自己排版；确认窗里的待发消息始终可手动编辑。
+    /// </summary>
+    public bool NumberDigestLines { get; set; } = true;
 }
 
 /// <summary>分类设置。</summary>

@@ -153,6 +153,44 @@ public sealed class StandingHomeworkTests : IDisposable
     }
 
     [Fact]
+    public void FormatDocuments_NumberingDisabled_OutputsLinesWithoutSerialNumbers()
+    {
+        var text = HomeworkDigestFormatter.FormatDocuments(
+            [Document("数学", "练习册 P12", "口算 20 题")],
+            [Standing("数学", "校本往后做一课")],
+            numberLines: false);
+
+        Assert.Contains("【数学】", text);
+        Assert.Contains("练习册 P12", text);
+        Assert.Contains("口算 20 题", text);
+        Assert.Contains("校本往后做一课（常态化）", text);
+        Assert.DoesNotContain("1. ", text);
+        Assert.DoesNotContain("2. ", text);
+        Assert.EndsWith(HomeworkDigestFormatter.TailNote, text);
+    }
+
+    [Fact]
+    public void FormatDocuments_NumberingEnabledByDefault_KeepsSerialNumbers()
+    {
+        var text = HomeworkDigestFormatter.FormatDocuments([Document("数学", "练习册 P12")]);
+
+        Assert.Contains("1. 练习册 P12", text);
+    }
+
+    [Fact]
+    public async Task Settings_NumberDigestLines_DefaultOnAndSurvivesReload()
+    {
+        var service = new SettingsService(_dir);
+        Assert.True(service.Current.Connection.NumberDigestLines); // 缺省：自动补填序号打开
+
+        service.Current.Connection.NumberDigestLines = false;
+        await service.SaveAsync();
+
+        var reloaded = new SettingsService(_dir);
+        Assert.False(reloaded.Current.Connection.NumberDigestLines);
+    }
+
+    [Fact]
     public async Task Settings_StandingHomework_SurvivesReload()
     {
         var service = new SettingsService(_dir);
