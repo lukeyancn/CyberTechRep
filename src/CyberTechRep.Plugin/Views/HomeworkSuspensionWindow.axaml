@@ -10,6 +10,23 @@
         SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
         Topmost="True" Background="Transparent" FontSize="14">
 
+  <Window.Resources>
+    <!-- 作业文档正文（可选中/可编辑）字号：由控制器按悬浮窗设置「字号」写入
+         （见 IOverlayContentFontSizeAware），下方样式据此覆盖主题自带字号。 -->
+    <x:Double x:Key="CyberTechRepOverlayContentFontSize">14</x:Double>
+  </Window.Resources>
+
+  <Window.Styles>
+    <!-- 文档正文必须显式设字号：宿主主题（Fluent）给 TextBox/SelectableTextBlock 的 ControlTheme
+         自带 FontSize，优先级高于窗口级继承——只设窗口字号时正文不会变（用户实测缺陷）。 -->
+    <Style Selector="SelectableTextBlock.document-content">
+      <Setter Property="FontSize" Value="{DynamicResource CyberTechRepOverlayContentFontSize}" />
+    </Style>
+    <Style Selector="TextBox.document-content">
+      <Setter Property="FontSize" Value="{DynamicResource CyberTechRepOverlayContentFontSize}" />
+    </Style>
+  </Window.Styles>
+
   <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
     <Grid RowDefinitions="Auto,*,Auto">
 
@@ -56,12 +73,14 @@
                               Tapped="OnDocumentTapped"
                               ToolTip.Tip="点击即可编辑本学科作业文档">
                         <SelectableTextBlock x:Name="DocumentView"
+                                             Classes="document-content"
                                              Text="{Binding Text}"
                                              TextWrapping="Wrap" MinHeight="48" />
                       </Border>
 
                       <!-- 编辑态：自由删改，失焦或停顿后实时回写存档 -->
                       <TextBox Grid.Row="0" x:Name="DocumentEditor"
+                               Classes="document-content"
                                Text="{Binding Text, Mode=TwoWay}"
                                IsVisible="{Binding IsEditing}"
                                AcceptsReturn="True" TextWrapping="Wrap" MinHeight="48"
@@ -139,6 +158,7 @@
                   <DataTemplate DataType="{x:Type vm:StandingHomeworkView}">
                     <CheckBox Content="{Binding DisplayText}"
                               IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                              IsEnabled="{Binding IsToggleEnabled}"
                               Click="OnStandingItemToggled"
                               FontSize="12" MinHeight="22"
                               ToolTip.Tip="{Binding Tooltip}" />

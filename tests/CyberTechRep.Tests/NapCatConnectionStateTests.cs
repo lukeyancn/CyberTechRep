@@ -130,6 +130,45 @@ public sealed class NapCatConnectionStateTests
     }
 
     [Fact]
+    public async Task 已连接后_再接入未握手的连接_不得把状态打回Connecting()
+    {
+        var (client, port) = await StartReverseAsync();
+        try
+        {
+            using var ws = new ClientWebSocket();
+            await ws.ConnectAsync(new Uri($"ws://127.0.0.1:{port}/"), CancellationToken.None);
+            Assert.True(await WaitForStatusAsync(client, ConnectionStatus.Authenticating),
+                $"握手后应进入 Authenticating，实际：{client.Status}");
+
+            await SendAsync(ws,
+                """{ "post_type": "meta_event", "meta_event_type": "lifecycle", "sub_type": "connect" }""");
+            Assert.True(await WaitForStatusAsync(client, ConnectionStatus.Connected),
+                $"收到 lifecycle 后应判定已连接，实际：{client.Status}");
+
+            // 再接入一条「只连不握手」的 TCP：反向监听循环会因此再转一圈。
+            // 旧实现每圈无条件写 Connecting，会把活动连接已确认的 Connected 打回「连接中」
+            //（UI 显示与真实连接不一致；也是状态用例偶发失败的根因）。
+            using (var raw = new TcpClient())
+            {
+                await raw.ConnectAsync(IPAddress.Loopback, port);
+                await Task.Delay(800);
+            }
+
+            Assert.Equal(ConnectionStatus.Connected, client.Status);
+
+            // 原连接仍然可用：心跳照常处理，状态保持已连接
+            await SendAsync(ws,
+                """{ "post_type": "meta_event", "meta_event_type": "heartbeat", "interval": 5000 }""");
+            await Task.Delay(300);
+            Assert.Equal(ConnectionStatus.Connected, client.Status);
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task 连接断开_状态必须离开Connected()
     {
         // 断开后若仍显示「已连接」，UI 状态与真实连接不一致（用户反馈的 connect 状态识别问题）
@@ -189,6 +228,11 @@ public sealed class NapCatConnectionStateTests
 
             Assert.True(await WaitForStatusAsync(client, ConnectionStatus.AuthenticationFailed),
                 $"token 不匹配应置 AuthenticationFailed，实际：{client.Status}");
+
+            // 鉴权失败是终态：监听循环不得把它覆盖成「连接中」（否则用户看不到失败原因，
+            // 也正是状态用例过去偶发失败的根因之一）
+            await Task.Delay(600);
+            Assert.Equal(ConnectionStatus.AuthenticationFailed, client.Status);
         }
         finally
         {

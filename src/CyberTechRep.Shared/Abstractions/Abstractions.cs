@@ -222,14 +222,16 @@ public interface IHomeworkStore
     /// 手工编辑整篇文档文本并即时回写存档（null/空 = 清除手工文本，回到按条目渲染）。
     /// 文档不存在时按需创建（仅当 manualText 非空）。返回写入后的文档或 null。
     /// <para>
-    /// <paramref name="editBaseline"/>：进入编辑态时文档的渲染文本（编辑器基线）。
-    /// 传入后做「三方合并」——编辑期间新到达并落档的条目行（不在基线、也不在编辑稿中）
-    /// 按末尾增量并入，用户对基线内容的删改保留；不传则整篇覆盖（旧行为）。
+    /// <paramref name="knownEntryIds"/>：进入编辑态那一刻文档里已有的条目 id 集合（编辑锚点）。
+    /// 传入后做「三方合并」——只有<b>不在集合中</b>的条目（= 编辑期间新到达并落档的消息）
+    /// 才把行按末尾增量并入编辑稿；集合内条目被用户删掉/改写的行一律尊重用户结果
+    /// （旧口径用渲染文本做基线，用户「改写」过的旧行会因不在编辑稿里被反复重加）。
+    /// 不传则整篇覆盖（旧行为，供非编辑器调用方使用）。
     /// </para>
     /// </summary>
     Task<HomeworkDocument?> SaveDocumentTextAsync(
         DateOnly date, string subject, string? manualText, CancellationToken ct = default,
-        string? editBaseline = null);
+        IReadOnlyCollection<Guid>? knownEntryIds = null);
 
     /// <summary>
     /// 按来源消息 id 从作业条目与学科文档中移除（撤回联动；需求 1）。

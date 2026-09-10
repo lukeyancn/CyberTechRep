@@ -130,6 +130,56 @@ public sealed class HomeworkDocumentStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveDocumentText_DuringEdit_LateEntryIsMergedIntoEditorText()
+    {
+        var store = new HomeworkStore(_dir);
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var opened = await store.AppendDocumentEntryAsync("数学", Entry("练习册 P12", "m1"));
+        var anchor = opened.Entries.Select(e => e.Id).ToList(); // 进入编辑态时的条目锚点
+
+        // 编辑期间新消息到达（用户还在编辑自己的稿子）
+        await store.AppendDocumentEntryAsync("数学", Entry("口算 20 题", "m2", member: "t2", sender: "李老师"));
+
+        var saved = await store.SaveDocumentTextAsync(
+            today, "数学", "练习册 P12（已核对）", CancellationToken.None, anchor);
+
+        // 用户改动保留 + 编辑期间新到的行补齐
+        Assert.Equal($"练习册 P12（已核对）{Environment.NewLine}口算 20 题", saved!.Render);
+    }
+
+    [Fact]
+    public async Task SaveDocumentText_DuringEdit_RewrittenOldLine_IsNotReappended()
+    {
+        // 回归：旧口径以「进入编辑态时的渲染文本」为基线，用户在编辑态里**改写**过的旧行
+        // 既不在编辑稿里、也不在更新后的基线里，于是被当成编辑期间新到的行反复重加（文档行重复）
+        var store = new HomeworkStore(_dir);
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var opened = await store.AppendDocumentEntryAsync("数学", Entry("练习册 P12", "m1"));
+        var anchor = opened.Entries.Select(e => e.Id).ToList();
+
+        await store.SaveDocumentTextAsync(today, "数学", "练习册 P12 第 1-5 题", CancellationToken.None, anchor);
+        var again = await store.SaveDocumentTextAsync(
+            today, "数学", "练习册 P12 第 1-5 题（老师更正）", CancellationToken.None, anchor);
+
+        Assert.Equal("练习册 P12 第 1-5 题（老师更正）", again!.Render);
+    }
+
+    [Fact]
+    public async Task SaveDocumentText_DuringEdit_DeletedOldLine_StaysDeleted()
+    {
+        var store = new HomeworkStore(_dir);
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        await store.AppendDocumentEntryAsync("数学", Entry("练习册 P12", "m1"));
+        var opened = await store.AppendDocumentEntryAsync("数学", Entry("口算 20 题", "m2", member: "t2", sender: "李老师"));
+        var anchor = opened.Entries.Select(e => e.Id).ToList();
+
+        // 用户删掉一行后落档：删除必须保留（不得被合并器补回来）
+        var saved = await store.SaveDocumentTextAsync(today, "数学", "练习册 P12", CancellationToken.None, anchor);
+
+        Assert.Equal("练习册 P12", saved!.Render);
+    }
+
+    [Fact]
     public async Task RemoveByMessageId_RemovesEntryAndItem_AndDeletesEmptyDocument()
     {
         var store = new HomeworkStore(_dir);

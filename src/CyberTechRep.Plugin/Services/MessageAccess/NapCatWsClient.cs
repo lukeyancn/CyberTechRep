@@ -96,7 +96,22 @@ public sealed class NapCatWsClient : IMessageGatewayClient
         _logger = logger;
     }
 
-    public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
+    /// <summary>
+    /// 连接状态（跨线程读：UI 轮询、状态用例断言）。
+    /// 用 volatile 字段承载，避免读线程看到过期值或写线程之间的丢失更新。
+    /// </summary>
+    private volatile int _status = (int)ConnectionStatus.Disconnected;
+
+    public ConnectionStatus Status => (ConnectionStatus)_status;
+
+    /// <summary>
+    /// 反向 WS：已接受但仍在处理中的连接数（含握手期内与已接入接收中）。
+    /// 用途：监听循环只在「一条连接都没有」时才把状态写成「连接中（等待接入）」——
+    /// 旧实现每次 accept 返回后都无条件写 Connecting，会把活动连接刚确认的
+    /// Authenticating/Connected 覆盖掉（状态回跳，UI 显示与真实连接不一致；
+    /// 也是连接状态用例偶发失败的根因）。
+    /// </summary>
+    private int _reverseLiveConnections;
 
     /// <summary>反向监听实际绑定端口（配置 0 = 系统分配；未监听时为 null）。</summary>
     public int? ListeningPort { get; private set; }
@@ -186,12 +201,12 @@ public sealed class NapCatWsClient : IMessageGatewayClient
 
     private void SetStatus(ConnectionStatus status)
     {
-        if (Status == status)
+        var previous = (ConnectionStatus)Interlocked.Exchange(ref _status, (int)status);
+        if (previous == status)
         {
             return;
         }
 
-        Status = status;
         _logger?.LogDebug("NapCat 连接状态：{Status}", status);
         ConnectionStateChanged?.Invoke(this, status);
     }
@@ -437,7 +452,15 @@ public sealed class NapCatWsClient : IMessageGatewayClient
             var handlers = new List<Task>();
             while (!ct.IsCancellationRequested)
             {
-                SetStatus(ConnectionStatus.Connecting); // 监听中（等待 NapCat 接入）
+                // 监听中（等待 NapCat 接入）：只在「尚无连接、且没有正在处理的连接」时才对外呈现「连接中」。
+                // 活动连接的状态（Authenticating/Connected）与鉴权失败（AuthenticationFailed，用户需要看到
+                // 失败原因）都不允许被本循环覆盖——旧实现每圈无条件写 Connecting，状态会被打回「连接中」。
+                if (Volatile.Read(ref _reverseLiveConnections) == 0
+                    && Status is ConnectionStatus.Disconnected or ConnectionStatus.Connecting)
+                {
+                    SetStatus(ConnectionStatus.Connecting);
+                }
+
                 Socket client;
                 try
                 {
@@ -453,6 +476,8 @@ public sealed class NapCatWsClient : IMessageGatewayClient
                     continue;
                 }
 
+                // 先登记再派发：该连接在握手期内也不会被本循环下一拍的 Connecting 覆盖
+                Interlocked.Increment(ref _reverseLiveConnections);
                 handlers.Add(HandleReverseClientAsync(client, ct));
                 handlers.RemoveAll(h => h.IsCompleted);
             }
@@ -530,6 +555,11 @@ public sealed class NapCatWsClient : IMessageGatewayClient
             catch (Exception ex)
             {
                 _logger?.LogWarning(ex, "反向 WS 客户端连接处理异常（不影响继续监听）");
+            }
+            finally
+            {
+                // 与接受时的 Interlocked.Increment 配对：归零后监听循环才重新对外呈现「连接中」
+                Interlocked.Decrement(ref _reverseLiveConnections);
             }
         }
     }

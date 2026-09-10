@@ -10,6 +10,21 @@
         SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
         Topmost="True" Background="Transparent" FontSize="14">
 
+  <Window.Resources>
+    <!-- 正文（可选中复制的只读文本）字号：由控制器按悬浮窗设置「字号」写入
+         （见 IOverlayContentFontSizeAware），下方样式据此覆盖主题自带字号。 -->
+    <x:Double x:Key="CyberTechRepOverlayContentFontSize">14</x:Double>
+  </Window.Resources>
+
+  <Window.Styles>
+    <!-- 正文必须显式设字号：宿主主题（Fluent）给 TextBox 的 ControlTheme 自带 FontSize，
+         优先级高于窗口级继承——只设窗口字号时正文不会变（用户实测缺陷）。
+         用样式 + 动态资源：样式优先级高于 ControlTheme，且滚动中新生成的行也自动生效。 -->
+    <Style Selector="TextBox.notice-content">
+      <Setter Property="FontSize" Value="{DynamicResource CyberTechRepOverlayContentFontSize}" />
+    </Style>
+  </Window.Styles>
+
   <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
     <Grid RowDefinitions="Auto,*,Auto">
 

@@ -262,6 +262,14 @@ public sealed class FileRecord
 
     public string? LastError { get; set; }
 
+    /// <summary>
+    /// 最近一次失败是否属于<b>可重试</b>类别（网络抖动/连接被断/读取停滞/5xx）。
+    /// 永久失败（直链过期被拒、超单文件上限、磁盘策略拒绝）为 false。
+    /// 调用方（消息管道）据此决定是否投递 <c>FileDownload</c> 重试队列条目——
+    /// 瞬时失败在管道内已自动续传重试，用尽后交给重试队列按退避再试，并在排错面板可手动重放。
+    /// </summary>
+    public bool FailureRetriable { get; set; }
+
     public DateTimeOffset CreatedAt { get; init; }
 
     public DateTimeOffset? CompletedAt { get; set; }

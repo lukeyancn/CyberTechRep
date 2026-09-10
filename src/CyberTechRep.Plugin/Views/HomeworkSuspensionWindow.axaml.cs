@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Threading;
 using CyberTechRep.Plugin.Services.MessageAccess;
 using CyberTechRep.Plugin.Services.Overlays;
+using CyberTechRep.Plugin.Services.Stores;
 using CyberTechRep.Shared.Abstractions;
 using CyberTechRep.Shared.Models;
 
@@ -90,8 +91,15 @@ public sealed class HomeworkDocumentView : INotifyPropertyChanged
         }
     }
 
-    /// <summary>进入编辑态时的渲染文本（三方合并基线：区分「用户删改」与「编辑期间新到的消息」）。</summary>
+    /// <summary>进入编辑态时的渲染文本（编辑器基线：仅用于判断用户有没有改动）。</summary>
     public string? EditBaseline { get; set; }
+
+    /// <summary>
+    /// 进入编辑态那一刻文档里已有的条目 id 集合（编辑锚点，见 <see cref="IHomeworkStore.SaveDocumentTextAsync"/>）：
+    /// 落档时只有集合外的条目（= 编辑期间新到的消息）才把行补进编辑稿。
+    /// 整个编辑态期间保持不变——落档后若把新条目也并进来，下一拍就会把它们当「旧行」丢掉。
+    /// </summary>
+    internal IReadOnlyCollection<Guid> KnownEntryIds { get; set; } = [];
 
     public string EditHint => IsEditing ? "编辑中…停顿后自动保存" : "点击文字即可编辑";
 
@@ -127,6 +135,7 @@ public sealed class HomeworkDocumentView : INotifyPropertyChanged
 public sealed class StandingHomeworkView : INotifyPropertyChanged
 {
     private bool _isChecked;
+    private bool _isLanded;
 
     public required StandingHomeworkItem Item { get; init; }
 
@@ -146,9 +155,48 @@ public sealed class StandingHomeworkView : INotifyPropertyChanged
         }
     }
 
-    public string DisplayText => $"{Item.Subject}：{Item.Content}";
+    /// <summary>
+    /// 今天是否已落档（该学科文档里已存在同内容的常态化条目）。
+    /// <para>
+    /// 已落档的条目显示为「已勾选且不可取消」：它已在当天文档里，本来就会随清单发出，
+    /// 取消勾选并不能把它从文档中移除。旧实现每次打开确认窗一律重置为未勾选，
+    /// 与「文档里已经有这一行」的事实不一致，老师无法判断是否已计入（行为缺陷）。
+    /// </para>
+    /// </summary>
+    public bool IsLanded
+    {
+        get => _isLanded;
+        set
+        {
+            if (_isLanded == value)
+            {
+                return;
+            }
 
-    public string Tooltip => $"勾选后写入「{Item.Subject}」作业文档末尾（点「发送」才落档）";
+            _isLanded = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsLanded)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsToggleEnabled)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DisplayText)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Tooltip)));
+        }
+    }
+
+    /// <summary>可否手工勾选/取消：已落档的条目不可取消（取消也无法从文档移除）。</summary>
+    public bool IsToggleEnabled => !IsLanded;
+
+    public string DisplayText => IsLanded
+        ? $"{Item.Subject}：{Item.Content}（今天已落档）"
+        : $"{Item.Subject}：{Item.Content}";
+
+    public string Tooltip => IsLanded
+        ? $"今天已写入「{Item.Subject}」作业文档（随清单一起发出），不能在这里取消"
+        : $"勾选后写入「{Item.Subject}」作业文档末尾（点「发送」才落档）";
+
+    /// <summary>稳定的落档匹配键：学科 + 归一化内容（与合并器同一归一化口径）。</summary>
+    internal static string LandingKey(string? subject, string? content) =>
+        HomeworkDocumentMerger.Normalize(subject ?? "")
+        + "\u0000"
+        + HomeworkDocumentMerger.Normalize(content ?? "");
 
     public event PropertyChangedEventHandler? PropertyChanged;
 }
@@ -171,7 +219,7 @@ public sealed class StandingHomeworkView : INotifyPropertyChanged
 /// 其余行为保持原样：仅显示当天作业、分组顺序按配置（HomeworkGroupOrder）、Changed 触发
 /// 200ms debounce 刷新、右上角「⋯」快捷菜单（置顶/固定/穿透）、拖拽与角部缩放、整理并发送入口。
 /// </summary>
-public partial class HomeworkSuspensionWindow : Window
+public partial class HomeworkSuspensionWindow : Window, IOverlayContentFontSizeAware
 {
     /// <summary>Changed 事件合并刷新的 debounce 间隔（与通知悬浮窗一致）。</summary>
     internal static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(200);
@@ -253,6 +301,16 @@ public partial class HomeworkSuspensionWindow : Window
     /// <summary>当前文档视图（测试用）。</summary>
     internal IReadOnlyList<HomeworkDocumentView> VisibleDocuments =>
         GroupList?.ItemsSource as IReadOnlyList<HomeworkDocumentView> ?? [];
+
+    /// <summary>
+    /// 作业文档正文（可选中/可编辑）字号跟随悬浮窗设置「字号」。
+    /// <para>
+    /// 走窗口资源 + 样式动态资源：宿主主题（Fluent）给 TextBox/SelectableTextBlock 的 ControlTheme
+    /// 自带 FontSize，优先级高于窗口级属性继承——只在窗口上设字号时正文不会变（用户实测缺陷）。
+    /// </para>
+    /// </summary>
+    public void ApplyContentFontSize(double fontSize) =>
+        Resources["CyberTechRepOverlayContentFontSize"] = fontSize;
 
     private void OnStoreItemChanged(object? sender, HomeworkItem e) => ScheduleRefreshFromAnyThread();
 
@@ -356,7 +414,9 @@ public partial class HomeworkSuspensionWindow : Window
         Subject = document.Subject,
         Date = document.Date,
         Text = document.Render,
-        SourceSummary = HomeworkDocumentView.BuildSourceSummary(document)
+        SourceSummary = HomeworkDocumentView.BuildSourceSummary(document),
+        // 编辑锚点：进入编辑态时已有的条目 id（落档时只有锚点外的条目才算「编辑期间新到」）
+        KnownEntryIds = document.Entries.Select(e => e.Id).ToList()
     };
 
     /// <summary>当天过滤（纯逻辑，可单测）：Created 转本地日期等于 today 才保留。</summary>
@@ -488,8 +548,8 @@ public partial class HomeworkSuspensionWindow : Window
 
     /// <summary>
     /// 把文档文本回写存档（存档为单一事实源）；空文本 = 清除手工文本、回到按条目渲染。
-    /// 传入进入编辑态时的基线做三方合并：编辑期间新到达的消息行补齐到末尾，用户删改保留。
-    /// 与基线相同（点进编辑态没输入 / 改回原样）不写存档，保持「按条目渲染」口径。
+    /// 传入进入编辑态时的条目 id 锚点做三方合并：编辑期间新到的消息行补齐到末尾，
+    /// 用户对旧行的删改保留。与基线相同（点进编辑态没输入 / 改回原样）不写存档，保持「按条目渲染」口径。
     /// 保存失败保留用户输入（不静默丢改动），下次失焦/停顿再试。
     /// </summary>
     private async Task PersistDocumentTextAsync(HomeworkDocumentView view)
@@ -508,8 +568,10 @@ public partial class HomeworkSuspensionWindow : Window
 
         try
         {
-            await _store.SaveDocumentTextAsync(view.Date, view.Subject, text, CancellationToken.None, baseline);
+            await _store.SaveDocumentTextAsync(
+                view.Date, view.Subject, text, CancellationToken.None, view.KnownEntryIds);
             // 落档成功后以「已落档的那一版」为新基线：用户再改回上一版也能正确判定为有改动
+            // （锚点不动：编辑期间新到的条目在整个编辑态里都要继续按「新行」补齐，不能被吞掉）
             view.EditBaseline = text;
         }
         catch
@@ -602,6 +664,15 @@ public partial class HomeworkSuspensionWindow : Window
             return;
         }
 
+        OpenSendOverlay();
+    }
+
+    /// <summary>
+    /// 打开「整理并发送 · 确认」浮层：重建常态化作业勾选项、刷新预览与目标群提示。
+    /// 抽成内部入口供测试驱动（与按钮点击同一路径）。
+    /// </summary>
+    internal void OpenSendOverlay()
+    {
         BuildStandingViews();
         SendPreviewText.Text = BuildDigest();
         SendConfirmButton.IsEnabled = HasSendableContent();
@@ -615,25 +686,62 @@ public partial class HomeworkSuspensionWindow : Window
         SendConfirmOverlay.IsVisible = true;
     }
 
+    /// <summary>确认浮层里的预览文本（测试用；预览即实际发送内容）。</summary>
+    internal string SendPreview => SendPreviewText.Text ?? "";
+
     /// <summary>勾选列表数据源（测试用）。</summary>
     internal IReadOnlyList<StandingHomeworkView> StandingViews => _standingViews;
 
-    /// <summary>从设置构建常态化作业勾选项（仅启用且学科/内容非空的条目；每次打开确认窗重置为未勾选）。</summary>
+    /// <summary>从设置构建常态化作业勾选项（仅启用且学科/内容非空的条目）。</summary>
     private void BuildStandingViews()
     {
         var items = _settingsService?.Current.StandingHomework.Items ?? [];
+        var landed = CollectLandedStandingKeys();
         _standingViews = items
             .Where(i => i.Enabled
                 && !string.IsNullOrWhiteSpace(i.Subject)
                 && !string.IsNullOrWhiteSpace(i.Content))
-            .Select(i => new StandingHomeworkView { Item = i })
+            .Select(i =>
+            {
+                var view = new StandingHomeworkView { Item = i };
+                if (landed.Contains(StandingHomeworkView.LandingKey(i.Subject, i.Content)))
+                {
+                    // 今天已落档：勾选态与文档事实一致（已计入），且不可取消
+                    //（取消也无法把它从当天文档里移除——旧实现一律重置为未勾选，与事实不符）
+                    view.IsLanded = true;
+                    view.IsChecked = true;
+                }
+
+                return view;
+            })
             .ToList();
         StandingList.ItemsSource = _standingViews;
         StandingList.IsVisible = _standingViews.Count > 0;
         StandingSection.IsVisible = _standingViews.Count > 0;
     }
 
-    private void OnStandingItemToggled(object? sender, RoutedEventArgs e)
+    /// <summary>当天文档里已落档的常态化条目键集合（学科 + 归一化内容）。</summary>
+    private HashSet<string> CollectLandedStandingKeys() => CollectLandedStandingKeys(_documents);
+
+    /// <summary>已落档的常态化条目键集合（纯函数，可单测）：只统计 IsStanding 条目。</summary>
+    internal static HashSet<string> CollectLandedStandingKeys(IEnumerable<HomeworkDocument> documents)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var document in documents)
+        {
+            foreach (var entry in document.Entries.Where(e => e.IsStanding))
+            {
+                keys.Add(StandingHomeworkView.LandingKey(document.Subject, entry.Text));
+            }
+        }
+
+        return keys;
+    }
+
+    private void OnStandingItemToggled(object? sender, RoutedEventArgs e) => RefreshSendPreview();
+
+    /// <summary>勾选变化后刷新预览与发送按钮（XAML 事件与测试共用同一路径）。</summary>
+    internal void RefreshSendPreview()
     {
         // 勾选即时刷新预览（取消勾选即从预览移除）；落档仍只在点「发送」时发生
         SendPreviewText.Text = BuildDigest();
@@ -679,26 +787,9 @@ public partial class HomeworkSuspensionWindow : Window
         SendResultText.Text = "正在发送…";
         try
         {
-            // 预览即所得：先取用户看到的清单文本（含勾选的常态化作业行），再落档。
-            // 顺序不可颠倒——落档后文档已含常态化行，重新格式化会再追加一遍（曾经的重复发送根因）。
-            var digest = BuildDigest();
-
-            // 需求 3 落档时机：点「发送」才把勾选的常态化作业写入该学科文档末尾
-            // （勾选只影响预览）。写入幂等：同一天同学科同内容已存在时由合并器判为完全重复而跳过。
-            var standingError = await ApplyStandingHomeworkAsync();
-
-            var results = await _sendService.SendTextToTargetGroupsAsync(digest);
-            var okCount = results.Count(r => r.Success);
-            var lines = new List<string> { $"发送完成：成功 {okCount}/{results.Count} 群" };
-            if (standingError is not null)
-            {
-                lines.Add(standingError);
-            }
-
-            lines.AddRange(results.Where(r => !r.Success)
-                .Select(r => $"群 {MaskGroupId(r.GroupOpenId)} 失败：{r.Error}"));
-            SendResultText.Text = string.Join(Environment.NewLine, lines);
-            if (results.Count > 0 && okCount == results.Count)
+            var (summary, allSucceeded) = await ConfirmSendAsync();
+            SendResultText.Text = summary;
+            if (allSucceeded)
             {
                 // 全部成功：短暂展示结果后自动收起
                 var close = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.2) };
@@ -725,12 +816,51 @@ public partial class HomeworkSuspensionWindow : Window
     }
 
     /// <summary>
+    /// 执行一次发送（按钮与测试共用同一入口），返回（结果摘要, 是否全部成功）。
+    /// <para>
+    /// 顺序不可颠倒：<b>先</b>取用户看到的清单文本（含勾选的常态化作业行），<b>再</b>落档常态化作业。
+    /// 落档后再格式化会把这些行再追加一遍——曾经的「发送内容里常态化作业重复」根因。
+    /// </para>
+    /// </summary>
+    internal async Task<(string Summary, bool AllSucceeded)> ConfirmSendAsync()
+    {
+        if (_sendService is null)
+        {
+            return ("发送失败：整理并发送未启用", false);
+        }
+
+        // 预览即所得：先取用户看到的清单文本（含勾选的常态化作业行），再落档。
+        var digest = BuildDigest();
+
+        // 需求 3 落档时机：点「发送」才把勾选的常态化作业写入该学科文档末尾
+        // （勾选只影响预览）。写入幂等：同一天同学科同内容已存在时由合并器判为完全重复而跳过。
+        var standingError = await ApplyStandingHomeworkAsync();
+
+        var results = await _sendService.SendTextToTargetGroupsAsync(digest);
+        var okCount = results.Count(r => r.Success);
+        var lines = new List<string> { $"发送完成：成功 {okCount}/{results.Count} 群" };
+        if (standingError is not null)
+        {
+            lines.Add(standingError);
+        }
+
+        lines.AddRange(results.Where(r => !r.Success)
+            .Select(r => $"群 {MaskGroupId(r.GroupOpenId)} 失败：{r.Error}"));
+        return (string.Join(Environment.NewLine, lines), results.Count > 0 && okCount == results.Count);
+    }
+
+    /// <summary>
     /// 把勾选的常态化作业写入对应学科文档末尾（IsStanding 条目，来源元信息标为常态化）。
     /// 返回 null 表示全部成功，否则返回可展示的失败摘要（不阻断发送）。
     /// </summary>
     private async Task<string?> ApplyStandingHomeworkAsync()
     {
-        var checkedItems = _standingViews.Where(v => v.IsChecked).Select(v => v.Item).ToList();
+        // 已落档的条目跳过：它今天已在文档里（重复追加会被合并器判为完全重复而丢弃），
+        // 只对本次新勾选的条目落档。
+        var checkedItems = _standingViews
+            .Where(v => v.IsChecked && !v.IsLanded)
+            .Select(v => v.Item)
+            .ToList();
         if (checkedItems.Count == 0)
         {
             return null;

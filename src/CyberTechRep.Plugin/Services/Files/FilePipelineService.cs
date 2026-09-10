@@ -1,4 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 using CyberTechRep.Shared.Abstractions;
@@ -10,7 +12,8 @@ namespace CyberTechRep.Plugin.Services.Files;
 
 /// <summary>
 /// 模块 4：文件处理管道。
-/// 原子下载（.tmp 临时文件 → MD5 校验 → 归档到 下载文件/&lt;学科&gt;/&lt;yyyy-MM-dd&gt;/&lt;文件名&gt;）、
+/// 原子下载（.tmp 半成品文件 → MD5 校验 → 归档到 下载文件/&lt;学科&gt;/&lt;yyyy-MM-dd&gt;/&lt;文件名&gt;）、
+/// <b>瞬时失败自动重试 + HTTP Range 断点续传</b>（同一记录的重试从已完成字节继续，服务器不支持续传则自动从头下）、
 /// MD5 去重、路径安全校验（拒绝穿越/非法字符/超长/Windows 保留名）、
 /// 单文件大小上限、下载并发队列化（SemaphoreSlim）、磁盘占用上限与清理策略。
 /// 失败记录 <see cref="FileStatus.Failed"/> + LastError；<see cref="EnqueueAsync"/> 可重入触发尽力重试
@@ -27,6 +30,25 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
 
     private const string TempPrefix = ".download-";
     private const string TempSuffix = ".tmp";
+
+    /// <summary>
+    /// 单次入队的下载尝试次数（含首次）。瞬时失败（网络抖动/连接被断/读取停滞/5xx）按退避重试，
+    /// 已落盘的字节保留，重试用 <c>Range</c> 从断点继续——「文件有时候下载不下来」多数是
+    /// 单次抖动导致的永久失败（旧实现只试一次）。
+    /// </summary>
+    private const int DownloadMaxAttempts = 3;
+
+    /// <summary>重试退避基数（毫秒）：第 n 次失败后等待 base * 3^(n-1)（1s、3s）。</summary>
+    private const int DownloadRetryBaseDelayMs = 1000;
+
+    /// <summary>
+    /// 读取停滞上限：单次读取超过该时长没有新字节即认定连接僵死（按可重试失败处理、保留半成品续传）。
+    /// 取代「整个请求 60 秒硬超时」——大文件在慢链路上过去会因总时长超限直接失败，且半成品被删无法续传。
+    /// </summary>
+    private static readonly TimeSpan DownloadStallTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>重试退避基数（毫秒）；测试可置 0 跳过等待。</summary>
+    internal int RetryBaseDelayMs { get; init; } = DownloadRetryBaseDelayMs;
 
     private static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -54,7 +76,9 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
         ILogger? logger = null)
     {
         _provider = provider;
-        _http = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        // 总超时不再由 HttpClient 硬控：改为流内「读取停滞上限」（见 DownloadStallTimeout）——
+        // 整个请求 60 秒硬超时会让大文件在慢链路上直接失败且无法续传。
+        _http = httpClient ?? new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _logger = logger ?? NullLogger.Instance;
         _downloadSlots = new SemaphoreSlim(Math.Max(1, provider.GetSettings().DownloadConcurrency));
         Directory.CreateDirectory(provider.DataDirectory);
@@ -373,7 +397,9 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
         FileRecord record, string safeName, string url, FileSettings settings, CancellationToken ct)
     {
         var root = GetDownloadRoot();
-        var tempPath = Path.Combine(root, TempPrefix + Guid.NewGuid().ToString("N") + TempSuffix);
+        // 半成品文件按「记录 id」命名（不是随机名）：同一记录的重试能从已完成字节续传。
+        // 前缀/后缀沿用 .download-*.tmp，磁盘清理策略会跳过下载中的临时文件。
+        var partialPath = Path.Combine(root, TempPrefix + record.Id.ToString("N") + TempSuffix);
         var maxFileBytes = settings.MaxFileSizeMb <= 0
             ? long.MaxValue
             : settings.MaxFileSizeMb * 1024L * 1024L;
@@ -381,89 +407,240 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
         record.Status = FileStatus.Downloading;
         RaiseUpdated(record);
 
-        try
+        for (var attempt = 1; ; attempt++)
         {
-            using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            resp.EnsureSuccessStatusCode();
-
-            var contentLength = resp.Content.Headers.ContentLength;
-
-            // 单文件大小上限：已知 Content-Length 时提前拒绝，避免无谓下载
-            if (contentLength is > 0 && contentLength.Value > maxFileBytes)
+            ct.ThrowIfCancellationRequested();
+            try
             {
-                return Fail(record, $"文件大小 {contentLength} 字节超过单文件上限 {settings.MaxFileSizeMb} MB", countAttempt: true);
+                return await DownloadOnceAsync(
+                    record, safeName, url, settings, root, partialPath, maxFileBytes, attempt, ct)
+                    .ConfigureAwait(false);
             }
-
-            // 磁盘占用上限预检（含清理策略；拒绝时内部已置 Failed 并告警）
-            if (!EnsureDiskBudget(root, settings, contentLength ?? 0, record))
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                return record;
+                // 宿主停止/取消：保留半成品（下次入队可续传），不算失败
+                throw;
             }
-
-            // 原子下载：写临时文件 + 流式 MD5（内容长度未知时在流内强制执行大小上限）
-            record.Status = FileStatus.Downloading;
-            RaiseUpdated(record);
-            var (size, md5) = await DownloadToTempAsync(resp.Content, tempPath, maxFileBytes, settings, ct);
-            record.Size = size;
-
-            record.Status = FileStatus.Verifying;
-            RaiseUpdated(record);
-            record.Md5 = md5;
-
-            // MD5 去重：删除重复文件，仅保留原文件并记日志
-            if (settings.Md5DedupEnabled && FindArchivedByMd5(md5) is { } original)
+            catch (Exception ex) when (attempt < DownloadMaxAttempts && IsTransientDownloadFailure(ex))
             {
-                TryDelete(tempPath);
-                record.Status = FileStatus.Duplicate;
-                record.CompletedAt = DateTimeOffset.Now;
+                // 瞬时失败：保留已下载的字节，退避后从断点继续（不是从头再下）
+                record.AttemptCount++;
+                record.FailureRetriable = true;
+                var resumed = PartialLength(partialPath);
+                record.LastError =
+                    $"下载中断（第 {attempt}/{DownloadMaxAttempts} 次，已下载 {resumed} 字节）：{ex.Message}";
                 PersistAndRaise(record);
-                _logger.LogInformation(
-                    "文件 {Name} 与已归档文件 {Existing} 内容相同（MD5 {Md5}），重复文件已删除",
-                    record.FileName, original.ArchivedRelativePath, md5);
-                return record;
+                var delayMs = RetryBaseDelayMs * (int)Math.Pow(3, attempt - 1);
+                _logger.LogWarning(
+                    ex, "文件 {Name} 第 {Attempt}/{Max} 次下载失败（已下载 {Bytes} 字节），{Delay}ms 后续传重试",
+                    record.FileName, attempt, DownloadMaxAttempts, resumed, delayMs);
+                await Task.Delay(delayMs, ct).ConfigureAwait(false);
             }
-
-            // 归档：下载文件/<学科>/<yyyy-MM-dd>/<文件名>（移动前做防穿越终检）
-            var relative = ArchiveFile(root, tempPath, settings.GroupBySubject ? UnfiledSubject : "", record.CreatedAt.LocalDateTime, safeName);
-            record.ArchivedRelativePath = relative;
-            record.Status = FileStatus.Archived;
-            record.CompletedAt = DateTimeOffset.Now;
-            PersistAndRaise(record);
-            _logger.LogInformation("文件 {Name} 已归档至 {Path}（{Size} 字节，MD5 {Md5}）", record.FileName, relative, size, md5);
-            return record;
-        }
-        catch (Exception ex)
-        {
-            // 失败：清理临时文件（无半成品归档），置 Failed + LastError，可重入重试
-            TryDelete(tempPath);
-            return Fail(record, $"下载失败：{ex.Message}", countAttempt: true);
+            catch (Exception ex)
+            {
+                // 永久失败（4xx 直链失效、超大小上限、磁盘策略）或重试用尽：清理半成品并落 Failed。
+                // 重试用尽但失败仍属瞬时类 → FailureRetriable=true，由调用方投递重试队列稍后再试。
+                record.AttemptCount++;
+                record.FailureRetriable = IsTransientDownloadFailure(ex);
+                TryDelete(partialPath);
+                return Fail(record, BuildDownloadErrorMessage(ex));
+            }
         }
     }
 
-    /// <summary>流式下载到临时文件并同步计算 MD5；支持简易限速与大小上限强制执行。</summary>
-    private static async Task<(long Size, string Md5)> DownloadToTempAsync(
-        HttpContent content, string tempPath, long maxFileBytes, FileSettings settings, CancellationToken ct)
+    /// <summary>单次下载：续传（Range）→ 流式落盘 + 增量 MD5 → 完整性校验 → MD5 去重 → 归档。</summary>
+    private async Task<FileRecord> DownloadOnceAsync(
+        FileRecord record, string safeName, string url, FileSettings settings, string root, string partialPath,
+        long maxFileBytes, int attempt, CancellationToken ct)
     {
-        await using var source = await content.ReadAsStreamAsync(ct);
-        await using var target = new FileStream(
-            tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        // 断点：半成品已写入的字节数（同时是续传请求的 Range 起点与 MD5 前缀种子的长度）
+        var resumeFrom = PartialLength(partialPath);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (resumeFrom > 0)
+        {
+            request.Headers.Range = new RangeHeaderValue(resumeFrom, null);
+        }
+
+        using var resp = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+            .ConfigureAwait(false);
+
+        // 服务器不支持续传（对 Range 请求回 200 完整内容）→ 本次从头发起
+        if (resumeFrom > 0 && resp.StatusCode == HttpStatusCode.OK)
+        {
+            _logger.LogInformation(
+                "文件 {Name} 的服务器未按续传应答（HTTP 200），本次从头发起下载", record.FileName);
+            resumeFrom = 0;
+        }
+
+        // 断点越界（416：源文件被替换/缩小）：丢弃半成品，按可重试失败处理，下一拍从头发起
+        if (resumeFrom > 0 && resp.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            TryDelete(partialPath);
+            throw new IOException(
+                $"断点续传被服务端拒绝（HTTP 416，本地半成品 {resumeFrom} 字节），下次从头发起");
+        }
+
+        resp.EnsureSuccessStatusCode();
+
+        // 完整文件大小：续传响应取 Content-Range 的总长，完整响应取 Content-Length
+        var expectedTotal = resp.StatusCode == HttpStatusCode.PartialContent
+            ? resp.Content.Headers.ContentRange?.Length
+            : resp.Content.Headers.ContentLength;
+
+        // 单文件大小上限：已知完整大小时提前拒绝，避免无谓下载
+        if (expectedTotal is > 0 && expectedTotal.Value > maxFileBytes)
+        {
+            throw new PermanentDownloadException(
+                $"文件大小 {expectedTotal} 字节超过单文件上限 {settings.MaxFileSizeMb} MB");
+        }
+
+        // 磁盘占用上限预检（含清理策略；拒绝时内部已置 Failed 并告警）
+        var remainingBytes = expectedTotal is > 0 ? Math.Max(0, expectedTotal.Value - resumeFrom) : 0;
+        if (!EnsureDiskBudget(root, settings, remainingBytes, record))
+        {
+            throw new PermanentDownloadException(record.LastError ?? "磁盘占用已达上限");
+        }
+
+        record.Status = FileStatus.Downloading;
+        RaiseUpdated(record);
+        var (size, md5) = await DownloadToPartialAsync(
+            resp.Content, partialPath, resumeFrom, maxFileBytes, settings, ct).ConfigureAwait(false);
+        record.Size = size;
+
+        if (expectedTotal is > 0 && size != expectedTotal.Value)
+        {
+            // 服务端给了完整长度就必须对齐；提前结束按可续传失败处理
+            throw new IOException($"下载不完整：已收到 {size} / {expectedTotal.Value} 字节");
+        }
+
+        record.Status = FileStatus.Verifying;
+        RaiseUpdated(record);
+        record.Md5 = md5;
+
+        // MD5 去重：删除重复文件，仅保留原文件并记日志
+        if (settings.Md5DedupEnabled && FindArchivedByMd5(md5) is { } original)
+        {
+            TryDelete(partialPath);
+            record.Status = FileStatus.Duplicate;
+            record.CompletedAt = DateTimeOffset.Now;
+            PersistAndRaise(record);
+            _logger.LogInformation(
+                "文件 {Name} 与已归档文件 {Existing} 内容相同（MD5 {Md5}），重复文件已删除",
+                record.FileName, original.ArchivedRelativePath, md5);
+            return record;
+        }
+
+        // 归档：下载文件/<学科>/<yyyy-MM-dd>/<文件名>（移动前做防穿越终检）
+        var relative = ArchiveFile(
+            root, partialPath, settings.GroupBySubject ? UnfiledSubject : "", record.CreatedAt.LocalDateTime, safeName);
+        record.ArchivedRelativePath = relative;
+        record.Status = FileStatus.Archived;
+        record.CompletedAt = DateTimeOffset.Now;
+        record.FailureRetriable = false; // 本次已成功：清掉历史失败的可重试标记
+        PersistAndRaise(record);
+        _logger.LogInformation(
+            "文件 {Name} 已归档至 {Path}（{Size} 字节，MD5 {Md5}，本次下载尝试次数 {Attempt}）",
+            record.FileName, relative, size, md5, attempt);
+        return record;
+    }
+
+    /// <summary>瞬时失败判定：网络抖动/连接被断/停滞/5xx 可重试；4xx（直链失效）与策略性拒绝不重试。</summary>
+    private static bool IsTransientDownloadFailure(Exception ex) => ex switch
+    {
+        PermanentDownloadException => false,
+        HttpRequestException http => http.StatusCode is null
+            || http.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests
+            || (int)http.StatusCode!.Value >= 500,
+        IOException => true,
+        OperationCanceledException => true, // 读取停滞上限触发（宿主取消在上层单独处理，不会走到这里）
+        _ => false
+    };
+
+    /// <summary>失败文案：直链被拒（401/403/404/410）直指「已过期/被拒绝」并给出可操作建议。</summary>
+    private static string BuildDownloadErrorMessage(Exception ex) => ex switch
+    {
+        PermanentDownloadException => ex.Message,
+        HttpRequestException
+        {
+            StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                or HttpStatusCode.NotFound or HttpStatusCode.Gone
+        } http => $"下载失败：直链被拒绝或已过期（HTTP {(int)http.StatusCode!.Value}），可重新入队重试",
+        _ => $"下载失败：{ex.Message}"
+    };
+
+    /// <summary>半成品文件当前字节数（不存在/不可访问按 0 = 从头下载）。</summary>
+    private static long PartialLength(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? new FileInfo(path).Length : 0;
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>不可重试的下载失败（大小上限/磁盘策略）：不进重试退避，直接落 Failed。</summary>
+    private sealed class PermanentDownloadException(string message) : Exception(message);
+
+    /// <summary>
+    /// 流式下载到半成品文件并同步计算 MD5（支持续传：从 <paramref name="resumeFrom"/> 字节继续，
+    /// MD5 先用已有字节做前缀种子）；单次读取停滞超过 <see cref="DownloadStallTimeout"/> 视为连接僵死。
+    /// 支持简易限速与大小上限强制执行。
+    /// </summary>
+    private static async Task<(long Size, string Md5)> DownloadToPartialAsync(
+        HttpContent content, string partialPath, long resumeFrom, long maxFileBytes, FileSettings settings,
+        CancellationToken ct)
+    {
+        await using var source = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var md5 = MD5.Create();
+
+        // 续传：先把半成品里已有的字节喂给 MD5，保证最终哈希覆盖完整文件
+        if (resumeFrom > 0)
+        {
+            await SeedMd5FromFileAsync(md5, partialPath, resumeFrom, ct).ConfigureAwait(false);
+        }
+
+        await using var target = new FileStream(
+            partialPath, resumeFrom > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None,
+            81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         var buffer = new byte[81920];
         var speedLimitKbps = settings.SpeedLimitKbps;
-        long total = 0;
-        int read;
-        while ((read = await source.ReadAsync(buffer, ct)) > 0)
+        var total = resumeFrom;
+        while (true)
         {
+            int read;
+            // 逐次读取设停滞上限：超过该时长没有新字节 → 连接僵死（保留半成品，按可重试失败处理）
+            using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                readCts.CancelAfter(DownloadStallTimeout);
+                try
+                {
+                    read = await source.ReadAsync(buffer, readCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    throw new IOException(
+                        $"读取停滞超过 {DownloadStallTimeout.TotalSeconds:0} 秒（连接僵死或网络中断）");
+                }
+            }
+
+            if (read <= 0)
+            {
+                break;
+            }
+
             total += read;
             if (total > maxFileBytes)
             {
-                throw new InvalidOperationException($"文件大小超过单文件上限（{settings.MaxFileSizeMb} MB）");
+                throw new PermanentDownloadException($"文件大小超过单文件上限（{settings.MaxFileSizeMb} MB）");
             }
 
             md5.TransformBlock(buffer, 0, read, null, 0);
-            await target.WriteAsync(buffer.AsMemory(0, read), ct);
+            await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
 
             if (speedLimitKbps > 0)
             {
@@ -471,14 +648,36 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
                 var delayMs = (int)(read * 1000d / (speedLimitKbps * 1024d));
                 if (delayMs > 0)
                 {
-                    await Task.Delay(delayMs, ct);
+                    await Task.Delay(delayMs, ct).ConfigureAwait(false);
                 }
             }
         }
 
         md5.TransformFinalBlock([], 0, 0);
-        await target.FlushAsync(ct);
+        await target.FlushAsync(ct).ConfigureAwait(false);
         return (total, Convert.ToHexString(md5.Hash ?? []).ToLowerInvariant());
+    }
+
+    /// <summary>把半成品文件已有字节喂给 MD5（续传时保证哈希覆盖完整文件）。</summary>
+    private static async Task SeedMd5FromFileAsync(MD5 md5, string path, long length, CancellationToken ct)
+    {
+        await using var stream = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var buffer = new byte[81920];
+        var remaining = length;
+        while (remaining > 0)
+        {
+            var toRead = (int)Math.Min(buffer.Length, remaining);
+            var read = await stream.ReadAsync(buffer.AsMemory(0, toRead), ct).ConfigureAwait(false);
+            if (read <= 0)
+            {
+                throw new IOException($"半成品文件不完整：期望 {length} 字节，实际读到 {length - remaining}");
+            }
+
+            md5.TransformBlock(buffer, 0, read, null, 0);
+            remaining -= read;
+        }
     }
 
     /// <summary>移动临时文件到 归档目录；最终路径必须位于下载根目录内（防穿越）。</summary>

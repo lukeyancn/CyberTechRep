@@ -62,7 +62,7 @@ internal static class NoticeViewFilter
 /// SettingsChanged 双向同步勾选态；Store.Changed 触发 200ms debounce 合并刷新；
 /// 标题栏 BeginMoveDrag 拖拽、角部 Thumb 缩放；位置/大小由 <see cref="SuspensionWindowController"/> 持久化。
 /// </summary>
-public partial class NoticeSuspensionWindow : Window, IOverlayInteractiveRegionProvider
+public partial class NoticeSuspensionWindow : Window, IOverlayInteractiveRegionProvider, IOverlayContentFontSizeAware
 {
     /// <summary>Changed 事件合并刷新的 debounce 间隔（限流，避免刷屏）。</summary>
     internal static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(200);
@@ -124,6 +124,17 @@ public partial class NoticeSuspensionWindow : Window, IOverlayInteractiveRegionP
     /// 窗口客户区逻辑坐标（DIP）；空矩形 = 整窗穿透（列表为空/未布局时）。
     /// </summary>
     public Rect GetInteractiveRegion() => _interactiveRegion;
+
+    /// <summary>
+    /// 正文（可选中复制的只读文本）字号跟随悬浮窗设置「字号」。
+    /// <para>
+    /// 走窗口资源 + 样式动态资源：宿主主题（Fluent）给 TextBox 的 ControlTheme 自带 FontSize，
+    /// 优先级高于窗口级属性继承——只在窗口上设字号时正文不会变（用户实测缺陷）。
+    /// 样式优先级高于 ControlTheme，资源改值后已生成与后续滚动生成的行都即时生效。
+    /// </para>
+    /// </summary>
+    public void ApplyContentFontSize(double fontSize) =>
+        Resources["CyberTechRepOverlayContentFontSize"] = fontSize;
 
     /// <summary>重算可交互区域（UI 线程；布局/滚动/刷新后调用）。异常一律吞掉，退回整窗穿透。</summary>
     private void UpdateInteractiveRegion()

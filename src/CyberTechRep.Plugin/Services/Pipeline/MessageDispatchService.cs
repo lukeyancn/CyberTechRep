@@ -977,6 +977,20 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 _logger.LogInformation(
                     "附件已入队文件管道（MessageId={MessageId}, GroupOpenId={GroupOpenId}, File={File}, RecordId={RecordId}, Status={Status}）",
                     message.MessageId, message.GroupOpenId, fileName, record.Id, record.Status);
+
+                if (record.Status == FileStatus.Failed && record.FailureRetriable)
+                {
+                    // 管道内「自动重试 + 断点续传」已用尽，但失败属瞬时类别：
+                    // 交给重试队列按退避再试（排错面板可查看与手动重放），不静默丢弃附件。
+                    _logger.LogWarning(
+                        "附件下载失败但属可重试类别（MessageId={MessageId}, File={File}, Error={Error}），投递 FileDownload 重试",
+                        message.MessageId, fileName, record.LastError);
+                    await EnqueueRetrySafeAsync(
+                        RetryOperationType.FileDownload,
+                        BuildFileDownloadPayload(
+                            message.MessageId, fileName, segment.Url, message.MemberOpenId, message.GroupOpenId),
+                        message.MessageId).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException)
             {

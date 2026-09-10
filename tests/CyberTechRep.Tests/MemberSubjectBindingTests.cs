@@ -354,7 +354,7 @@ public sealed class SubjectRecognitionRoutingTests : IDisposable
 
         public Task<HomeworkDocument?> SaveDocumentTextAsync(
             DateOnly date, string subject, string? manualText, CancellationToken ct = default,
-            string? editBaseline = null)
+            IReadOnlyCollection<Guid>? knownEntryIds = null)
             => Task.FromResult<HomeworkDocument?>(null);
 
         public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)
@@ -1075,7 +1075,7 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
 
         public Task<HomeworkDocument?> SaveDocumentTextAsync(
             DateOnly date, string subject, string? manualText, CancellationToken ct = default,
-            string? editBaseline = null)
+            IReadOnlyCollection<Guid>? knownEntryIds = null)
             => Task.FromResult<HomeworkDocument?>(null);
 
         public Task<int> RemoveByMessageIdAsync(string messageId, CancellationToken ct = default)

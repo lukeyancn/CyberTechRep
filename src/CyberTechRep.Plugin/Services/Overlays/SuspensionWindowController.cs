@@ -401,6 +401,10 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
             window.FontSize = settings.FontSize;
         }
 
+        // 内容字号：宿主主题（Fluent）的 TextBox ControlTheme 自带 FontSize，会压过窗口级继承——
+        // 正文（可选中/可编辑文本）必须显式跟随设置，否则「改字号没反应」。
+        (window as IOverlayContentFontSizeAware)?.ApplyContentFontSize(settings.FontSize);
+
         if (window.Width != settings.Width)
         {
             window.Width = settings.Width;

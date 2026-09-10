@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using CyberTechRep.Plugin.Services.Files;
@@ -90,9 +91,89 @@ public class FilePipelineTests : IDisposable
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
-    // ---------- 构造辅助 ----------
+    /// <summary>每次请求都先吐 <c>prefix</c> 字节再断流的处理器（模拟持续中断的下载源）。</summary>
+    private sealed class AlwaysInterruptedHandler(byte[] prefix) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
 
-    private FilePipelineService CreateService(FileSettings? settings = null, FakeHandler? handler = null)
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            var content = new StreamContent(new PartialThenThrowStream(prefix));
+            content.Headers.ContentLength = prefix.Length * 2; // 声明得比实际能给的更多 → 中断即不完整
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    /// <summary>首次请求中断、后续请求按 Range 返回剩余字节的处理器（模拟支持续传的服务器）。</summary>
+    private sealed class InterruptThenRangeHandler(byte[] payload, int breakAfter) : HttpMessageHandler
+    {
+        public List<long?> RequestRanges { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var from = request.Headers.Range?.Ranges.FirstOrDefault()?.From;
+            RequestRanges.Add(from);
+
+            if (from is null)
+            {
+                var first = new StreamContent(new PartialThenThrowStream(payload[..breakAfter]));
+                first.Headers.ContentLength = payload.Length; // 声明完整长度、实际只给一半 → 中断
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = first });
+            }
+
+            var start = (int)from.Value;
+            var rest = new ByteArrayContent(payload[start..]);
+            rest.Headers.ContentRange = new ContentRangeHeaderValue(start, payload.Length - 1, payload.Length);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = rest });
+        }
+    }
+
+    /// <summary>首次请求中断、后续请求忽略 Range 回完整内容的处理器（模拟不支持续传的服务器）。</summary>
+    private sealed class InterruptThenFullHandler(byte[] payload, int breakAfter) : HttpMessageHandler
+    {
+        public List<long?> RequestRanges { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var from = request.Headers.Range?.Ranges.FirstOrDefault()?.From;
+            RequestRanges.Add(from);
+
+            if (from is null)
+            {
+                var first = new StreamContent(new PartialThenThrowStream(payload[..breakAfter]));
+                first.Headers.ContentLength = payload.Length;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = first });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(payload)
+            });
+        }
+    }
+
+    /// <summary>固定返回某个 HTTP 状态码的处理器（模拟 403 直链过期等永久失败）。</summary>
+    private sealed class StatusCodeHandler(HttpStatusCode statusCode) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent("forbidden")
+            });
+        }
+    }
+
+    // ---------- 构造辅助 ----------
+    private FilePipelineService CreateService(FileSettings? settings = null, HttpMessageHandler? handler = null)
     {
         settings ??= new FileSettings();
         var provider = new FilePipelineOptionsProvider
@@ -101,7 +182,8 @@ public class FilePipelineTests : IDisposable
             DataDirectory = _dataDir
         };
         var http = handler is null ? new HttpClient() : new HttpClient(handler);
-        return new FilePipelineService(provider, http);
+        // 测试不等退避：重试次数与续传行为按生产逻辑，只把退避压缩为 0
+        return new FilePipelineService(provider, http) { RetryBaseDelayMs = 0 };
     }
 
     private string[] FilesUnderRoot() =>
@@ -197,20 +279,83 @@ public class FilePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task EnqueueAsync_DownloadInterrupted_NoPartialFileArchived()
+    public async Task EnqueueAsync_DownloadInterrupted_RetriesThenFailsWithoutLeftovers()
     {
-        var handler = new FakeHandler();
-        handler.Map("https://example.com/attach/broken",
-            new StreamContent(new PartialThenThrowStream([1, 2, 3, 4, 5])));
+        // 持续中断的下载源：三次尝试（DownloadMaxAttempts）都用尽后落 Failed，
+        // 永久失败时清理半成品（不留残渣）；每次尝试计一次 AttemptCount。
+        var handler = new AlwaysInterruptedHandler([1, 2, 3, 4, 5]);
         var svc = CreateService(handler: handler);
 
         var record = await svc.EnqueueAsync("m1", "中断.txt", "https://example.com/attach/broken");
 
         Assert.Equal(FileStatus.Failed, record.Status);
         Assert.NotNull(record.LastError);
-        Assert.Equal(1, record.AttemptCount);
+        Assert.Equal(3, record.AttemptCount);
+        Assert.Equal(3, handler.RequestCount);
+        Assert.True(record.FailureRetriable); // 瞬时类失败：调用方据此投递重试队列
         Assert.Null(record.ArchivedRelativePath);
         Assert.Empty(FilesUnderRoot()); // 无半成品归档，也无残留临时文件
+    }
+
+    [Fact]
+    public async Task EnqueueAsync_HttpForbidden_IsPermanentAndNotRetried()
+    {
+        // 直链过期/被拒（403）：重试没有意义——不重试（一次尝试即落 Failed），且标记为不可重试
+        var handler = new StatusCodeHandler(HttpStatusCode.Forbidden);
+        var svc = CreateService(handler: handler);
+
+        var record = await svc.EnqueueAsync("m1", "过期.txt", "https://example.com/attach/expired");
+
+        Assert.Equal(FileStatus.Failed, record.Status);
+        Assert.Equal(1, record.AttemptCount);
+        Assert.Equal(1, handler.RequestCount);
+        Assert.False(record.FailureRetriable);
+        Assert.Contains("过期", record.LastError);
+    }
+
+    [Fact]
+    public async Task EnqueueAsync_DownloadInterrupted_RetriesWithRangeAndArchivesCompleteFile()
+    {
+        // 断点续传：首次中断后重试用 Range 从断点继续，最终归档内容与 MD5 必须是完整文件的
+        var payload = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("班级作业清单内容-片段", 64)));
+        var handler = new InterruptThenRangeHandler(payload, breakAfter: 200);
+        var svc = CreateService(handler: handler);
+
+        var record = await svc.EnqueueAsync("m1", "续传.txt", "https://example.com/attach/resume");
+
+        Assert.Equal(FileStatus.Archived, record.Status);
+        Assert.Equal(Md5Hex(payload), record.Md5);
+        Assert.Equal(payload.Length, record.Size);
+        Assert.Equal(1, record.AttemptCount); // 第二次尝试即成功
+        Assert.False(record.FailureRetriable); // 成功即清除可重试标记
+        Assert.Equal(2, handler.RequestRanges.Count);
+        Assert.Null(handler.RequestRanges[0]);       // 首次：无 Range
+        Assert.Equal(200, handler.RequestRanges[1]); // 重试：从断点 200 字节处续传
+
+        var archived = Path.Combine(_root, "未分类", DateTime.Now.ToString("yyyy-MM-dd"), "续传.txt");
+        Assert.Equal(payload, await File.ReadAllBytesAsync(archived));
+        Assert.Empty(FilesUnderRoot().Where(f => f.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public async Task EnqueueAsync_ServerIgnoresRange_RestartsFromScratchWithoutCorruption()
+    {
+        // 服务器不支持续传（对 Range 回 200 完整内容）：必须从头下（清空半成品），
+        // 归档内容不得出现「半成品 + 完整内容」拼接造成的损坏
+        var payload = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("不支持续传的服务端-内容", 48)));
+        var handler = new InterruptThenFullHandler(payload, breakAfter: 128);
+        var svc = CreateService(handler: handler);
+
+        var record = await svc.EnqueueAsync("m1", "重下.txt", "https://example.com/attach/no-range");
+
+        Assert.Equal(FileStatus.Archived, record.Status);
+        Assert.Equal(Md5Hex(payload), record.Md5);
+        Assert.Equal(payload.Length, record.Size);
+        Assert.Equal(2, handler.RequestRanges.Count);
+        Assert.NotNull(handler.RequestRanges[1]); // 我们请求了续传，服务端却回了完整内容
+
+        var archived = Path.Combine(_root, "未分类", DateTime.Now.ToString("yyyy-MM-dd"), "重下.txt");
+        Assert.Equal(payload, await File.ReadAllBytesAsync(archived));
     }
 
     [Fact]

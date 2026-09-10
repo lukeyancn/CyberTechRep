@@ -100,6 +100,49 @@ public sealed class MessageKindOverrideStore
         }
     }
 
+    /// <summary>
+    /// 批量写入覆盖类型（一次加锁、一次落盘）。整篇文档/合并条目换类时一次涉及多条来源消息，
+    /// 逐条 <see cref="Set"/> 会重复落盘，且中途失败会留下"半个覆盖集"（其余来源消息重投时会被摆回原类型）。
+    /// </summary>
+    /// <returns>实际写入的条数（空白 id 被忽略、重复 id 去重）。</returns>
+    public int SetMany(IEnumerable<string> messageIds, MessageKind kind)
+    {
+        ArgumentNullException.ThrowIfNull(messageIds);
+        var ids = messageIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (ids.Count == 0)
+        {
+            return 0;
+        }
+
+        lock (_lock)
+        {
+            LoadIfNeeded();
+            foreach (var messageId in ids)
+            {
+                _entries!.RemoveAll(e => string.Equals(e.MessageId, messageId, StringComparison.Ordinal));
+                _entries.Add(new MessageKindOverrideEntry { MessageId = messageId, Kind = kind });
+            }
+
+            if (_entries.Count > MaxEntries)
+            {
+                var removed = _entries.Count - MaxEntries;
+                _entries = _entries.OrderByDescending(e => e.CreatedAt).Take(MaxEntries)
+                    .OrderBy(e => e.CreatedAt)
+                    .ToList();
+                _logger.LogInformation("换类覆盖记录超出上限，已淘汰最旧 {Count} 条（上限 {Max}）", removed, MaxEntries);
+            }
+
+            Save();
+            _logger.LogInformation(
+                "消息类型覆盖已批量记录（Count={Count}, Kind={Kind}, MessageIds={Ids}）",
+                ids.Count, kind, string.Join(",", ids));
+            return ids.Count;
+        }
+    }
+
     /// <summary>当前覆盖记录条数（诊断用）。</summary>
     public int Count
     {
@@ -272,6 +315,15 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
         var migrated = 0;
         try
         {
+            // 覆盖记录的目标：整篇迁移会涉及条目里的**每一条**来源消息 id——
+            // 只记第一条时，同一（合并）条目的其余来源消息在重投/断点续传补齐时
+            // 会被识别链摆回作业（行为缺陷）。手工文本分支过去完全不记覆盖，
+            // 原消息重投即在作业侧复现。
+            var sourceIds = document.Entries
+                .SelectMany(e => e.SourceMessageIds)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToList();
+
             if (document.ManualText is { Length: > 0 } manual)
             {
                 // 手工编辑过：整篇作为一条通知（幂等键固定，重复操作不产生重复条目）。
@@ -287,20 +339,22 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
             {
                 foreach (var entry in document.Entries.Where(e => !string.IsNullOrWhiteSpace(e.Text)))
                 {
+                    // 幂等键优先用真实来源消息 id；无来源（如常态化作业条目）时用合成键
                     var messageId = entry.SourceMessageIds.FirstOrDefault(id => !string.IsNullOrWhiteSpace(id))
                         ?? $"document-entry:{entry.Id:N}";
                     await _noticeStore.AddOrUpdateAsync(messageId, entry.Text, entry.MemberOpenId, null,
                         entry.CreatedAt, ct).ConfigureAwait(false);
-
-                    // 逐条来源消息记录覆盖：断点续传补齐/重投时按通知落档，不回摆为作业
-                    _overrides.Set(messageId, MessageKind.Notice);
                     migrated++;
                 }
             }
 
+            // 逐条来源消息记录覆盖：断点续传补齐/重投时按通知落档，不回摆为作业
+            _overrides.SetMany(sourceIds, MessageKind.Notice);
+
             await _homeworkStore.RemoveDocumentAsync(date, normalized, ct).ConfigureAwait(false);
             _logger.LogInformation(
-                "文档→通知换类完成（Subject={Subject}, Date={Date}, 迁移 {Count} 条）", normalized, date, migrated);
+                "文档→通知换类完成（Subject={Subject}, Date={Date}, 迁移 {Count} 条，覆盖 {Overrides} 条来源消息）",
+                normalized, date, migrated, sourceIds.Count);
             return migrated;
         }
         catch (OperationCanceledException)

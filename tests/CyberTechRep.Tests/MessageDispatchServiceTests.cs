@@ -267,7 +267,7 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
         public Task<HomeworkDocument?> SaveDocumentTextAsync(
             DateOnly date, string subject, string? manualText, CancellationToken ct = default,
-            string? editBaseline = null)
+            IReadOnlyCollection<Guid>? knownEntryIds = null)
             => Task.FromResult<HomeworkDocument?>(null);
 
         /// <summary>需求 1 撤回联动：记录被请求删除的消息 id（不改变既有删除语义）。</summary>
@@ -291,6 +291,12 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
         public List<FileRecord> Records { get; } = [];
 
+        /// <summary>true = 入队返回「可重试的 Failed 记录」（模拟管道内续传重试用尽）。</summary>
+        public bool FailRetriable { get; set; }
+
+        /// <summary>true = 入队返回「不可重试的 Failed 记录」（模拟直链过期等永久失败）。</summary>
+        public bool FailPermanent { get; set; }
+
         public event EventHandler<FileRecord>? FileUpdated;
 
         public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
@@ -304,9 +310,21 @@ public sealed class MessageDispatchServiceTests : IDisposable
                 FileName = fileName,
                 MemberOpenId = memberOpenId ?? "",
                 GroupOpenId = groupOpenId ?? "",
-                Status = FileStatus.Archived,
+                Status = FailRetriable || FailPermanent ? FileStatus.Failed : FileStatus.Archived,
                 CompletedAt = DateTimeOffset.Now
             };
+            if (FailRetriable)
+            {
+                record.AttemptCount = 3;
+                record.FailureRetriable = true;
+                record.LastError = "下载中断（模拟）：读取停滞";
+            }
+            else if (FailPermanent)
+            {
+                record.AttemptCount = 1;
+                record.LastError = "下载失败：直链被拒绝或已过期（HTTP 403）";
+            }
+
             Records.Add(record);
             FileUpdated?.Invoke(this, record);
             return Task.FromResult(record);
@@ -619,6 +637,39 @@ public sealed class MessageDispatchServiceTests : IDisposable
 
         Assert.Equal(3, files.EnqueueCalls.Count);
         Assert.Equal("安排.docx", files.EnqueueCalls[2].FileName);
+    }
+
+    [Fact]
+    public async Task FileDownload_RetriableFailure_QueuesFileDownloadRetry()
+    {
+        // 管道内「自动重试 + 断点续传」用尽但失败属瞬时类：不得静默丢弃，
+        // 投递 FileDownload 重试队列条目（排错面板可查看与手动重放）
+        var retry = CreateRetryQueue();
+        var files = new FakeFilePipeline { FailRetriable = true };
+        var dispatch = CreateDispatch(files: files, retryQueue: retry);
+
+        await dispatch.ProcessMessageAsync(Message("m8",
+            Text("今天作业见附件"),
+            new MessageSegment { Type = SegmentTypes.File, Url = "https://example.com/wb2.pdf", FileName = "wb2.pdf" }));
+
+        var item = Assert.Single(await retry.GetAllAsync());
+        Assert.Equal(RetryOperationType.FileDownload, item.OperationType);
+        Assert.Equal(RetryItemStatus.Waiting, item.Status);
+    }
+
+    [Fact]
+    public async Task FileDownload_PermanentFailure_DoesNotQueueRetry()
+    {
+        // 永久失败（如直链过期）不投递重试队列：重试没有意义，避免无谓退避与噪声
+        var retry = CreateRetryQueue();
+        var files = new FakeFilePipeline { FailPermanent = true };
+        var dispatch = CreateDispatch(files: files, retryQueue: retry);
+
+        await dispatch.ProcessMessageAsync(Message("m9",
+            Text("今天作业见附件"),
+            new MessageSegment { Type = SegmentTypes.File, Url = "https://example.com/wb3.pdf", FileName = "wb3.pdf" }));
+
+        Assert.Empty(await retry.GetAllAsync());
     }
 
     [Fact]

@@ -438,7 +438,7 @@ public sealed class HomeworkStore : IHomeworkStore
     /// <inheritdoc />
     public Task<HomeworkDocument?> SaveDocumentTextAsync(
         DateOnly date, string subject, string? manualText, CancellationToken ct = default,
-        string? editBaseline = null)
+        IReadOnlyCollection<Guid>? knownEntryIds = null)
     {
         var normalizedSubject = string.IsNullOrWhiteSpace(subject)
             ? HomeworkSubjectResolver.Unclassified
@@ -479,7 +479,7 @@ public sealed class HomeworkStore : IHomeworkStore
                 document = GetOrCreateDocument(date, normalizedSubject);
 
                 // 三方合并（需求 1：编辑期间到达的新消息不丢不覆盖）
-                var merged = MergeLateLines(document, trimmed, editBaseline);
+                var merged = MergeLateLines(document, trimmed, knownEntryIds);
                 if (string.Equals(document.ManualText, merged, StringComparison.Ordinal))
                 {
                     return Task.FromResult<HomeworkDocument?>(document);
@@ -623,43 +623,45 @@ public sealed class HomeworkStore : IHomeworkStore
             d.Date == date && string.Equals(d.Subject, subject, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// 编辑回写时的三方合并（调用方持锁）：把「编辑期间新落档、且不在编辑基线、也不在编辑稿中」
-    /// 的条目行按末尾增量并入编辑稿。
+    /// 编辑回写时的三方合并（调用方持锁）：把「编辑期间新落档」的条目行按末尾增量并入编辑稿。
     /// <para>
-    /// 基线（<paramref name="editBaseline"/>）是进入编辑态那一刻的渲染文本，用于区分
-    /// 「用户删掉的旧行」与「编辑期间新到的行」：前者保留删除、后者补齐——这是
-    /// 「消息到达 vs 用户编辑中」并发竞争的正解（存档为单一事实源，双向同步不丢内容）。
+    /// 新条目判定用<b>条目 id 锚点</b>（<paramref name="knownEntryIds"/> = 进入编辑态时文档里已有的
+    /// 条目 id 集合），而不是渲染文本基线：只有集合外的条目才算「编辑期间新到」。
+    /// 这样用户在编辑态里<b>删掉或改写</b>旧行都天然被尊重——旧实现拿渲染文本做基线，
+    /// 用户「改写」过的行不在编辑稿里、也不在基线里（基线每次落档后被换成编辑稿），
+    /// 会被反复当成新行重加（文档出现重复行）。
     /// </para>
     /// <para>
-    /// 基线为空（null）= 无三方语义，按整篇覆盖返回编辑稿（旧行为，供非编辑器调用方使用）。
+    /// 锚点为 null = 无三方语义，按整篇覆盖返回编辑稿（旧行为，供非编辑器调用方使用）。
     /// </para>
     /// </summary>
     private static string MergeLateLines(
-        HomeworkDocument document, string editorText, string? editBaseline)
+        HomeworkDocument document, string editorText, IReadOnlyCollection<Guid>? knownEntryIds)
     {
-        if (editBaseline is null)
+        if (knownEntryIds is null)
         {
             return editorText;
         }
-
-        var baselineKeys = HomeworkDocumentMerger.SplitLines(editBaseline)
-            .Select(HomeworkDocumentMerger.Normalize)
-            .Where(k => k.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
 
         var editorLines = HomeworkDocumentMerger.SplitLines(editorText);
         var seen = editorLines
             .Select(HomeworkDocumentMerger.Normalize)
             .Where(k => k.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
+        var known = knownEntryIds as ISet<Guid> ?? knownEntryIds.ToHashSet();
 
         var lateLines = new List<string>();
         foreach (var entry in document.Entries.OrderBy(e => e.CreatedAt))
         {
+            if (known.Contains(entry.Id))
+            {
+                continue; // 进入编辑态时就存在：用户看到的旧行，删改一律尊重
+            }
+
             foreach (var line in HomeworkDocumentMerger.SplitLines(entry.Text))
             {
                 var key = HomeworkDocumentMerger.Normalize(line);
-                if (key.Length == 0 || baselineKeys.Contains(key) || !seen.Add(key))
+                if (key.Length == 0 || !seen.Add(key))
                 {
                     continue;
                 }

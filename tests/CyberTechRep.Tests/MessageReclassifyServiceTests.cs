@@ -186,6 +186,46 @@ public sealed class MessageReclassifyServiceTests : IDisposable
         Assert.Equal("手工整理后的整篇内容", notice.Content);
         // 需求 5：手工整理文本无独立时间，取文档内最早条目的原始时间
         Assert.Equal(created, notice.CreatedAt);
+
+        // 回归：手工文本分支过去完全不记来源消息覆盖，原消息重投/断点续传补齐时会在作业侧复现
+        Assert.True(service.TryGetKindOverride("m5", out var manualKind));
+        Assert.Equal(MessageKind.Notice, manualKind);
+    }
+
+    [Fact]
+    public async Task MoveDocumentToNoticeAsync_MergedEntry_RecordsOverrideForEverySourceMessage()
+    {
+        // 回归：逐条分支过去只记「第一条」来源消息 id，同一（合并）条目的其余来源消息
+        // 在重投/断点续传补齐时会被识别链摆回作业
+        var notices = new NoticeStore(_dir);
+        var homework = new HomeworkStore(_dir);
+        var service = new MessageReclassifyService(notices, homework, _dir);
+        var created = DateTimeOffset.Now.AddDays(-1);
+        var date = RetentionPolicies.BucketOf(created);
+        await homework.AppendDocumentEntryAsync("数学", new HomeworkDocumentEntry
+        {
+            SourceMessageIds = ["m6"],
+            MemberOpenId = "member-6",
+            Text = "第 6 页第 1-5 题",
+            CreatedAt = created
+        });
+        // 部分重叠 → 合并进同一 entry，来源消息 id 变成两条
+        await homework.AppendDocumentEntryAsync("数学", new HomeworkDocumentEntry
+        {
+            SourceMessageIds = ["m7"],
+            MemberOpenId = "member-6",
+            Text = "第 6 页第 1-5 题\n第 6 页第 6-8 题",
+            CreatedAt = created.AddMinutes(1)
+        });
+        var entry = Assert.Single((await homework.GetDocumentsAsync(date)).Single().Entries);
+        Assert.Equal(2, entry.SourceMessageIds.Count);
+
+        await service.MoveDocumentToNoticeAsync(date, "数学");
+
+        Assert.True(service.TryGetKindOverride("m6", out var first));
+        Assert.Equal(MessageKind.Notice, first);
+        Assert.True(service.TryGetKindOverride("m7", out var second));
+        Assert.Equal(MessageKind.Notice, second);
     }
 
     [Fact]
