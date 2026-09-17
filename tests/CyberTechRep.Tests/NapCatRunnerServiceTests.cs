@@ -585,13 +585,115 @@ public class NapCatRunnerServiceTests(ITestOutputHelper output)
             Assert.Equal(NapCatRunnerState.Running, runner.Status.State);
             Assert.Contains("QQ 进程内", runner.Status.Detail);
 
-            var line = await WaitForLogAsync(runner, "QQ 进程仍在运行");
+            var line = await WaitForLogAsync(runner, "QQ 进程已接管");
             Assert.NotNull(line);
             Assert.Equal(NapCatLogStream.System, line!.Stream);
         }
         finally
         {
             await runner.StopNapCatAsync();
+            runner.Dispose();
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch
+            {
+                // 清理失败不影响测试结果
+            }
+        }
+    }
+
+    [Fact]
+    public async Task 有头形态_启动器先退出而QQ稍后出现_宽限后判运行中且不报启动失败()
+    {
+        // 现场缺陷回归：Framework 包的 napiLoader.bat 用 start 拉起注入器后自身立即退出，
+        // QQ 要过一两秒才出现——旧实现此刻直接按「进程已退出」结算并取消启动流程，
+        // 最终报「启动失败：A task was canceled.」。宽限期必须兜住这段空窗。
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var dir = Path.Combine(Path.GetTempPath(), "classing-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var scriptPath = Path.Combine(dir, "fake-napi-loader.bat");
+        await File.WriteAllTextAsync(scriptPath, "@echo off\r\nexit /b 0\r\n");
+        var probes = 0;
+        var runner = CreateRunner(
+            new ConnectionSettings
+            {
+                NapCatExePath = scriptPath,
+                NapCatRunMode = NapCatRunMode.Framework,
+                NapCatReversePort = 0,
+                NapCatEndExistingQq = false
+            },
+            // 第一次探测视为「QQ 还没起来」，之后视为已出现：模拟现场 22:10:34 启动器退出、
+            // 22:10:35 QQ 已接管的时间差
+            isQqProcessRunning: () => Interlocked.Increment(ref probes) > 1);
+        runner.FrameworkQqGraceDelay = TimeSpan.FromSeconds(4);
+        try
+        {
+            await runner.StartNapCatAsync();
+            var status = await WaitForTerminalAsync(runner);
+
+            Assert.Equal(NapCatRunnerState.Running, status.State);
+            Assert.Contains("QQ 进程内", status.Detail);
+            Assert.NotNull(await WaitForLogAsync(runner, "QQ 进程已接管"));
+
+            // 回归锁：等待期间的取消不得判成启动失败（现场缺陷文案）
+            var lines = runner.LogBuffer.Snapshot();
+            Assert.DoesNotContain(lines, line => line.Text.Contains("启动失败"));
+            Assert.DoesNotContain(lines, line => line.Text.Contains("canceled"));
+        }
+        finally
+        {
+            await runner.StopNapCatAsync();
+            runner.Dispose();
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch
+            {
+                // 清理失败不影响测试结果
+            }
+        }
+    }
+
+    [Fact]
+    public async Task 有头形态_启动器退出且QQ始终未出现_宽限后按退出结算()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var dir = Path.Combine(Path.GetTempPath(), "classing-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var scriptPath = Path.Combine(dir, "fake-boot.bat");
+        await File.WriteAllTextAsync(scriptPath, "@echo off\r\nexit /b 0\r\n");
+        var runner = CreateRunner(
+            new ConnectionSettings
+            {
+                NapCatExePath = scriptPath,
+                NapCatRunMode = NapCatRunMode.Framework,
+                NapCatReversePort = 0,
+                NapCatEndExistingQq = false
+            },
+            isQqProcessRunning: () => false);
+        runner.FrameworkQqGraceDelay = TimeSpan.FromSeconds(2);
+        try
+        {
+            await runner.StartNapCatAsync();
+            var status = await WaitForTerminalAsync(runner);
+
+            // 宽限期内 QQ 始终没出现：按「启动后立即退出」判失败（而不是取消类文案）
+            Assert.Equal(NapCatRunnerState.Failed, status.State);
+            Assert.Contains("进程启动后立即退出", status.Detail);
+        }
+        finally
+        {
             runner.Dispose();
             try
             {

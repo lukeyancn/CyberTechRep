@@ -87,6 +87,25 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     /// <summary>有头形态日志文件跟随的轮询间隔。</summary>
     private static readonly TimeSpan LogFileTailInterval = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// 有头形态「启动器退出 → QQ 出现」的宽限期默认值。注入类启动器（<c>napiLoader.bat</c> 用
+    /// <c>start</c> 拉起 <c>napimain.exe</c>、<c>NapCatWinBootMain.exe</c>）都会先退出、QQ 随后才起来，
+    /// 因此判定运行与否必须给这段宽限，否则会被当成「启动失败/已停止」。
+    /// </summary>
+    private static readonly TimeSpan DefaultFrameworkQqGraceDelay = TimeSpan.FromSeconds(15);
+
+    /// <summary>宽限期内 QQ 进程的轮询间隔。</summary>
+    private static readonly TimeSpan FrameworkQqPollInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>有头形态的「启动器退出 → QQ 出现」宽限期（测试可调小）。</summary>
+    internal TimeSpan FrameworkQqGraceDelay { get; set; } = DefaultFrameworkQqGraceDelay;
+
+    /// <summary>
+    /// 启动流程（<see cref="StartCoreAsync"/>）是否仍在进行：进行中时启动器的退出由该流程统一结算，
+    /// 宽限任务不参与，避免两处竞争同一个状态（现场缺陷之一：启动报「A task was canceled.」）。
+    /// </summary>
+    private volatile bool _startupInProgress;
+
     private readonly IngestOptionsProvider _provider;
     private readonly ILogger? _logger;
 
@@ -297,7 +316,7 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         {
             // 已在运行：启动器进程还活着；或有头形态下本次托管运行中且 QQ 进程仍在
             // （有头形态的启动器拉起 QQ 后自身会退出，只看进程会重复拉起第二个实例）
-            if (_process is { HasExited: false }
+            if ((_process is { } current && !IsExitedSafe(current))
                 || (IsFrameworkMode()
                     && _status.State is NapCatRunnerState.Running or NapCatRunnerState.Starting
                     && IsQqProcessRunning()))
@@ -365,8 +384,9 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         if (frameworkMode && !AcceptsQuickLoginArgument(exePath))
         {
             LogBuffer.Append(
-                "有头形态：入口不是 NapCat 注入启动器，快速登录设置对该入口不适用，"
-                + "请在 QQ 界面里完成登录（登录态由 QQ 客户端自己保存）",
+                $"有头形态：入口 {Path.GetFileName(exePath)} 不接受「QQ 号快速登录」参数"
+                + "（Framework 包的 napiLoader.bat、官方 QQ.exe 都不透传该参数），"
+                + "请在 QQ 界面里完成一次登录——登录态由 QQ 客户端自己保存，之后启动无需重复登录",
                 NapCatLogStream.System);
         }
 
@@ -396,6 +416,7 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
 
         var runCts = new CancellationTokenSource();
         Interlocked.Exchange(ref _runCts, runCts)?.Cancel();
+        _startupInProgress = true;
 
         try
         {
@@ -434,20 +455,29 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
                 process.Id, exePath, string.IsNullOrEmpty(arguments) ? "（无，扫码登录）" : arguments,
                 settings.NapCatRunMode);
 
-            // 等待窗口期确认存活：立即退出视为失败并暴露退出码
+            // 等待窗口期确认存活：无头形态立即判定；有头形态给宽限期等 QQ 起来
+            // （注入启动器先退出、QQ 随后才出现，napiLoader.bat 的 start 方式尤其如此）
             await Task.Delay(2000).ConfigureAwait(false);
-            if (!IsRunAlive(process))
+            var grace = frameworkMode ? FrameworkQqGraceDelay : TimeSpan.Zero;
+            if (!await WaitForRunAliveAsync(process, grace, runCts.Token).ConfigureAwait(false))
             {
-                SetStatus(NapCatRunnerState.Failed, $"进程启动后立即退出（退出码 {process.ExitCode}）");
+                SetStatus(NapCatRunnerState.Failed,
+                    $"进程启动后立即退出（退出码 {TryReadExitCode(process)?.ToString() ?? "未知"}）");
                 return;
             }
 
-            // 有头形态：注入启动器把 QQ 拉起后自身退出属正常现象（NapCat 活在 QQ 进程里）
             SetStatus(NapCatRunnerState.Running, RunningDetail(process, "等待 NapCat 接入…"));
-            LogBuffer.Append(process.HasExited
-                    ? "NapCat 启动器已退出、QQ 进程已接管（有头形态的正常现象）；等待反向 WS 接入"
-                    : $"NapCat 进程已就绪（pid {process.Id}）",
-                NapCatLogStream.System);
+            if (IsExitedSafe(process))
+            {
+                LogBuffer.Append(
+                    "NapCat 启动器已退出、QQ 进程已接管（有头形态的正常现象）；等待反向 WS 接入"
+                    + "——停止请点「停止 NapCat」（会关闭 QQ 界面）",
+                    NapCatLogStream.System);
+            }
+            else
+            {
+                LogBuffer.Append($"NapCat 进程已就绪（pid {process.Id}）", NapCatLogStream.System);
+            }
 
             // WebUI 地址发现 + 探活（与接入确认并行；未监听时写入可操作提示，不阻塞接入）
             var webUiTask = Task.Run(() => DiscoverWebUiUrlAsync(process, runCts.Token), runCts.Token);
@@ -459,9 +489,19 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
             await ConfirmConnectionAsync(process, runCts.Token).ConfigureAwait(false);
             await webUiTask.ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            // 等待期间被取消属正常路径：进程退出（退出结算/重启）、用户停止都会取消 _runCts——
+            // 不能据此把启动判为失败（现场缺陷：有头形态启动报「A task was canceled.」）
+            _logger?.LogInformation("NapCat 启动流程在等待期间被取消（进程退出/用户停止/重启），不判为启动失败");
+        }
         catch (Exception ex)
         {
             SetStatus(NapCatRunnerState.Failed, $"启动失败：{ex.Message}");
+        }
+        finally
+        {
+            _startupInProgress = false;
         }
     }
 
@@ -526,6 +566,19 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         return false;
     }
 
+    /// <summary>安全读取「进程是否已退出」（进程对象可能已被释放：按已退出处理，不抛异常）。</summary>
+    private static bool IsExitedSafe(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
     /// <summary>
     /// 「本次运行是否还活着」：无头形态看启动进程（stdout 泵与进程树都挂在它上面）；
     /// 有头形态看启动进程<b>或</b> QQ 进程——注入启动器把 QQ 拉起后自身会退出，
@@ -533,7 +586,7 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     /// </summary>
     private bool IsRunAlive(Process? process)
     {
-        if (process is { HasExited: false })
+        if (process is not null && !IsExitedSafe(process))
         {
             return true;
         }
@@ -542,12 +595,49 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     }
 
     /// <summary>
+    /// 等待「本次运行活着」：先看一次，未活着且给了宽限期时按秒轮询（有头形态专用于等 QQ 起来）。
+    /// 返回 false 表示宽限期内始终未活着（调用方按失败/退出结算）。
+    /// </summary>
+    private async Task<bool> WaitForRunAliveAsync(Process? process, TimeSpan grace, CancellationToken ct)
+    {
+        if (IsRunAlive(process))
+        {
+            return true;
+        }
+
+        if (grace <= TimeSpan.Zero)
+        {
+            return false;
+        }
+
+        var deadline = DateTime.UtcNow + grace;
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                await Task.Delay(FrameworkQqPollInterval, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return false; // 停止/释放/重启：由对应流程结算状态
+            }
+
+            if (IsRunAlive(process))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// 运行状态详情：有头形态下启动器可能已退出（QQ 进程接管），此时不显示启动器 pid，
     /// 改成「QQ 进程内」以免用户以为进程没了。
     /// </summary>
     private string RunningDetail(Process process, string suffix)
     {
-        var who = process.HasExited ? "QQ 进程内（有头）" : $"pid {process.Id}";
+        var who = IsExitedSafe(process) ? "QQ 进程内（有头）" : $"pid {process.Id}";
         return $"运行中 [{who}]（{suffix}）";
     }
 
@@ -1316,21 +1406,67 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     /// </summary>
     private void OnProcessExited(Process process)
     {
-        // 有头形态：注入启动器把 QQ 拉起后自身退出属正常现象——NapCat 活在 QQ 进程里，
-        // 此时必须保留看门狗与日志文件跟随、状态继续按「运行中」，否则会被误判为已停止。
-        // 保留 _process 引用（已退出的对象不再 dispose）：启动按钮据此判「已在运行」不重复拉起，
-        // 停止按钮走「结束 QQ 进程」路径。
-        if (IsFrameworkMode() && IsQqProcessRunning())
+        Process? current;
+        lock (_lock)
         {
-            StopLogReadLoops();
-            LogBuffer.Append(
-                $"NapCat 启动器进程已退出（退出码 {TryReadExitCode(process)?.ToString() ?? "未知"}）；"
-                + "QQ 进程仍在运行——有头形态按「运行中」继续（停止请点「停止 NapCat」，会关闭 QQ 界面）",
-                NapCatLogStream.System);
-            SetStatus(NapCatRunnerState.Running, RunningDetail(process, "等待 NapCat 接入…"));
+            current = _process;
+        }
+
+        if (!ReferenceEquals(current, process))
+        {
+            // 已被新实例顶替（如「停止 → 启动」）：旧进程退出不影响当前运行，避免误取消新运行的等待
             return;
         }
 
+        // 有头形态：注入类启动器（napiLoader.bat 用 start 拉起 napimain.exe、NapCatWinBootMain.exe）
+        // 会先退出、QQ 随后才起来——此刻判「QQ 是否在运行」必然为 false，不能据此结算，
+        // 交给宽限任务等 QQ 出现（启动阶段由 StartCoreAsync 的存活等待统一兜住）。
+        if (IsFrameworkMode())
+        {
+            _ = HandleFrameworkLauncherExitAsync(process);
+            return;
+        }
+
+        FinalizeProcessExit(process);
+    }
+
+    /// <summary>
+    /// 有头形态「启动器退出」的处理：给一段宽限期等 QQ 进程出现。
+    /// <list type="bullet">
+    /// <item>QQ 出现 → 视为「启动器已退出、QQ 已接管」：保留看门狗与日志文件跟随（只停 stdout 泵），
+    /// 状态继续运行中；</item>
+    /// <item>宽限期内始终没有 QQ（含用户主动停止/进程真失败）→ 按普通退出结算。</item>
+    /// </list>
+    /// </summary>
+    private async Task HandleFrameworkLauncherExitAsync(Process process)
+    {
+        if (_startupInProgress)
+        {
+            // 启动流程仍在进行：由 StartCoreAsync 的存活等待统一判定并结算，避免两处竞争状态
+            return;
+        }
+
+        var ct = _runCts?.Token ?? CancellationToken.None;
+        var alive = await WaitForRunAliveAsync(process, FrameworkQqGraceDelay, ct).ConfigureAwait(false);
+        if (!alive)
+        {
+            FinalizeProcessExit(process);
+            return;
+        }
+
+        // 启动器退出、QQ 接管：stdout 泵已无用（进程已退出），日志改由日志文件跟随提供
+        StopLogReadLoops();
+        LogBuffer.Append(
+            $"NapCat 启动器进程已退出（退出码 {TryReadExitCode(process)?.ToString() ?? "未知"}）；"
+            + "QQ 进程已接管（有头形态的正常现象）——继续等待反向 WS 接入；"
+            + "停止请点「停止 NapCat」（会关闭 QQ 界面）",
+            NapCatLogStream.System);
+        SetStatus(NapCatRunnerState.Running, RunningDetail(process, "等待 NapCat 接入…"));
+    }
+
+    /// <summary>按普通退出结算：停后台任务、按退出码置状态、延迟释放进程对象。</summary>
+    private void FinalizeProcessExit(Process process)
+    {
         StopWatchdog();
         StopLogReadLoops();
         StopLogFileTail();
@@ -1343,18 +1479,10 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         }
         else
         {
-            try
-            {
-                var code = process.ExitCode;
-                LogBuffer.Append($"NapCat 进程已退出（退出码 {code}）", NapCatLogStream.System);
-                SetStatus(code == 0 ? NapCatRunnerState.Stopped : NapCatRunnerState.Failed,
-                    code == 0 ? "已停止（进程正常退出）" : $"进程异常退出（退出码 {code}）");
-            }
-            catch
-            {
-                LogBuffer.Append("NapCat 进程已退出（退出码未知）", NapCatLogStream.System);
-                SetStatus(NapCatRunnerState.Stopped, "已停止（进程退出）");
-            }
+            var code = TryReadExitCode(process);
+            LogBuffer.Append($"NapCat 进程已退出（退出码 {code?.ToString() ?? "未知"}）", NapCatLogStream.System);
+            SetStatus(code is null or 0 ? NapCatRunnerState.Stopped : NapCatRunnerState.Failed,
+                code is null or 0 ? "已停止（进程正常退出）" : $"进程异常退出（退出码 {code}）");
         }
 
         // 延迟释放：立即 Dispose 会关闭 stdout/stderr 读取器，可能丢掉管道中最后几行输出
@@ -1404,7 +1532,7 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
             process = _process;
         }
 
-        if (process is null || process.HasExited)
+        if (process is null || IsExitedSafe(process))
         {
             // 有头形态：注入启动器拉起 QQ 后自身已退出，「停止」必须结束 QQ 进程——
             // 否则 NapCat 仍在 QQ 进程里运行、反向 WS 也不会断，而插件已认为停止。
@@ -1534,7 +1662,7 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
             _process = null;
         }
 
-        if (process is { HasExited: false })
+        if (process is { } alive && !IsExitedSafe(alive))
         {
             _stopRequested = true;
             try

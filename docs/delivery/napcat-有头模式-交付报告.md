@@ -1,9 +1,9 @@
 # NapCat 有头模式（显示 QQ 界面）交付报告
 
-> 状态：**完成**（设置可选形态 → 按形态适配运行判定/停止/日志 → 补回归测试 → 全量测试 3 轮全绿 → Release 构建与打包通过）
+> 状态：**完成**（设置可选形态 → 按形态适配运行判定/停止/日志 → 现场复测缺陷修复 → 全量测试全绿 → Release 构建与打包通过）
 > 日期：2026-09-17
 > 基线：`cb607be`（2.0.0.0-beta.6）+ 工作区未提交的「NapCat 启动与登录修复」
-> 验证：`dotnet test` **706 通过 / 0 失败 / 0 跳过**（连续 3 轮）；`dotnet build -c Release` **0 错误**（CIPX + checksums 生成成功）。
+> 验证：`dotnet test` **708 通过 / 0 失败 / 0 跳过**（含现场复测修复后的 2 轮）；`dotnet build -c Release` **0 错误**（CIPX + checksums 生成成功）。
 
 ---
 
@@ -92,8 +92,52 @@
 3. 点「启动 NapCat」：会弹出自带 QQ 的完整界面（登录/聊天可见）；反向 WS 与 WebUI 配置与无头形态完全一致。
 4. 「停止 NapCat」= 关闭 QQ 界面（并断开局域网连接）；宿主退出时同样会结束 QQ 进程。
 
-## 6. 未决 / 风险
+## 6. 现场复测缺陷修复（Framework 包 napiLoader：启动被误报「A task was canceled.」）
 
+现场（QQ 9.9.27-45758，单独运行 `NapCat.Framework\napiLoader-debug.bat` 可正常使用）插件有头形态启动失败：
+
+```
+[22:10:33] 启动 NapCat（有头）：cmd /d /s /c ""...\NapCat.Framework\napiLoader.bat""
+[22:10:34] SYS NapCat 进程已退出（退出码 0）
+[22:10:35] SYS NapCat 启动器已退出、QQ 进程已接管（有头形态的正常现象）；等待反向 WS 接入
+[22:10:35] SYS 启动/运行失败：启动失败：A task was canceled.
+```
+
+**根因（两条，均为本轮早先实现引入）**：
+
+1. **判定时机过早**：`napiLoader.bat` 用 `start "" napimain.exe …` 后台拉起注入器后**自身立即退出**，QQ 要一两秒后才出现；
+   旧实现（本轮早先版本）在「启动器退出」那一刻就用「QQ 是否在运行」判定——此刻必然为 false，
+   于是走普通退出结算（停看门狗、停日志跟随、**取消本次运行**），随后 QQ 起来也没人接管。
+2. **取消被当成失败**：上面的结算取消了本次运行的取消源，`StartCoreAsync` 后续 `await webUiTask`（WebUI 发现）
+   抛 `TaskCanceledException`，被 `catch (Exception)` 记成「启动失败：A task was canceled.」——正常路径被报成失败。
+
+**修复**：
+
+- 新增有头形态的「启动器退出 → QQ 出现」宽限期（`FrameworkQqGraceDelay`，默认 15 秒；测试可调小）：
+  `OnProcessExited` 在有头形态下不再立即结算，改由 `HandleFrameworkLauncherExitAsync` 轮询等 QQ 出现
+  （出现 → 保留看门狗与日志跟随、状态继续运行中）；**启动阶段**（`_startupInProgress`）则统一由
+  `StartCoreAsync` 的 `WaitForRunAliveAsync` 等待与结算，避免两处竞争同一状态。
+- `StartCoreAsync` 单独捕获 `OperationCanceledException`：等待期间被取消（进程退出/用户停止/重启）**不再判为启动失败**。
+- 进程对象健壮性：新增 `IsExitedSafe`（对象已被释放时按「已退出」处理），`IsRunAlive`、`RunningDetail`、
+  启动早退判定、停止判定与 `Dispose` 全部改用它，避免 disposed 访问把正常路径带进异常分支。
+- 旧实例退出不再影响新实例：`OnProcessExited` 增加「仍是当前托管进程」守卫（`ReferenceEquals`）。
+- 文案：入口不接受 QQ 号参数时明确点出（`napiLoader.bat`、官方 `QQ.exe` 都不透传 `%*`），并说明登录态由 QQ 客户端保存。
+
+**现场事实（核对本机 Framework 包得到）**：`NapCat.Framework\napiLoader.bat` 的关键行是
+`start "" "%cd%\napimain.exe" "%QQPath%" "%cd%\napiloader.dll" "%cd%\nativeLoader.cjs"`——
+**不透传 `%*`**（因此确实不支持「裸 QQ 号」快速登录，与实现判定一致），且 `start` 后自身退出（因此必须宽限）；
+该包的日志目录是包根目录下的 `logs`，落在 `FindNewestNapCatLogFile` 的候选里（日志跟随可直接命中）。
+
+**回归测试（+2，先失败后通过的现场缺陷锁）**：
+
+- `有头形态_启动器先退出而QQ稍后出现_宽限后判运行中且不报启动失败`：QQ 首次探测为「未出现」、第二次起出现 →
+  状态 Running、日志含「QQ 进程已接管」，并断言日志中**没有**「启动失败」/「canceled」。
+- `有头形态_启动器退出且QQ始终未出现_宽限后按退出结算`：宽限期满仍无 QQ → 仍按「进程启动后立即退出」判失败
+  （而不是取消类文案）。
+
+---
+
+## 7. 未决 / 风险
 - **上游维护风险**：官方已声明 QQ 9.9.19 之后 LiteLoaderQQNT 维护欠缺、鼓励使用 Shell（无头）。有头形态在 QQ 自动更新后可能失效，需配合 `LiteLoaderQQNT-Kill-Update` 之类防更新措施；本机 QQ `9.9.22-40990` 属于该范围之后，实际使用请以现场为准。
 - **QQ 实例独占**：有头形态下 QQ 界面就是 NapCat 本体，建议继续用小号；「启动前结束已在运行的 QQ 进程」开关默认开启（否则注入拿不到会话）。
 - **日志跟随目录**：默认按「工作目录/入口目录及其上级的 `logs`、`napcat\logs`」探测；若你的有头包装在非常规布局，面板会提示未发现日志文件（日志仍可在 WebUI 或安装目录查看）——把设置里的「工作目录」指向 NapCat 安装目录即可命中。
