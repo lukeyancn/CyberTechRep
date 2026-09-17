@@ -25,6 +25,23 @@
     <Style Selector="TextBox.document-content">
       <Setter Property="FontSize" Value="{DynamicResource CyberTechRepOverlayContentFontSize}" />
     </Style>
+
+    <!-- 需求 4：白色文档方块与外框（Expander 半透明区块）左右下三边贴合。
+         主题（Fluent）给 Expander 的默认 Padding=16（ExpanderContentPadding）、MinHeight=48
+         （ExpanderMinHeight），模板里 Border#ExpanderContent 又用 TemplateBinding 承接了这两个值，
+         加上白色方块自身的 Margin="0,2" 就形成了四周缝隙。
+         这里按主题部件名（/template/ Border#ExpanderContent）定位清零内边距与最小高度；
+         外框自带的 Background/BorderBrush/BorderThickness/CornerRadius 一律保留（半透明底色不变）。
+         表头（ToggleButton#ExpanderHeader）独立使用 ExpanderHeaderPadding，不受这里的 Padding 影响。 -->
+    <Style Selector="Expander">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="VerticalAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="Expander /template/ Border#ExpanderContent">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="MinHeight" Value="0" />
+    </Style>
   </Window.Styles>
 
   <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
@@ -61,9 +78,11 @@
               <DataTemplate DataType="{x:Type vm:HomeworkDocumentView}">
                 <Expander Header="{Binding Subject}" IsExpanded="True" Margin="0,4"
                           HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
-                  <!-- 一个学科区块内只有这一个方块，横向撑满 -->
-                  <Border Margin="0,2" CornerRadius="6" Background="#FFFFFFFF"
-                          BorderBrush="#22000000" BorderThickness="1" Padding="8"
+                  <!-- 需求 4：一个学科区块内只有这一个方块，横向撑满；
+                       外框（Expander）的内边距已在 Window.Styles 清零，方块自身不再留边距/描边，
+                       底部圆角与外框一致（外框展开态底角半径 = ControlCornerRadius），内部 Padding 保留（文字不贴边）。 -->
+                  <Border Margin="0" CornerRadius="0,0,4,4" Background="#FFFFFFFF"
+                          BorderThickness="0" Padding="8"
                           HorizontalAlignment="Stretch">
                     <Grid RowDefinitions="Auto,Auto,Auto">
 

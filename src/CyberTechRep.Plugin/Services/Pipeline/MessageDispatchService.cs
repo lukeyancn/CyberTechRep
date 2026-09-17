@@ -313,6 +313,20 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         switch (kind)
         {
             case MessageKind.Notice:
+                // 需求 3：文本非空但两侧关键词均未命中时，分类器按「未命中默认通知」归类
+                //（reason 带 NoKeywordHitNoticeReason）。此时先给 AI 用途③ 一次兜底识别机会：
+                // 命中可信学科 → 已按作业归档（TryNoKeywordFallbackAsync 内部含文档追加与
+                // 附件二次归档），本条消息结束、不写默认通知；未启用/无文本/未得到可信学科
+                // → 落回下方通知路径，与旧版相比仅把「消息被忽略」改为「默认落档为通知」。
+                if (KeywordMessageClassifier.IsNoKeywordHitDefaultReason(matchReason)
+                    && await TryNoKeywordFallbackAsync(message, text, attachmentIds, ct).ConfigureAwait(false))
+                {
+                    _logger.LogInformation(
+                        "未命中关键词消息经 AI 用途③ 兜底识别为作业，跳过默认通知落档（MessageId={MessageId}, GroupOpenId={GroupOpenId}）",
+                        message.MessageId, message.GroupOpenId);
+                    return;
+                }
+
                 await WriteNoticeAsync(message, text, ct).ConfigureAwait(false);
                 // 需求（后续文件走绑定）：通知不经学科识别链，发送者已显式绑定时，
                 // 该消息文件按绑定学科二次归档（显式绑定 > 未分类；幂等，失败仅记日志）。
@@ -925,8 +939,9 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         var memberOpenId = message.MemberOpenId;
         try
         {
-            await _noticeStore!.AddOrUpdateAsync(messageId, text, memberOpenId, message.GroupOpenId, null, ct)
-                .ConfigureAwait(false);
+            await _noticeStore!.AddOrUpdateWithSourceAsync(
+                    messageId, text, memberOpenId, message.GroupOpenId, null,
+                    senderLabel: message.SenderNickname, ct: ct).ConfigureAwait(false);
             _logger.LogInformation(
                 "通知已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Length={Length}）",
                 messageId, message.GroupOpenId, text.Length);

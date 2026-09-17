@@ -272,6 +272,13 @@ public class CyberTechRepPlugin : PluginBase
             settingsService,
             // 注入控制器：底部「⋯」快捷菜单（置顶/固定/穿透）与其他悬浮窗共用 OverlayQuickMenu
             overlays: sp.GetRequiredService<ISuspensionWindowController>()));
+        // 需求 9：图片悬浮窗（第六悬浮窗）——单例窗，注册方式与学科文件悬浮窗同构：
+        // 注入控制器与设置服务（右上角「⋯」快捷菜单）＋归档相对路径解析委托（ResolveArchivePath）。
+        services.AddSingleton(sp => new ImageSuspensionWindow(
+            relative => ResolveArchivePath(settingsService.Current.Files, dataDir, relative),
+            sp.GetService<ILogger<ImageSuspensionWindow>>(),
+            overlays: sp.GetRequiredService<ISuspensionWindowController>(),
+            settingsService: settingsService));
         services.AddSingleton(sp =>
             new SuspensionWindowController(
                 dataDir,
@@ -297,6 +304,8 @@ public class CyberTechRepPlugin : PluginBase
                     SuspensionWindowController.CircleKey => (Window?)sp.GetRequiredService<SubjectCircleBarWindow>(),
                     // 第五悬浮窗（未绑定学科选择，需求 3）：单例窗，协调器触发时装载请求并经控制器显示
                     SuspensionWindowController.SubjectSelectionKey => (Window?)sp.GetRequiredService<SubjectSelectionSuspensionWindow>(),
+                    // 第六悬浮窗（图片，需求 9）：单例窗，收到归档图片时由 ImageOverlayService 装载并弹出
+                    SuspensionWindowController.ImageKey => (Window?)sp.GetRequiredService<ImageSuspensionWindow>(),
                     _ => (Window?)null
                 },
                 sp.GetRequiredService<ISettingsService>()));
@@ -368,6 +377,7 @@ public class CyberTechRepPlugin : PluginBase
         services.AddSettingsPage<Controls.SettingsPages.OverlaySettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.FileSettingsPage>();
         services.AddSettingsPage<Controls.SettingsPages.MaintenanceSettingsPage>();
+        services.AddSettingsPage<Controls.SettingsPages.AboutSettingsPage>();
 
         // ---- 模块 9：首次启动引导（settings.json FirstRunCompleted 标志 + 无边框引导窗）----
         services.AddSingleton(sp => new Services.FirstRun.FirstRunService(
@@ -448,6 +458,17 @@ public class CyberTechRepPlugin : PluginBase
 
         // ---- 模块 5：保留期清理任务（启动时 + 每日跨天 + 设置变更；只删过期桶，绝不动当天与未读）----
         services.AddHostedService<Services.Pipeline.RetentionCleanupService>();
+
+        // ---- 需求 9：图片悬浮窗自动展示 ----
+        // IHostedService：订阅文件管道，归档完成的图片经 UI 线程调度加入图片悬浮窗（单例窗），
+        // 并按「收到图片自动展示」开关（Overlays.ImageAutoShowOnReceive，热读取）决定是否自动弹出。
+        services.AddSingleton(sp => new ImageOverlayService(
+            sp.GetRequiredService<IFilePipelineService>(),
+            sp.GetRequiredService<ISettingsService>(),
+            sp.GetRequiredService<ISuspensionWindowController>(),
+            () => sp.GetRequiredService<ImageSuspensionWindow>(),
+            sp.GetService<ILogger<ImageOverlayService>>()));
+        services.AddHostedService(sp => sp.GetRequiredService<ImageOverlayService>());
 
         // ---- 模块 10：上课自动弹出对应学科文件悬浮窗联动 ----
         // IHostedService：StartAsync（宿主容器构建完成后）才解析宿主 ILessonsService；

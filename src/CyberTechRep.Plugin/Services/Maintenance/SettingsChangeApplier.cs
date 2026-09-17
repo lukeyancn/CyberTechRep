@@ -202,6 +202,9 @@ public sealed class SettingsChangeApplier : IHostedService, IDisposable
         // 第五悬浮窗（未绑定学科选择，需求 3）：与其他窗同构；默认 Visible=false 不随宿主显示，
         // 仅在管道触发（成员未绑定）时显示
         await ApplyOverlaySafeAsync(SuspensionWindowController.SubjectSelectionKey, overlays.Selection);
+        // 第六悬浮窗（图片，需求 9）：默认 Visible=false 不随宿主显示，收到图片且「自动展示」开启时弹出；
+        // 设置页的「显示悬浮窗」/置顶/固定/穿透等开关与其余悬浮窗同构，经本方法即时应用。
+        await ApplyOverlaySafeAsync(SuspensionWindowController.ImageKey, overlays.Image);
     }
 
     /// <summary>单窗应用隔离包装：失败记日志，不向上抛（不阻断其余悬浮窗的应用链）。</summary>

@@ -83,6 +83,24 @@ public sealed class NoticeStore : INoticeStore
     /// <inheritdoc />
     public Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
         string? groupOpenId = null, DateTimeOffset? createdAt = null, CancellationToken ct = default)
+        => AddOrUpdateCoreAsync(messageId, content, memberOpenId, groupOpenId, createdAt,
+            senderLabel: null, subjectOverride: null, fillOnlySubject: false, ct);
+
+    /// <inheritdoc />
+    public Task<NoticeItem> AddOrUpdateWithSourceAsync(string messageId, string content, string? memberOpenId = null,
+        string? groupOpenId = null, DateTimeOffset? createdAt = null, string? senderLabel = null,
+        string? subject = null, CancellationToken ct = default)
+        => AddOrUpdateCoreAsync(messageId, content, memberOpenId, groupOpenId, createdAt,
+            senderLabel, subject, fillOnlySubject: true, ct);
+
+    /// <summary>
+    /// 幂等写入核心。<paramref name="fillOnlySubject"/> = false 时保持基础重载的既有语义
+    /// （更新时按绑定解析结果覆盖学科）；true 时（需求 2 换类继承路径）只补空学科、只补空来源名，
+    /// 绝不覆盖已有学科与已有来源（人工/显式语义最高）。
+    /// </summary>
+    private Task<NoticeItem> AddOrUpdateCoreAsync(string messageId, string content, string? memberOpenId,
+        string? groupOpenId, DateTimeOffset? createdAt, string? senderLabel, string? subjectOverride,
+        bool fillOnlySubject, CancellationToken ct)
     {
         NoticeItem item;
         bool changed = false;
@@ -92,7 +110,7 @@ public sealed class NoticeStore : INoticeStore
             var existing = _items!.Find(i => i.MessageId == messageId);
             if (existing is null)
             {
-                var (prefixed, subject) = ApplySubjectPrefix(content ?? "", memberOpenId, groupOpenId);
+                var (prefixed, subject) = ApplySubjectPrefix(content ?? "", memberOpenId, groupOpenId, subjectOverride);
                 item = new NoticeItem
                 {
                     MessageId = messageId ?? "",
@@ -100,6 +118,8 @@ public sealed class NoticeStore : INoticeStore
                     MemberOpenId = memberOpenId ?? "",
                     GroupOpenId = groupOpenId ?? "",
                     Subject = subject,
+                    // 需求 2（2.1.0-beta.1）：来源展示名随通知一并落档，供换类继承（通知界面不显示）
+                    SenderLabel = senderLabel ?? "",
                     // 需求 5：换类迁移可指定原始时间；常规路径为 null → 当前时间（行为不变）
                     CreatedAt = createdAt ?? DateTimeOffset.Now
                 };
@@ -110,11 +130,17 @@ public sealed class NoticeStore : INoticeStore
             else
             {
                 // 幂等：同 MessageId 合并为单条；已读条目只更新正文、不复活为未读
-                var (prefixed, subject) = ApplySubjectPrefix(content ?? "", memberOpenId, groupOpenId);
+                var (prefixed, subject) = ApplySubjectPrefix(content ?? "", memberOpenId, groupOpenId, subjectOverride);
                 item = existing;
-                if (!string.Equals(existing.Content, prefixed, StringComparison.Ordinal))
+                var fillSubject = fillOnlySubject
+                    ? (string.IsNullOrWhiteSpace(existing.Subject) && !string.IsNullOrWhiteSpace(subject) ? subject : null)
+                    : (subject.Length > 0 ? subject : null);
+                var fillSender = existing.SenderLabel.Length == 0 ? senderLabel : null;
+                if (!string.Equals(existing.Content, prefixed, StringComparison.Ordinal)
+                    || fillSubject is not null
+                    || !string.IsNullOrWhiteSpace(fillSender))
                 {
-                    var updated = Clone(existing, prefixed, subject: subject.Length > 0 ? subject : null);
+                    var updated = Clone(existing, prefixed, subject: fillSubject, senderLabel: fillSender);
                     _items![_items.IndexOf(existing)] = updated;
                     item = updated;
                     changed = true;
@@ -372,10 +398,19 @@ public sealed class NoticeStore : INoticeStore
     /// 已带前缀不重复添加（<see cref="NoticeSubjectPrefixer.Apply"/> 幂等保证）。
     /// 返回（前缀化正文，学科来源；学科来源无论开关与否都返回，供 <see cref="NoticeItem.Subject"/> 记录）。
     /// </summary>
-    private (string Content, string Subject) ApplySubjectPrefix(string content, string? memberOpenId, string? groupOpenId)
+    private (string Content, string Subject) ApplySubjectPrefix(
+        string content, string? memberOpenId, string? groupOpenId, string? subjectOverride = null)
     {
-        var subject = ResolveSubject(memberOpenId, groupOpenId) ?? "";
-        if (string.IsNullOrWhiteSpace(memberOpenId) || string.IsNullOrEmpty(content))
+        // 需求 2（2.1.0-beta.1）：换类继承来的显式学科优先于绑定解析；
+        // 显式学科场景（通知换类/文档换类）不受「必须有发送者」这一基础路径前置条件限制。
+        var inherited = subjectOverride?.Trim() ?? "";
+        var subject = inherited.Length > 0 ? inherited : (ResolveSubject(memberOpenId, groupOpenId) ?? "");
+        if (string.IsNullOrEmpty(content))
+        {
+            return (content, subject);
+        }
+
+        if (inherited.Length == 0 && string.IsNullOrWhiteSpace(memberOpenId))
         {
             return (content, subject);
         }
@@ -481,7 +516,8 @@ public sealed class NoticeStore : INoticeStore
     }
 
     private NoticeItem Clone(
-        NoticeItem source, string content, bool? isRead = null, DateTimeOffset? readAt = null, string? subject = null) =>
+        NoticeItem source, string content, bool? isRead = null, DateTimeOffset? readAt = null,
+        string? subject = null, string? senderLabel = null) =>
         new()
         {
             Id = source.Id,
@@ -490,6 +526,8 @@ public sealed class NoticeStore : INoticeStore
             MemberOpenId = source.MemberOpenId,
             GroupOpenId = source.GroupOpenId,
             Subject = subject ?? source.Subject,
+            // 需求 2：来源展示名默认沿用原值（换类继承可显式补写）
+            SenderLabel = senderLabel ?? source.SenderLabel,
             CreatedAt = source.CreatedAt,
             IsRead = isRead ?? source.IsRead,
             ReadAt = readAt ?? source.ReadAt

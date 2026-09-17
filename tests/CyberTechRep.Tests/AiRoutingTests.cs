@@ -11,8 +11,8 @@ namespace CyberTechRep.Tests;
 
 /// <summary>
 /// 需求 6：CyberTechRep AI 四用途路由矩阵测试。
-/// 覆盖：未配置 AI=现状不变、Primary 跳过关键词、Backup 关键词不中才触发、AI 失败降级不崩溃、
-/// 无关键词兜底接线、AiSettings 默认值与序列化往返。
+/// 覆盖：未配置 AI=现状不变、Primary 跳过关键词、Backup 未命中关键词（默认通知）触发 AI、
+/// AI 失败降级不崩溃、无关键词兜底接线、AiSettings 默认值与序列化往返。
 /// </summary>
 public sealed class AiRoutingTests : IDisposable
 {
@@ -433,13 +433,20 @@ public sealed class AiRoutingTests : IDisposable
     }
 
     [Fact]
-    public async Task 二分类_Off模式_现状不变_AI不被调用()
+    public async Task 二分类_Off模式_原样返回关键词结果_AI不被调用()
     {
         var (router, _, keyword, ai) = BuildRouter(new AiSettings { MessageClassifyMode = AiUsageMode.Off });
+        // 需求 3 后关键词未命中的真实结果是「默认通知」
+        keyword.Result = new ClassifiedMessage
+        {
+            Source = null!, Kind = MessageKind.Notice, Confidence = 1.0,
+            MatchReason = KeywordMessageClassifier.NoKeywordHitNoticeReason
+        };
 
         var result = await router.ClassifyAsync(Message("今晚开家长会"));
 
-        Assert.Equal(MessageKind.Unknown, result.Kind);
+        Assert.Equal(MessageKind.Notice, result.Kind);
+        Assert.Equal(KeywordMessageClassifier.NoKeywordHitNoticeReason, result.MatchReason);
         Assert.Equal(1, keyword.CallCount);
         Assert.Equal(0, ai.CallCount);
     }
@@ -460,9 +467,29 @@ public sealed class AiRoutingTests : IDisposable
     }
 
     [Fact]
-    public async Task 二分类_Backup模式_关键词Unknown才问AI()
+    public async Task 二分类_Backup模式_未命中关键词默认通知_仍问AI()
     {
         var (router, _, keyword, ai) = BuildRouter(new AiSettings { MessageClassifyMode = AiUsageMode.Backup });
+        // 需求 3：关键词未命中的结果是「默认通知」，Backup 模式仍要给 AI 一次兜底机会
+        keyword.Result = new ClassifiedMessage
+        {
+            Source = null!, Kind = MessageKind.Notice, Confidence = 1.0,
+            MatchReason = KeywordMessageClassifier.NoKeywordHitNoticeReason
+        };
+        ai.Verdict = new MessageKindVerdict(MessageKind.Homework, 0.9, "assignment");
+
+        var result = await router.ClassifyAsync(Message("今晚七点家长会"));
+
+        Assert.Equal(1, ai.CallCount);
+        Assert.Equal(MessageKind.Homework, result.Kind);
+        Assert.Contains("ai_message_kind", result.MatchReason);
+    }
+
+    [Fact]
+    public async Task 二分类_Backup模式_关键词Unknown且文本非空_仍问AI()
+    {
+        // 关键词链的 Unknown 分支（如分类异常）在文本非空时同样交给 AI 兜底
+        var (router, _, _, ai) = BuildRouter(new AiSettings { MessageClassifyMode = AiUsageMode.Backup });
         ai.Verdict = new MessageKindVerdict(MessageKind.Notice, 0.9, "broadcast");
 
         var result = await router.ClassifyAsync(Message("今晚七点家长会"));
@@ -473,26 +500,68 @@ public sealed class AiRoutingTests : IDisposable
     }
 
     [Fact]
-    public async Task 二分类_Backup模式_AI失败_降级回关键词结果不崩溃()
+    public async Task 二分类_Backup模式_空文本不问AI_Unknown原样返回()
+    {
+        var (router, _, _, ai) = BuildRouter(new AiSettings { MessageClassifyMode = AiUsageMode.Backup });
+
+        var result = await router.ClassifyAsync(Message(""));
+
+        Assert.Equal(MessageKind.Unknown, result.Kind);
+        Assert.Equal(0, ai.CallCount);
+    }
+
+    [Fact]
+    public async Task 二分类_Backup模式_平局默认通知不问AI()
+    {
+        // 只有「未命中关键词默认通知」才放开给 AI；平局默认判通知属于关键词确定结果，不触发 AI
+        var (router, _, keyword, ai) = BuildRouter(new AiSettings { MessageClassifyMode = AiUsageMode.Backup });
+        keyword.Result = new ClassifiedMessage
+        {
+            Source = null!, Kind = MessageKind.Notice, Confidence = 1.0,
+            MatchReason = "count_tie_notice_default(TieBreakNoticeWins); notice_count=1; homework_count=1"
+        };
+
+        var result = await router.ClassifyAsync(Message("请注意按时完成"));
+
+        Assert.Equal(MessageKind.Notice, result.Kind);
+        Assert.Contains("count_tie_notice_default", result.MatchReason);
+        Assert.Equal(0, ai.CallCount);
+    }
+
+    [Fact]
+    public async Task 二分类_Backup模式_AI失败_降级回默认通知结果不崩溃()
     {
         var (router, _, keyword, ai) = BuildRouter(new AiSettings { MessageClassifyMode = AiUsageMode.Backup });
+        keyword.Result = new ClassifiedMessage
+        {
+            Source = null!, Kind = MessageKind.Notice, Confidence = 1.0,
+            MatchReason = KeywordMessageClassifier.NoKeywordHitNoticeReason
+        };
         ai.Verdict = null; // AI 返回 null（失败）
 
         var result = await router.ClassifyAsync(Message("一段没有关键词的文本"));
 
-        Assert.Equal(MessageKind.Unknown, result.Kind); // 与现状一致：消息将被忽略
+        // 需求 3：降级结果是「默认通知」，不再是被忽略的 Unknown
+        Assert.Equal(MessageKind.Notice, result.Kind);
+        Assert.True(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(result.MatchReason));
         Assert.Equal(1, ai.CallCount);
     }
 
     [Fact]
-    public async Task 二分类_Backup模式_AI不可用_不调用()
+    public async Task 二分类_Backup模式_AI不可用_不调用_返回默认通知()
     {
         var (router, _, keyword, ai) = BuildRouter(new AiSettings { MessageClassifyMode = AiUsageMode.Backup });
+        keyword.Result = new ClassifiedMessage
+        {
+            Source = null!, Kind = MessageKind.Notice, Confidence = 1.0,
+            MatchReason = KeywordMessageClassifier.NoKeywordHitNoticeReason
+        };
         ai.Available = false;
 
         var result = await router.ClassifyAsync(Message("一段没有关键词的文本"));
 
-        Assert.Equal(MessageKind.Unknown, result.Kind);
+        Assert.Equal(MessageKind.Notice, result.Kind);
+        Assert.True(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(result.MatchReason));
         Assert.Equal(0, ai.CallCount);
     }
 
@@ -524,6 +593,26 @@ public sealed class AiRoutingTests : IDisposable
         Assert.Equal(1, ai.CallCount);
         Assert.Equal(1, keyword.CallCount);
         Assert.Equal(MessageKind.Notice, result.Kind);
+    }
+
+    [Fact]
+    public async Task 二分类_Primary模式_AI失败_回落默认通知结果()
+    {
+        // Primary 行为不变：跳过关键词直接问 AI，AI 失败回落关键词结果（需求 3 后未命中 = 默认通知）
+        var (router, _, keyword, ai) = BuildRouter(new AiSettings { MessageClassifyMode = AiUsageMode.Primary });
+        keyword.Result = new ClassifiedMessage
+        {
+            Source = null!, Kind = MessageKind.Notice, Confidence = 1.0,
+            MatchReason = KeywordMessageClassifier.NoKeywordHitNoticeReason
+        };
+        ai.Verdict = null;
+
+        var result = await router.ClassifyAsync(Message("一段没有关键词的文本"));
+
+        Assert.Equal(MessageKind.Notice, result.Kind);
+        Assert.True(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(result.MatchReason));
+        Assert.Equal(1, keyword.CallCount);
+        Assert.Equal(1, ai.CallCount);
     }
 
     [Fact]

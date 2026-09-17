@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using CyberTechRep.Plugin.Services.Overlays;
+using CyberTechRep.Plugin.Services.Stores;
 using CyberTechRep.Shared.Abstractions;
 using CyberTechRep.Shared.Models;
 
@@ -20,6 +21,12 @@ public sealed class NoticeRow
 
     /// <summary>时间展示：未读视图跨天显示 MM-dd HH:mm；已读视图仅当天，显示 HH:mm。</summary>
     public string TimeText { get; init; } = "";
+
+    /// <summary>
+    /// 「转为作业」按钮提示（需求 2）：通知已有学科时直接继承写入；无学科（空/未分类）时
+    /// 提示需先选择学科（此时点击弹学科菜单兜底）。
+    /// </summary>
+    public string ReclassifyTip { get; init; } = "";
 }
 
 /// <summary>通知悬浮窗列表视图模式（会话内记忆，不持久化）。</summary>
@@ -261,7 +268,11 @@ public partial class NoticeSuspensionWindow : Window, IOverlayInteractiveRegionP
                 {
                     Item = i,
                     ButtonText = _viewMode == NoticeListViewMode.Unread ? "已读" : "标记未读",
-                    TimeText = NoticeViewFilter.FormatTime(i, _viewMode)
+                    TimeText = NoticeViewFilter.FormatTime(i, _viewMode),
+                    // 需求 2：有学科 → 一键继承；无学科 → 提示先选择（点击时弹学科菜单兜底）
+                    ReclassifyTip = HomeworkSubjectResolver.IsUnclassified(i.Subject)
+                        ? "该通知无学科，请选择：选择学科后写入作业存档，通知存档移除"
+                        : $"把该通知转为作业：直接继承学科「{i.Subject}」与来源写入作业存档，通知存档移除"
                 })
                 .ToList();
 
@@ -370,30 +381,23 @@ public partial class NoticeSuspensionWindow : Window, IOverlayInteractiveRegionP
         }
     }
 
-    // ---- 需求 5：通知 → 作业一键换类 ----
+    // ---- 需求 5 / 需求 2：通知 → 作业一键换类 ----
 
-    /// <summary>「转为作业」候选学科（固定七学科 + 未分类；本条已有通知学科时置顶）。</summary>
-    internal static IReadOnlyList<string> BuildReclassifySubjectCandidates(string? noticeSubject)
+    /// <summary>
+    /// 「转为作业」兜底候选学科（固定七学科 + 未分类）。
+    /// 仅通知无学科（空/未分类）时使用——有学科的通知直接继承，不再让用户选（需求 2）。
+    /// </summary>
+    internal static IReadOnlyList<string> BuildReclassifySubjectCandidates()
     {
-        var candidates = new List<string>();
-        var subject = noticeSubject?.Trim() ?? "";
-        if (subject.Length > 0 && !HomeworkSuspensionWindow.BaseSubjects.Contains(subject, StringComparer.Ordinal))
-        {
-            candidates.Add(subject);
-        }
-
-        candidates.AddRange(HomeworkSuspensionWindow.BaseSubjects);
-        if (!candidates.Contains("未分类", StringComparer.Ordinal))
-        {
-            candidates.Add("未分类");
-        }
-
+        var candidates = new List<string>(HomeworkSuspensionWindow.BaseSubjects);
+        candidates.Add("未分类");
         return candidates;
     }
 
     /// <summary>
-    /// 「转为作业」：弹出学科菜单，选择后把该通知连同内容/来源/时间元信息迁入作业存档
-    /// （写入消息类型覆盖记录，重启后保持且重投不回摆）。
+    /// 「转为作业」：通知已有学科（需求 2：直接继承原学科标签与来源）时一键迁入作业存档，不弹菜单；
+    /// 无学科（空/未分类）时保留学科选择菜单兜底（按钮 ToolTip 已提示「该通知无学科，请选择」）。
+    /// 两种路径都会连同内容/来源/时间元信息迁移，并写入消息类型覆盖记录（重启后保持且重投不回摆）。
     /// </summary>
     private void OnNoticeToHomeworkClick(object? sender, RoutedEventArgs e)
     {
@@ -402,27 +406,37 @@ public partial class NoticeSuspensionWindow : Window, IOverlayInteractiveRegionP
             return;
         }
 
+        // 需求 2：通知已有学科标签 → 直接继承，不再让用户选
+        if (!HomeworkSubjectResolver.IsUnclassified(row.Item.Subject))
+        {
+            _ = MoveNoticeToHomeworkAsync(row.Item.Id, row.Item.Subject);
+            return;
+        }
+
         var flyout = new MenuFlyout();
-        foreach (var subject in BuildReclassifySubjectCandidates(row.Item.Subject))
+        foreach (var subject in BuildReclassifySubjectCandidates())
         {
             var item = new MenuItem { Header = subject };
             var chosen = subject;
-            item.Click += async (_, _) =>
-            {
-                try
-                {
-                    await _reclassify.MoveNoticeToHomeworkAsync(row.Item.Id, chosen);
-                    // 通知存档移除 + 作业文档写入各自触发 Changed → 两窗 debounce 刷新
-                }
-                catch
-                {
-                    // 迁移失败保持现状，不中断悬浮窗
-                }
-            };
+            item.Click += (_, _) => _ = MoveNoticeToHomeworkAsync(row.Item.Id, chosen);
             flyout.Items.Add(item);
         }
 
         flyout.ShowAt(target);
+    }
+
+    /// <summary>执行换类（迁移失败保持现状，不中断悬浮窗）。</summary>
+    private async Task MoveNoticeToHomeworkAsync(Guid noticeId, string subject)
+    {
+        try
+        {
+            await _reclassify!.MoveNoticeToHomeworkAsync(noticeId, subject);
+            // 通知存档移除 + 作业文档写入各自触发 Changed → 两窗 debounce 刷新
+        }
+        catch
+        {
+            // 迁移失败保持现状，不中断悬浮窗
+        }
     }
 
     // ---- 右上角快捷菜单（与设置页等价的开关，即时生效 + 回写 ISettingsService）----

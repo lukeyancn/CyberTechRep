@@ -209,8 +209,11 @@ flowchart TD
     B --> C[MessageDispatchService<br/>ProcessMessageAsync]
     C --> D[附件段 → FilePipelineService.EnqueueAsync<br/>下载 + MD5 + 归档到 下载文件/未分类/日期/]
     C --> E[KeywordMessageClassifier<br/>通知/作业关键词二分]
-    E -->|Unknown 无关键词命中| X1[忽略，不进存储]
+    E -->|Unknown 仅空文本/异常| X1[忽略，不进存储]
     E -->|Notice| F[NoticeStore.AddOrUpdateAsync<br/>查 user-subjects.json 映射<br/>有映射则加「学科：」前缀]
+    E -->|未命中关键词或命中数相等| F2["默认归为通知（2.1.0-beta.1）<br/>未命中关键词时先试用途③ AI 兜底识别（默认关闭）<br/>命中 → 按作业归档"]
+    F2 --> F
+    F2 -->|兜底识别命中| H
     E -->|Homework| G[SubjectClassifierChain 三级链]
     G --> G1["① KeywordSubjectClassifier<br/>subjects.json 子串命中<br/>命中数多者胜，同分比 Priority<br/>命中 → Confidence=1.0 短路"]
     G1 -->|未命中| G2["② AI 级（PreferLocalModel 排序）<br/>LocalOnnx：占位实现，恒返回 null<br/>CloudOpenAi：LLM 判定，置信度 0~1"]
@@ -225,7 +228,7 @@ flowchart TD
     N[作业悬浮窗手动修正学科<br/>SetSubjectAsync] --> O[⚠ 已知缺口：不会触发<br/>ReassignSubjectAsync，文件不移动]
 ```
 
-文字版一句话：**群消息 → 幂等/白名单 → 附件先按「未分类」归档 → 关键词二分（通知/作业）→ 作业走三级学科链（关键词 1.0 短路 → 本地 ONNX 占位/云端 LLM ≥0.7 采纳 → 兜底进人工队列）→ 作业写存储（人工修正＞识别链＞发送者映射）→ 文件按最终学科二次归档；通知不进学科链，只消费既有映射加前缀。**
+文字版一句话：**群消息 → 幂等/白名单 → 附件先按「未分类」归档 → 关键词二分（通知/作业；未命中关键词或两侧命中数相等一律归通知，2.1.0-beta.1 起）→ 作业走三级学科链（关键词 1.0 短路 → 本地 ONNX 占位/云端 LLM ≥0.7 采纳 → 兜底进人工队列）→ 作业写存储（人工修正＞识别链＞发送者映射）→ 文件按最终学科二次归档；通知不进学科链，只消费既有映射加前缀。**
 
 ---
 

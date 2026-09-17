@@ -17,17 +17,51 @@ namespace CyberTechRep.Plugin.Services.Classification;
 /// ① 计数多者胜（两侧都命中时按计数比较）；② 仅一侧命中则取该侧；
 /// ③ 计数相等 → 固定平局规则 <see cref="TieBreakNoticeWins"/>：通知（Notice）胜，
 /// 并以 reason <c>count_tie_notice_default</c> 标记；
-/// ④ 均未命中或文本为空 → <see cref="MessageKind.Unknown"/>（reason 不变）。
+/// ④ 两侧均未命中（文本非空）→ 归类为通知（Notice），reason =
+/// <see cref="NoKeywordHitNoticeReason"/>（需求 3：未命中关键词默认按通知落档，不再返回 Unknown）；
+/// ⑤ 文本为空或仅媒体 → <see cref="MessageKind.Unknown"/>（没有可分类文本，不生成空通知条目；
+/// 纯文件/图片消息维持既有处理：文件管道 + 选择悬浮窗），分类异常同样返回 Unknown。
 /// </para>
 /// </summary>
 public sealed class KeywordMessageClassifier : IMessageClassifier
 {
     /// <summary>
-    /// 平局仲裁常量：通知/作业命中计数相等（含非零平局；双零已提前走 no_keyword_hit）时，
+    /// 平局仲裁常量：通知/作业命中计数相等（含非零平局；双零已提前走未命中默认规则）时，
     /// 归类为通知（Notice）——true = 通知胜。唯一、显式、有文档的平局规则；
     /// 通知漏检可由用户在通知中心看到，作业误判成本更高，故平局宁可判通知。
     /// </summary>
     public const bool TieBreakNoticeWins = true;
+
+    /// <summary>
+    /// 需求 3 默认归类常量：文本非空但通知侧/作业侧关键词<strong>均未命中</strong>时，
+    /// 归类为通知（Notice）并以本 reason 标记（旧行为为 Unknown = 消息被忽略）。
+    /// AI 二分类路由（用途②）与消息管道（用途③ 兜底识别）统一经
+    /// <see cref="IsNoKeywordHitDefaultReason"/> 识别该默认归类。
+    /// </summary>
+    public const string NoKeywordHitNoticeReason = "no_keyword_hit_notice_default";
+
+    /// <summary>
+    /// 判断 reason 是否为「未命中关键词默认通知」（<see cref="NoKeywordHitNoticeReason"/>）：
+    /// 忽略大小写与首尾空白，允许 reason 带附加诊断后缀（如
+    /// <c>no_keyword_hit_notice_default; at=router</c>）；后缀首字符为字母/数字/下划线时
+    /// 视为另一原因（避免误命中同前缀枚举值，如 no_keyword_hit_notice_default_x）。
+    /// </summary>
+    public static bool IsNoKeywordHitDefaultReason(string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return false;
+        }
+
+        var trimmed = reason.Trim();
+        if (!trimmed.StartsWith(NoKeywordHitNoticeReason, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var rest = trimmed[NoKeywordHitNoticeReason.Length..];
+        return rest.Length == 0 || !(char.IsLetterOrDigit(rest[0]) || rest[0] == '_');
+    }
 
 
     private readonly ClassifierOptionsProvider _provider;
@@ -43,7 +77,16 @@ public sealed class KeywordMessageClassifier : IMessageClassifier
         ReloadRules();
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// 关键词规则分类（<see cref="IMessageClassifier"/>）。
+    /// <para>
+    /// 边界（需求 3）：仅<strong>文本非空</strong>时才可能归类为通知（含未命中默认通知）；
+    /// 文本为空或仅媒体 → 固定返回 <see cref="MessageKind.Unknown"/>
+    /// （reason <c>empty_text</c> / <c>empty_text_with_media</c>）——没有可分类文本就不产生
+    /// 空通知条目，纯文件/图片消息的既有处理（文件管道 + 选择悬浮窗）完全不变。
+    /// 分类内部异常同样返回 Unknown（reason <c>classify_exception:*</c>），不向调用方抛出。
+    /// </para>
+    /// </summary>
     public Task<ClassifiedMessage> ClassifyAsync(MessageRecord message, CancellationToken ct = default)
     {
         try
@@ -59,7 +102,8 @@ public sealed class KeywordMessageClassifier : IMessageClassifier
             var text = ExtractPlainText(message.Segments);
             if (string.IsNullOrWhiteSpace(text))
             {
-                // 仅图片/文件、无文本：无法做关键词分流 → Unknown（交下游人工/排错）
+                // 仅图片/文件、无文本：无法做关键词分流，且不允许产生空通知条目 → Unknown
+                //（交下游人工/排错；纯文件/图片消息的文件管道 + 选择悬浮窗处理不变）
                 var hasMedia = message.Segments.Any(s =>
                     s.Type is SegmentTypes.Image or SegmentTypes.File or SegmentTypes.Video or SegmentTypes.Voice);
                 var reason = hasMedia
@@ -75,10 +119,21 @@ public sealed class KeywordMessageClassifier : IMessageClassifier
             var notice = TallyHits(text, rules.NoticeKeywords);
             var homework = TallyHits(text, rules.HomeworkKeywords);
 
-            // 仲裁 ①：两侧命中总次数均为 0 → Unknown（保留原 reason，行为不变）
+            // 仲裁 ①（需求 3 修订）：两侧命中总次数均为 0 → 默认归类为通知。
+            // 旧行为为 Unknown（消息被忽略）；现在默认落档通知，仅「文本为空/仅媒体」与
+            // 分类异常仍返回 Unknown（见上方提前返回与异常分支）。reason 用公共常量，
+            // 供 AI 用途② 路由与管道用途③ 兜底识别。
             if (notice.TotalCount == 0 && homework.TotalCount == 0)
             {
-                return Task.FromResult(Unknown(message, "no_keyword_hit"));
+                _logger.LogDebug(
+                    "通知/作业关键词均未命中，按默认规则归类为通知（MessageId={MessageId}）", message.MessageId);
+                return Task.FromResult(new ClassifiedMessage
+                {
+                    Source = message,
+                    Kind = MessageKind.Notice,
+                    Confidence = 1.0,
+                    MatchReason = NoKeywordHitNoticeReason
+                });
             }
 
             // 仲裁 ②：计数比较（取代旧「两侧均命中 → 作业优先」规则）。

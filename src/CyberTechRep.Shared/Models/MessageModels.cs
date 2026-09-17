@@ -130,6 +130,13 @@ public sealed class NoticeItem
     /// </summary>
     public string Subject { get; set; } = "";
 
+    /// <summary>
+    /// 来源发送者展示名（昵称；需求 2：换类时「来源」继承用）。
+    /// 通知界面<b>不显示</b>来源，仅作业侧展示（作业文档条目 SenderLabel）；
+    /// 作业 → 通知 → 作业 往返换类时经此字段把来源带回作业侧，旧数据为空显示「成员」。
+    /// </summary>
+    public string SenderLabel { get; init; } = "";
+
     public DateTimeOffset CreatedAt { get; init; }
 
     /// <summary>已读状态持久化：重启不复活。</summary>

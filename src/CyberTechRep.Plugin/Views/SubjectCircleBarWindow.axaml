@@ -32,18 +32,27 @@
           </ItemsControl.ItemsPanel>
           <ItemsControl.ItemTemplate>
             <DataTemplate>
-              <Button Classes="circle" Click="OnCircleClick" Width="48" Height="48"
-                      CornerRadius="24" Padding="2" HorizontalAlignment="Center"
-                      Background="#D0FFFFFF" BorderBrush="#33000000" BorderThickness="1">
-                <Button.ContextMenu>
-                  <ContextMenu Opened="OnMenuOpened">
-                    <MenuItem Header="上移" Click="OnMoveUpClick" />
-                    <MenuItem Header="下移" Click="OnMoveDownClick" />
-                  </ContextMenu>
-                </Button.ContextMenu>
-                <TextBlock Text="{Binding}" TextWrapping="Wrap" TextAlignment="Center"
-                           VerticalAlignment="Center" MaxHeight="40" />
-              </Button>
+              <!-- 圆圈 + 右上角「有新文件」小红点：外层 Panel 固定 48×48，
+                   Button 保持原样（文字绑学科名 Subject），红点叠加在右上角 -->
+              <Panel Width="48" Height="48" HorizontalAlignment="Center">
+                <Button Classes="circle" Click="OnCircleClick" Width="48" Height="48"
+                        CornerRadius="24" Padding="2"
+                        Background="#D0FFFFFF" BorderBrush="#33000000" BorderThickness="1">
+                  <Button.ContextMenu>
+                    <ContextMenu Opened="OnMenuOpened">
+                      <MenuItem Header="上移" Click="OnMoveUpClick" />
+                      <MenuItem Header="下移" Click="OnMoveDownClick" />
+                    </ContextMenu>
+                  </Button.ContextMenu>
+                  <TextBlock Text="{Binding Subject}" TextWrapping="Wrap" TextAlignment="Center"
+                             VerticalAlignment="Center" MaxHeight="40" />
+                </Button>
+                <!-- 小红点：学科有新归档文件时显示（IsHitTestVisible=False，不抢圆圈点击/拖放命中） -->
+                <Border Width="10" Height="10" CornerRadius="5" Background="#FFE53935"
+                        BorderBrush="White" BorderThickness="1.5"
+                        IsVisible="{Binding HasNewFile}" IsHitTestVisible="False"
+                        HorizontalAlignment="Right" VerticalAlignment="Top" />
+              </Panel>
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>

@@ -10,8 +10,42 @@ using CyberTechRep.Shared.Abstractions;
 using CyberTechRep.Shared.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.ComponentModel;
 
 namespace CyberTechRep.Plugin.Views;
+
+/// <summary>
+/// 学科圆圈列表项（学科名 + 「有新文件」小红点状态）：
+/// <see cref="HasNewFile"/> 变更经 <see cref="INotifyPropertyChanged"/> 通知 UI，
+/// 归档新文件时只更新命中项（定项刷新，不整表重建，避免圆圈闪烁抖动）。
+/// </summary>
+public sealed class SubjectCircleItem : INotifyPropertyChanged
+{
+    private bool _hasNewFile;
+
+    public SubjectCircleItem(string subject) => Subject = subject;
+
+    /// <summary>学科名（圆圈文字、点击/拖放/右键菜单的目标学科）。</summary>
+    public string Subject { get; }
+
+    /// <summary>是否有未读新文件（右上角小红点显示依据）。</summary>
+    public bool HasNewFile
+    {
+        get => _hasNewFile;
+        set
+        {
+            if (_hasNewFile == value)
+            {
+                return;
+            }
+
+            _hasNewFile = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasNewFile)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
 
 /// <summary>
 /// 学科圆圈启动器（小型常驻窗，Avalonia 无边框半透明圆角）：
@@ -23,6 +57,13 @@ namespace CyberTechRep.Plugin.Views;
 /// <see cref="OverlayQuickMenu"/>：置顶/固定/穿透）+「×」隐藏（设置页可再唤出）；
 /// 层级/穿透/固定/位置由 <see cref="SuspensionWindowController"/>
 /// 钉底器路径统一处理（与另三窗行为一致）。
+/// <para>
+/// 新文件红点：订阅 <see cref="IFilePipelineService.FileUpdated"/>，归档完成
+/// （<c>Status==Archived</c>）时按归档路径首段提取学科，经 <see cref="SubjectFileBadgeTracker"/>
+/// 标记未读 → 右上角小红点（列表已有该学科则定项刷新，首次出现的学科整表刷新时从
+/// tracker 合并标记）；用户点开该学科文件悬浮窗或上课联动打开时（
+/// <see cref="SubjectFilesController.SubjectFilesShown"/>）清除红点。标记仅会话内有效、不持久化。
+/// </para>
 /// <para>
 /// 拖放导入：从资源管理器等拖文件悬停到学科圆圈上松开 → 文件复制归档到该学科
 /// （Copy 语义，经 <see cref="IFileImportService"/> 复用文件管道归档格式）。悬停时高亮
@@ -40,6 +81,9 @@ public partial class SubjectCircleBarWindow : Window
     private readonly OverlayQuickMenu _quickMenu = null!;
     private EventHandler<CyberTechRep.Shared.Models.AppSettings>? _settingsChangedHandler;
     private string? _pendingSubject;
+
+    /// <summary>学科「有新文件」未读标记（纯逻辑、会话内有效；RefreshAsync 重建列表时合并）。</summary>
+    private readonly SubjectFileBadgeTracker _badge = new();
 
     /// <summary>拖放导入实现（管道同实例；测试替身管道可能未实现 → null 时拖放降级为提示）。</summary>
     private readonly IFileImportService? _importer;
@@ -78,6 +122,16 @@ public partial class SubjectCircleBarWindow : Window
         QuickMenuButton.Flyout = _quickMenu.Flyout;
         _ = RefreshAsync();
 
+        // 新文件红点数据流：归档完成 → 标记学科未读（定项刷新红点）；
+        // 该学科文件被展示（圆圈点击显示/切换、上课联动打开）→ 清除红点。
+        _pipeline.FileUpdated += OnPipelineFileUpdated;
+        _controller.SubjectFilesShown += OnSubjectFilesShown;
+        Closed += (_, _) =>
+        {
+            _pipeline.FileUpdated -= OnPipelineFileUpdated;
+            _controller.SubjectFilesShown -= OnSubjectFilesShown;
+        };
+
         // 拖放导入：窗口级 AllowDrop + 路由事件（DragOver 命中学科圆圈 → Copy + 高亮；
         // Drop 提取路径后线程池异步复制归档，不冻结 UI）。非文件负载 → None。
         _importer = pipeline as IFileImportService;
@@ -105,8 +159,9 @@ public partial class SubjectCircleBarWindow : Window
         }
     }
 
-    /// <summary>当前展示顺序（测试用）。</summary>
-    public System.Collections.IEnumerable? VisibleSubjects => CircleList?.ItemsSource;
+    /// <summary>当前展示的学科名（按展示顺序；测试/诊断用。列表项为带红点状态的 <see cref="SubjectCircleItem"/>）。</summary>
+    public IReadOnlyList<string>? VisibleSubjects =>
+        (CircleList?.ItemsSource as IReadOnlyList<SubjectCircleItem>)?.Select(item => item.Subject).ToList();
 
     internal async Task RefreshAsync()
     {
@@ -121,13 +176,92 @@ public partial class SubjectCircleBarWindow : Window
                 .Distinct(StringComparer.Ordinal);
 
             var settings = TryGetSettings();
-            CircleList.ItemsSource = SubjectCircleOrder.ResolveOrder(settings?.Order, discovered);
+            // 列表重建时合并 tracker 未读标记（red dot 在整表刷新后不丢）
+            CircleList.ItemsSource = SubjectCircleOrder.ResolveOrder(settings?.Order, discovered)
+                .Select(subject => new SubjectCircleItem(subject) { HasNewFile = _badge.IsUnseen(subject) })
+                .ToList();
             ApplyOrientation(settings);
         }
         catch (Exception ex)
         {
             // 刷新失败保持上次内容，不阻断圆圈栏
             _logger.LogWarning(ex, "学科圆圈栏刷新失败（保持上次内容）");
+        }
+    }
+
+    /// <summary>
+    /// 文件管道：归档完成（<c>Status==Archived</c>）→ 从归档相对路径首段提取学科并标记未读红点。
+    /// 非归档状态与不可归属学科（未按学科分组归档，首段是日期）不标记。
+    /// </summary>
+    private void OnPipelineFileUpdated(object? sender, FileRecord e)
+    {
+        if (e.Status != FileStatus.Archived)
+        {
+            return;
+        }
+
+        var subject = SubjectFilesQuery.ExtractSubject(e.ArchivedRelativePath);
+        if (string.IsNullOrWhiteSpace(subject))
+        {
+            return;
+        }
+
+        _badge.MarkUnseen(subject);
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            ApplySubjectBadge(subject);
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(() => ApplySubjectBadge(subject));
+        }
+    }
+
+    /// <summary>
+    /// 学科文件已展示给用户（圆圈点击显示/切换成功、上课联动打开）→ 清除该学科未读红点。
+    /// 控制器保证在 UI 线程触发；这里仍做线程判断兜底。
+    /// </summary>
+    private void OnSubjectFilesShown(object? sender, string subject)
+    {
+        _badge.Clear(subject);
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            ClearSubjectBadge(subject);
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(() => ClearSubjectBadge(subject));
+        }
+    }
+
+    /// <summary>在列表里找学科对应的圆圈项（学科名比较与 tracker 一致，大小写不敏感）。</summary>
+    private SubjectCircleItem? FindCircleItem(string subject) =>
+        CircleList?.ItemsSource is IReadOnlyList<SubjectCircleItem> items
+            ? items.FirstOrDefault(item => string.Equals(item.Subject, subject, StringComparison.OrdinalIgnoreCase))
+            : null;
+
+    /// <summary>
+    /// 标记红点：列表已有该学科 → 定项刷新（只改该 <see cref="SubjectCircleItem.HasNewFile"/>，
+    /// 不整表重建，避免圆圈闪烁抖动）；列表没有（如首次出现的学科）→ 整表刷新，
+    /// 由 <see cref="RefreshAsync"/> 从 tracker 合并未读标记。
+    /// </summary>
+    private void ApplySubjectBadge(string subject)
+    {
+        if (FindCircleItem(subject) is { } item)
+        {
+            item.HasNewFile = true;
+            return;
+        }
+
+        _ = RefreshAsync();
+    }
+
+    /// <summary>清除红点：定项刷新（不做整表刷新；列表中没有该学科时无需处理）。</summary>
+    private void ClearSubjectBadge(string subject)
+    {
+        if (FindCircleItem(subject) is { } item)
+        {
+            item.HasNewFile = false;
         }
     }
 
@@ -157,9 +291,9 @@ public partial class SubjectCircleBarWindow : Window
 
     private async void OnCircleClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is Button { DataContext: string subject })
+        if (sender is Button { DataContext: SubjectCircleItem item })
         {
-            await _controller.ToggleOrSwitchAsync(subject);
+            await _controller.ToggleOrSwitchAsync(item.Subject);
         }
     }
 
@@ -205,8 +339,8 @@ public partial class SubjectCircleBarWindow : Window
     /// <summary>右键菜单展开时记录所属圆圈的学科（MenuItem 不在可视树内，经 ContextMenu 的 PlacementTarget 取）。</summary>
     private void OnMenuOpened(object? sender, RoutedEventArgs e)
     {
-        _pendingSubject = sender is ContextMenu { PlacementTarget: Button { DataContext: string subject } }
-            ? subject
+        _pendingSubject = sender is ContextMenu { PlacementTarget: Button { DataContext: SubjectCircleItem item } }
+            ? item.Subject
             : null;
     }
 
@@ -223,10 +357,10 @@ public partial class SubjectCircleBarWindow : Window
         try
         {
             if (_pendingSubject is { } subject
-                && CircleList.ItemsSource is IReadOnlyList<string> displayed)
+                && CircleList.ItemsSource is IReadOnlyList<SubjectCircleItem> displayed)
             {
                 _pendingSubject = null;
-                await _controller.ReorderAsync(displayed, subject, delta);
+                await _controller.ReorderAsync(displayed.Select(item => item.Subject).ToList(), subject, delta);
                 await RefreshAsync();
             }
         }
@@ -238,12 +372,12 @@ public partial class SubjectCircleBarWindow : Window
 
     // ============ 拖放导入（文件 → 学科，Copy 语义）============
 
-    /// <summary>沿可视树向上找到拖放命中点的学科圆圈按钮（DataContext 为学科名字符串）。</summary>
+    /// <summary>沿可视树向上找到拖放命中点的学科圆圈按钮（DataContext 为 <see cref="SubjectCircleItem"/>）。</summary>
     private static Button? FindSubjectButton(Visual? source)
     {
         for (Visual? node = source; node is not null; node = node.GetVisualParent())
         {
-            if (node is Button { DataContext: string } button)
+            if (node is Button { DataContext: SubjectCircleItem } button)
             {
                 return button;
             }
@@ -297,12 +431,13 @@ public partial class SubjectCircleBarWindow : Window
             var button = FindSubjectButton(e.Source as Visual);
             ClearDropHighlight();
 
-            if (button?.DataContext is not string subject)
+            if (button?.DataContext is not SubjectCircleItem item)
             {
                 e.DragEffects = DragDropEffects.None;
                 return;
             }
 
+            var subject = item.Subject;
             e.DragEffects = DragDropEffects.Copy;
             var paths = SubjectDropImport.ExtractFilePaths(e.Data);
             if (_importer is null)

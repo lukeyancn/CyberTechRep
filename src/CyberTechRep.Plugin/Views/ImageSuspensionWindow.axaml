@@ -1,0 +1,67 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="420" d:DesignHeight="560"
+        x:Class="CyberTechRep.Plugin.Views.ImageSuspensionWindow"
+        Title="CyberTechRep 图片" Width="420" Height="560" MinWidth="220" MinHeight="180"
+        SystemDecorations="None" ShowInTaskbar="False" CanResize="False"
+        Topmost="True" Background="Transparent" FontSize="14">
+
+  <Border x:Name="RootBorder" CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
+    <Grid RowDefinitions="Auto,*,Auto">
+
+      <!-- 标题栏：左侧文本 + 右侧 [打开] [⋯] [×]（打开在 ⋯ 左侧；⋯ 为与其他悬浮窗共用的快捷设置菜单） -->
+      <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
+              PointerPressed="OnHeaderPointerPressed">
+        <Grid ColumnDefinitions="*,Auto" Margin="12,8,8,8">
+          <TextBlock Text="图片" FontWeight="SemiBold" VerticalAlignment="Center" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
+            <Button x:Name="OpenButton" Content="打开" Click="OnOpenClick" Padding="8,0" MinWidth="44"
+                    Background="Transparent" BorderThickness="0" IsEnabled="False"
+                    ToolTip.Tip="用系统默认图片查看器打开当前正在看的图片（视口中心最近的图片）" />
+            <Button x:Name="QuickMenuButton" Content="⋯" Padding="6,0" MinWidth="28" Background="Transparent"
+                    BorderThickness="0" ToolTip.Tip="悬浮窗快捷设置" />
+            <Button Content="×" Click="OnHideClick"
+                    Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Panel Grid.Row="1">
+        <TextBlock x:Name="EmptyText" Text="暂无图片" HorizontalAlignment="Center"
+                   VerticalAlignment="Center" Opacity="0.6" />
+
+        <!-- 竖向图片列表：每张按窗口宽度等比撑满（Stretch=Uniform），下方一行极简说明 -->
+        <ScrollViewer x:Name="ImageScroll" Padding="8,6"
+                      HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <ItemsControl x:Name="ImageItems">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Margin="0,0,0,6" Spacing="2">
+                  <Border CornerRadius="4" ClipToBounds="True" Background="#14000000"
+                          IsVisible="{Binding HasImage}">
+                    <Image Source="{Binding Image}" Stretch="Uniform" />
+                  </Border>
+                  <TextBlock Text="{Binding Caption}" FontSize="11" Opacity="0.55"
+                             TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </Panel>
+
+      <!-- 角部缩放 Thumb -->
+      <Thumb Grid.Row="2" x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
+             HorizontalAlignment="Right" VerticalAlignment="Bottom" Opacity="0.4"
+             DragDelta="OnResizeDragDelta">
+        <Thumb.Template>
+          <ControlTemplate>
+            <Border CornerRadius="2" Background="#40000000" />
+          </ControlTemplate>
+        </Thumb.Template>
+      </Thumb>
+    </Grid>
+  </Border>
+</Window>

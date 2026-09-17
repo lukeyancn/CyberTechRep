@@ -369,14 +369,15 @@ public sealed class AiSettings
     public AiUsageMode SubjectClassifyMode { get; set; } = AiUsageMode.Backup;
 
     /// <summary>
-    /// 用途② 通知/作业二分类：关键词分类器 Unknown 时（Backup）或每条消息（Primary）询问 AI；
-    /// 默认 Off = 现状（仅关键词，Unknown 消息直接忽略）。
+    /// 用途② 通知/作业二分类：关键词未命中或未识别出类型（Backup）或每条消息（Primary）询问 AI；
+    /// 默认 Off = 仅关键词规则（未命中关键词的消息按 2.1.0-beta.1 起的新语义默认归为通知）。
     /// </summary>
     public AiUsageMode MessageClassifyMode { get; set; } = AiUsageMode.Off;
 
     /// <summary>
-    /// 用途③ 无关键词消息兜底识别：文本中无任何通知/作业关键词（消息会被忽略）时，
-    /// 兜底走学科识别链判断学科并按作业归档；默认 Off = 现状（直接忽略）。
+    /// 用途③ 无关键词消息兜底识别：文本中无任何通知/作业关键词时，先兜底走学科识别链判断学科并按作业归档；
+    /// 未启用/判断不出学科则按新语义落为通知（2.1.0-beta.1 起：未命中关键词默认归通知，不再直接忽略）。
+    /// 默认 Off = 不额外调用 AI。
     /// </summary>
     public AiUsageMode NoKeywordFallbackMode { get; set; } = AiUsageMode.Off;
 
@@ -466,6 +467,24 @@ public sealed class OverlaySettings
         Height = 260
     };
 
+    /// <summary>
+    /// 图片悬浮窗（第六悬浮窗，2.1.0-beta.1 需求 9）：默认不随宿主显示（Visible=false），
+    /// 收到图片且 <see cref="ImageAutoShowOnReceive"/> 开启时自动展示；位置大小透明度与其他悬浮窗同构并持久化。
+    /// </summary>
+    public OverlayWindowSettings Image { get; set; } = new()
+    {
+        Visible = false,
+        Width = 420,
+        Height = 560
+    };
+
+    /// <summary>
+    /// 图片悬浮窗功能开关（需求 9）：开启（默认）时「收到图片自动把图片展示在图片悬浮窗上」；
+    /// 关闭后图片照常归档，只是不再自动弹窗。本开关只控制自动展示功能，
+    /// <b>不控制</b>图片悬浮窗自身是否显示（那是 <see cref="OverlayWindowSettings.Visible"/>，与其余悬浮窗一致）。
+    /// </summary>
+    public bool ImageAutoShowOnReceive { get; set; } = true;
+
     /// <summary>学科圆圈栏/学科文件悬浮窗联动设置（排列方向/顺序/视图模式等）。</summary>
     public SubjectCircleBarSettings SubjectCircle { get; set; } = new();
 
@@ -493,6 +512,16 @@ public sealed class SubjectCircleBarSettings
 
     /// <summary>上课联动：进入上课（CurrentState==OnClass）时自动弹出/切换该学科已归档文件的悬浮窗，下课/放学自动收起联动打开的窗。</summary>
     public bool AutoOpenWithClass { get; set; }
+
+    /// <summary>
+    /// 上课联动延时（秒，需求 10）：以「上课铃响」为基准的偏移量。
+    /// <para>
+    /// 0（默认）= 准点（现状行为）；<b>正数 = 推迟</b>：上课后延迟 N 秒再弹出；
+    /// <b>负数 = 提前</b>：在上课前 |N| 秒弹出（宿主课间倒计时 OnClassLeftTime 到达阈值时触发）。
+    /// 仅在 <see cref="AutoOpenWithClass"/> 开启时生效；经 SettingsChanged 热生效。
+    /// </para>
+    /// </summary>
+    public int AutoOpenDelaySeconds { get; set; }
 }
 
 /// <summary>学科圆圈栏设置的合法取值常量（与 <see cref="SubjectCircleBarSettings"/> 配套）。</summary>

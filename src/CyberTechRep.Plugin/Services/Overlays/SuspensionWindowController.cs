@@ -39,6 +39,9 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// <summary>overlayKey：未绑定学科选择悬浮窗（第五悬浮窗，需求 3；消息需学科分类但发送者未绑定时由管道触发）。</summary>
     public const string SubjectSelectionKey = "subjectSelection";
 
+    /// <summary>overlayKey：图片悬浮窗（第六悬浮窗，需求 9；收到归档图片自动展示）。</summary>
+    public const string ImageKey = "image";
+
     /// <summary>旧版独立悬浮窗设置文件（迁移后归档为 &lt;name&gt;.migrated）。</summary>
     internal const string LegacyFileName = "overlays.json";
     internal const string MigratedSuffix = ".migrated";
@@ -52,7 +55,8 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     /// 内存即时更新、落盘合并为最后一次（避免每帧写盘 + 广播风暴，且广播回放不会与拖拽会话打架）。</summary>
     internal const int GeometrySaveDebounceMs = 300;
 
-    private static readonly string[] KnownKeys = [NoticeKey, HomeworkKey, FilesKey, CircleKey, SubjectSelectionKey];
+    private static readonly string[] KnownKeys =
+        [NoticeKey, HomeworkKey, FilesKey, CircleKey, SubjectSelectionKey, ImageKey];
 
     private readonly string _filePath;
     private readonly ISettingsService? _settingsService;
@@ -337,6 +341,9 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                 case SubjectSelectionKey:
                     _settings.Selection = settings;
                     break;
+                case ImageKey:
+                    _settings.Image = settings;
+                    break;
                 default:
                     _settings.Circle = settings;
                     break;
@@ -526,6 +533,9 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                 case SubjectSelectionKey:
                     _settings.Selection = settings;
                     break;
+                case ImageKey:
+                    _settings.Image = settings;
+                    break;
                 default:
                     _settings.Circle = settings;
                     break;
@@ -597,6 +607,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                 HomeworkKey => _settings.Homework,
                 FilesKey => _settings.Files,
                 SubjectSelectionKey => _settings.Selection,
+                ImageKey => _settings.Image,
                 _ => _settings.Circle
             };
         }
@@ -631,6 +642,8 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
                     container.HomeworkGroupOrder = legacy.HomeworkGroupOrder;
                     container.LaunchWithHost = legacy.LaunchWithHost;
                     container.Selection = legacy.Selection;
+                    // 需求 9：旧 overlays.json 无该字段 → 反序列化为默认值（Visible=false/420x560），不会丢用户配置
+                    container.Image = legacy.Image;
                     EnsureWindowSettingsDefaults(container);
                     _ = PersistViaSettingsServiceAsync();
                     _logger.LogInformation("已将旧 overlays.json 的悬浮窗设置导入 ISettingsService（settings.json），悬浮窗设置统一为单一来源");
@@ -667,7 +680,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
     }
 
     /// <summary>
-    /// 兜底补全四窗窗口设置与圆圈栏设置（旧 settings.json/overlays.json 缺字段、
+    /// 兜底补全各悬浮窗窗口设置与圆圈栏设置（旧 settings.json/overlays.json 缺字段、
     /// 或反序列化得到 null 时补默认值，保证热生效路径永不为 null）。
     /// </summary>
     private static void EnsureWindowSettingsDefaults(OverlaySettings container)
@@ -677,6 +690,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
         container.Files ??= new OverlayWindowSettings { Visible = false, Width = 360, Height = 520 };
         container.Circle ??= new OverlayWindowSettings { Visible = true, Width = 64, Height = 440, Opacity = 0.85 };
         container.Selection ??= new OverlayWindowSettings { Visible = false, Width = 320, Height = 260 };
+        container.Image ??= new OverlayWindowSettings { Visible = false, Width = 420, Height = 560 };
         container.SubjectCircle ??= new SubjectCircleBarSettings();
     }
 
@@ -721,6 +735,7 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
             HomeworkKey => container.Homework,
             FilesKey => container.Files,
             SubjectSelectionKey => container.Selection,
+            ImageKey => container.Image,
             _ => container.Circle
         };
     }
@@ -750,18 +765,22 @@ public sealed class SuspensionWindowController : ISuspensionWindowController
             Files = CloneWindowSettings(source.Files),
             Circle = CloneWindowSettings(source.Circle),
             Selection = CloneWindowSettings(source.Selection),
+            Image = CloneWindowSettings(source.Image),
             SubjectCircle = CloneSubjectCircleSettings(source.SubjectCircle),
             HomeworkGroupOrder = [.. source.HomeworkGroupOrder]
         };
     }
 
-    /// <summary>深拷贝圆圈栏/联动设置（局部克隆用，防止外部改动单一来源的活实例）。</summary>
+    /// <summary>深拷贝圆圈栏/联动设置（局部克隆用，防止外部改动单一来源的活实例）。
+    /// 新增设置字段时必须同步补齐，否则拖拽回写/导入等回放路径会丢设置。</summary>
     private static SubjectCircleBarSettings CloneSubjectCircleSettings(SubjectCircleBarSettings s) => new()
     {
         Orientation = s.Orientation,
         Order = [.. s.Order],
         ViewMode = s.ViewMode,
-        AutoOpenWithClass = s.AutoOpenWithClass
+        AutoOpenWithClass = s.AutoOpenWithClass,
+        // 需求 10：上课联动延时（提前/推迟）——缺失会在拖拽回写/复位时丢设置
+        AutoOpenDelaySeconds = s.AutoOpenDelaySeconds
     };
 
     /// <summary>深拷贝单窗设置（局部克隆用，如复位时避免改动单一来源的活实例）。</summary>

@@ -72,7 +72,7 @@
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="6">
                     <TextBlock Text="② 通知/作业二分类" FontWeight="SemiBold"/>
-                    <TextBlock Text="判断消息是通知还是作业（现有实现为关键词规则）。后补识别 = 关键词未命中（消息原本会被忽略）时问 AI；唯一识别 = 每条消息都直接问 AI。"
+                    <TextBlock Text="判断消息是通知还是作业（现有实现为关键词规则；未命中任何关键词或两侧命中数相等时一律归为通知）。后补识别 = 关键词未命中（默认归通知前）时问 AI；唯一识别 = 每条消息都直接问 AI。"
                                TextWrapping="Wrap" Opacity="0.8"/>
                     <ComboBox SelectedIndex="{Binding MessageClassifyModeIndex}" MinWidth="180" HorizontalAlignment="Left">
                         <ComboBoxItem Content="关闭"/>
@@ -88,7 +88,7 @@
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="6">
                     <TextBlock Text="③ 无关键词消息兜底识别" FontWeight="SemiBold"/>
-                    <TextBlock Text="消息文本不含任何通知/作业关键词时（原本会被直接忽略），兜底走学科识别链：能可信判断学科的按作业归档，判断不了仍保持忽略。后补识别 = 先试学科关键词再 AI；唯一识别 = 直接 AI。"
+                    <TextBlock Text="消息文本不含任何通知/作业关键词时（默认会归为通知），先兜底走学科识别链：能可信判断学科的按作业归档，判断不了则落为通知。后补识别 = 先试学科关键词再 AI；唯一识别 = 直接 AI。"
                                TextWrapping="Wrap" Opacity="0.8"/>
                     <ComboBox SelectedIndex="{Binding NoKeywordFallbackModeIndex}" MinWidth="180" HorizontalAlignment="Left">
                         <ComboBoxItem Content="关闭"/>

@@ -77,14 +77,19 @@
                         </ContextMenu>
                       </TextBox.ContextMenu>
                     </TextBox>
+                    <!-- 需求 1：「已读」在上、「转为作业」在下，整体右对齐、间距紧凑（Spacing=2）。
+                         需求 2：「转为作业」的提示按通知是否已有学科区分（有学科直接继承，无学科提示先选择）。 -->
                     <StackPanel Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
-                                Orientation="Horizontal" Spacing="4" Margin="8,0,0,0">
+                                Orientation="Vertical" Spacing="2" Margin="8,0,0,0"
+                                HorizontalAlignment="Right" VerticalAlignment="Center">
                       <Button Content="{Binding ButtonText}"
-                              Click="OnRowActionButtonClick" Padding="8,3" />
+                              Click="OnRowActionButtonClick" Padding="8,3"
+                              HorizontalAlignment="Right" />
                       <Button Content="转为作业" Click="OnNoticeToHomeworkClick"
-                              Padding="8,3" FontSize="11" VerticalAlignment="Center"
+                              Padding="8,3" FontSize="11"
+                              HorizontalAlignment="Right"
                               Background="Transparent" BorderThickness="0"
-                              ToolTip.Tip="把该通知转为作业：选择学科后写入作业存档，通知存档移除" />
+                              ToolTip.Tip="{Binding ReclassifyTip}" />
                     </StackPanel>
                     <TextBlock Grid.Column="0" Grid.Row="1" Text="{Binding TimeText}"
                                FontSize="11" Opacity="0.5" Margin="0,4,0,0" />

@@ -9,8 +9,9 @@ using ClassIsland.Core.Attributes;
 namespace CyberTechRep.Plugin.Controls.SettingsPages;
 
 /// <summary>
-/// 悬浮窗设置页：通知/作业/学科文件三窗 + 学科圆圈启动器各自 X/Y/宽/高/透明度/字号/置顶/可见
-/// + 一键复位 + 开机随宿主；另含圆圈栏排列方向、视图模式、学科顺序与上课联动（预留）设置。
+/// 悬浮窗设置页：通知/作业/学科文件/圆圈启动器/未绑定学科选择/图片六窗各自
+/// X/Y/宽/高/透明度/字号/置顶/可见 + 一键复位 + 开机随宿主；另含圆圈栏排列方向、视图模式、
+/// 学科顺序与上课联动（含需求 10 的提前/推迟延时）设置、需求 9 的「收到图片自动展示」开关。
 /// 复位按钮：恢复默认位置设置，并在悬浮窗控制器已注册时同步复位窗口位置；
 /// 控制器未注册时仅复位设置值。
 /// </summary>
@@ -50,6 +51,10 @@ public partial class OverlaySettingsPage : CyberTechRepSettingsPageBase
     private void OnResetSelectionClicked(object? sender, RoutedEventArgs e)
         => ResetWindow(SuspensionWindowController.SubjectSelectionKey,
             () => Settings.Overlays.Selection = new OverlayWindowSettings { Visible = false, Width = 320, Height = 260 });
+
+    private void OnResetImageClicked(object? sender, RoutedEventArgs e)
+        => ResetWindow(SuspensionWindowController.ImageKey,
+            () => Settings.Overlays.Image = new OverlayWindowSettings { Visible = false, Width = 420, Height = 560 });
 
     private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 

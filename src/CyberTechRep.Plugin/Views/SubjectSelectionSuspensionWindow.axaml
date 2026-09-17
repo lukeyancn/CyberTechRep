@@ -28,6 +28,9 @@
           <TextBlock x:Name="SenderText" TextWrapping="Wrap" FontWeight="SemiBold" Text="发送者："/>
           <TextBlock x:Name="DigestText" TextWrapping="Wrap" Opacity="0.8" Text=""/>
           <TextBlock x:Name="ChainText" TextWrapping="Wrap" Opacity="0.6" FontSize="12" Text=""/>
+          <!-- 需求 7：待处理条数（多位老师同时发消息时按到达顺序逐条处理，无待处理时隐藏） -->
+          <TextBlock x:Name="PendingText" TextWrapping="Wrap" Opacity="0.75" FontSize="12"
+                     IsVisible="False" Text=""/>
           <TextBlock Text="点选该发送者的学科（此后其消息按此学科归档）：" TextWrapping="Wrap" Margin="0,4,0,0"/>
           <ItemsControl x:Name="SubjectList">
             <ItemsControl.ItemTemplate>
@@ -40,10 +43,14 @@
         </StackPanel>
       </ScrollViewer>
 
-      <!-- 角部缩放 Thumb -->
-      <Grid Grid.Row="2">
-        <Thumb x:Name="ResizeThumb" Width="16" Height="16" Margin="0,0,2,2"
-               HorizontalAlignment="Right" Opacity="0.4" DragDelta="OnResizeDragDelta">
+      <!-- 底部操作条（需求 7：跳过当前条，队列继续）+ 角部缩放 Thumb -->
+      <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="12,0,10,8">
+        <Button x:Name="SkipButton" Content="跳过（暂不绑定）" Click="OnSkipClick"
+                ToolTip.Tip="只跳过这一条，后面的会继续依次弹出"
+                HorizontalAlignment="Left" VerticalAlignment="Center"/>
+        <Thumb Grid.Column="1" x:Name="ResizeThumb" Width="16" Height="16" Margin="8,0,2,0"
+               HorizontalAlignment="Right" VerticalAlignment="Bottom" Opacity="0.4"
+               DragDelta="OnResizeDragDelta">
           <Thumb.Template>
             <ControlTemplate>
               <Border CornerRadius="2" Background="#40000000" />

@@ -13,7 +13,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CyberTechRep.Plugin.Views;
 
-/// <summary>学科文件悬浮窗条目视图（记录 + 关联图标）。</summary>
+/// <summary>学科文件悬浮窗条目视图（记录 + 图片缩略图或文件关联图标）。</summary>
 public sealed class SubjectFileItemView
 {
     public required FileRecord Record { get; init; }
@@ -24,6 +24,14 @@ public sealed class SubjectFileItemView
     public Bitmap? Icon { get; init; }
 
     public bool HasIcon => Icon is not null;
+
+    /// <summary>
+    /// 图片文件缩略图（非图片/提取失败为 null → 回落 <see cref="Icon"/> 或「📄」通用图标）。
+    /// 与 <see cref="Icon"/> 互斥：取到缩略图就不再提取关联图标。
+    /// </summary>
+    public Bitmap? Thumbnail { get; init; }
+
+    public bool HasThumbnail => Thumbnail is not null;
 }
 
 /// <summary>学科文件悬浮窗日期分组视图（组头为 yyyy-MM-dd）。</summary>
@@ -52,6 +60,12 @@ public partial class SubjectFilesSuspensionWindow : Window
 {
     /// <summary>FileUpdated 事件合并刷新的 debounce 间隔（与通知/作业悬浮窗一致）。</summary>
     internal static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>
+    /// 图片缩略图解码宽度（像素）：大图标模式图标区 88 逻辑像素 × 2 倍 DPI 余量；
+    /// 详细列表模式 22 逻辑像素复用同一张（显示时缩小），避免两种模式重复解码与双份缓存。
+    /// </summary>
+    private const int ThumbnailPixelWidth = 176;
 
     private readonly IFilePipelineService _pipeline = null!;
     private readonly Func<SubjectCircleBarSettings> _getCircleSettings = null!;
@@ -216,9 +230,26 @@ public partial class SubjectFilesSuspensionWindow : Window
 
     private SubjectFileItemView ToItemView(FileRecord record)
     {
-        Bitmap? icon = null;
         var path = record.ArchivedRelativePath is { } relative ? _resolveAbsolutePath(relative) : null;
-        if (path is not null && FileIconProvider.TryGetIconPng(path, record.FileName, out var png))
+
+        // 图片文件优先取缩略图（取到则不再提取关联图标，两者在 XAML 中互斥显示）；
+        // 失败时 thumbnail 为 null，保持下面现有图标/📄 兜底逻辑完全不变。
+        Bitmap? thumbnail = null;
+        if (path is not null
+            && ImageThumbnailProvider.TryGetThumbnailPng(path, ThumbnailPixelWidth, out var thumbnailPng))
+        {
+            try
+            {
+                thumbnail = new Bitmap(new MemoryStream(thumbnailPng));
+            }
+            catch
+            {
+                thumbnail = null;
+            }
+        }
+
+        Bitmap? icon = null;
+        if (thumbnail is null && path is not null && FileIconProvider.TryGetIconPng(path, record.FileName, out var png))
         {
             try
             {
@@ -230,7 +261,7 @@ public partial class SubjectFilesSuspensionWindow : Window
             }
         }
 
-        return new SubjectFileItemView { Record = record, Icon = icon };
+        return new SubjectFileItemView { Record = record, Icon = icon, Thumbnail = thumbnail };
     }
 
     private void OnOpenFileClick(object? sender, RoutedEventArgs e)

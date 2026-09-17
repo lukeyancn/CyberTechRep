@@ -64,6 +64,11 @@
                                      IsVisible="{Binding HasIcon}" />
                               <TextBlock Text="📄" FontSize="28" HorizontalAlignment="Center" VerticalAlignment="Center"
                                          IsVisible="{Binding !HasIcon}" />
+                              <!-- 图片文件缩略图：88×48 铺满裁切（圆角 4 + 极浅底色）；放在最后 → 显示时覆盖图标兜底 -->
+                              <Border Width="88" Height="48" CornerRadius="4" ClipToBounds="True"
+                                      Background="#FFF5F5F5" IsVisible="{Binding HasThumbnail}">
+                                <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
+                              </Border>
                             </Panel>
                             <TextBlock Text="{Binding FileName}" TextWrapping="Wrap" TextAlignment="Center"
                                        MaxHeight="34" TextTrimming="CharacterEllipsis" FontSize="12" />
@@ -96,6 +101,11 @@
                                      IsVisible="{Binding HasIcon}" />
                               <TextBlock Text="📄" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"
                                          IsVisible="{Binding !HasIcon}" />
+                              <!-- 图片文件缩略图：22×22 铺满裁切（圆角 3）；放在最后 → 显示时覆盖图标兜底 -->
+                              <Border Width="22" Height="22" CornerRadius="3" ClipToBounds="True"
+                                      Background="#FFF5F5F5" IsVisible="{Binding HasThumbnail}">
+                                <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
+                              </Border>
                             </Panel>
                             <TextBlock Grid.Column="1" Text="{Binding FileName}" TextWrapping="Wrap"
                                        Margin="6,0,0,0" VerticalAlignment="Top" />

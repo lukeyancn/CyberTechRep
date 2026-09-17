@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using CyberTechRep.Plugin.Services.Classification;
 using CyberTechRep.Plugin.Services.Maintenance;
 using CyberTechRep.Plugin.Services.Pipeline;
 using CyberTechRep.Plugin.Services.Stores;
@@ -349,6 +350,20 @@ public sealed class MessageDispatchServiceTests : IDisposable
         public void Raise(UpdateInfo info) => UpdateDetected?.Invoke(this, info);
     }
 
+    /// <summary>需求 6 用途③ 兜底识别假替身：Result = null 等价于「未启用（Off）/未得到可信学科」。</summary>
+    private sealed class FakeNoKeywordFallbackClassifier : INoKeywordFallbackClassifier
+    {
+        public SubjectResult? Result { get; set; }
+
+        public int CallCount { get; private set; }
+
+        public Task<SubjectResult?> ClassifyAsync(string text, string messageId, CancellationToken ct = default)
+        {
+            CallCount++;
+            return Task.FromResult(Result);
+        }
+    }
+
     // ============ 构造辅助 ============
 
     private static MessageRecord Message(string id, params MessageSegment[] segments) => new()
@@ -379,7 +394,10 @@ public sealed class MessageDispatchServiceTests : IDisposable
         FakeUpdateNotify? update = null,
         JsonPendingConfirmStore? pending = null,
         INoticeStore? noticesOverride = null,
-        ConnectionSettings? connectionSettings = null)
+        ConnectionSettings? connectionSettings = null,
+        INoKeywordFallbackClassifier? noKeywordFallback = null,
+        MemberSubjectBindingStore? memberBindings = null,
+        SubjectRecognitionSettings? subjectRecognitionSettings = null)
     {
         return new MessageDispatchService(
             ingest ?? new FakeIngestService(),
@@ -392,7 +410,13 @@ public sealed class MessageDispatchServiceTests : IDisposable
             update,
             pending,
             // 需求 1：撤回联动开关读取连接设置（null = 默认开启）
-            getConnectionSettings: connectionSettings is null ? null : () => connectionSettings);
+            getConnectionSettings: connectionSettings is null ? null : () => connectionSettings,
+            // 需求 3/6：默认通知的用途③ 兜底识别与成员绑定（未传 = 未接线/Keyword 模式，行为不变）
+            noKeywordFallback: noKeywordFallback,
+            memberBindings: memberBindings,
+            getSubjectRecognitionSettings: subjectRecognitionSettings is null
+                ? null
+                : () => subjectRecognitionSettings);
     }
 
     // ============ 用例 ============
@@ -416,6 +440,122 @@ public sealed class MessageDispatchServiceTests : IDisposable
         Assert.Equal("m1", item.MessageId);
         Assert.Equal("停课通知：明天放假", item.Content);
         Assert.False(item.IsRead);
+    }
+
+    // ============ 需求 3：未命中关键词默认通知 + 用途③ 兜底 ============
+
+    /// <summary>构造「未命中关键词默认通知」的分类结果（reason 带公共常量）。</summary>
+    private static Func<MessageRecord, ClassifiedMessage> NoKeywordHitNotice() => m => new ClassifiedMessage
+    {
+        Source = m, Kind = MessageKind.Notice, Confidence = 1.0,
+        MatchReason = KeywordMessageClassifier.NoKeywordHitNoticeReason
+    };
+
+    [Fact]
+    public async Task NoKeywordHitNotice_FallbackHits_WritesHomeworkAndReassignsFiles_NotNotice()
+    {
+        // 需求 3：未命中关键词的消息先给 AI 用途③ 兜底一次；命中可信学科 → 按作业归档，不写通知
+        var notices = new FakeNoticeStore();
+        var homework = new FakeHomeworkStore();
+        var files = new FakeFilePipeline();
+        var fallback = new FakeNoKeywordFallbackClassifier
+        {
+            Result = new SubjectResult { Subject = "生物", Confidence = 0.85, Source = SubjectSource.CloudLlm }
+        };
+        var dispatch = CreateDispatch(
+            classifier: new FakeClassifier { Handler = NoKeywordHitNotice() },
+            notices: notices, homework: homework, files: files,
+            noKeywordFallback: fallback);
+
+        var message = Message("m-nf-1",
+            Text("细胞的结构与功能请提前预习"),
+            new MessageSegment { Type = SegmentTypes.File, Url = "https://example.com/bio.pdf", FileName = "bio.pdf" });
+        await dispatch.ProcessMessageAsync(message);
+
+        var item = Assert.Single(homework.Items);
+        Assert.Equal("m-nf-1", item.MessageId);
+        Assert.Equal("生物", item.Subject);
+        Assert.Equal(SubjectSource.CloudLlm, item.SubjectSource);
+        Assert.Equal(1, fallback.CallCount);
+        Assert.Empty(notices.Items); // 兜底命中 → 不写默认通知
+        // 附件入队 + 按兜底学科二次归档（TryNoKeywordFallbackAsync 内部完成）
+        Assert.Single(files.EnqueueCalls);
+        Assert.Contains(files.ReassignCalls, c => c.FileId == item.AttachmentIds.Single() && c.Subject == "生物");
+        Assert.Contains(homework.DocumentAppendCalls, c => c.Subject == "生物");
+    }
+
+    [Fact]
+    public async Task NoKeywordHitNotice_FallbackDisabled_WritesNoticeAndKeepsMemberBindingPath()
+    {
+        // 需求 3：用途③ 未启用/未得到可信学科 → 落回通知路径；成员显式绑定的附件二次归档路径不变
+        var notices = new FakeNoticeStore();
+        var homework = new FakeHomeworkStore();
+        var files = new FakeFilePipeline();
+        var fallback = new FakeNoKeywordFallbackClassifier { Result = null }; // 等价于 Off 模式
+        var bindings = new MemberSubjectBindingStore(_dir);
+        bindings.Set("member-1", "物理");
+        var dispatch = CreateDispatch(
+            classifier: new FakeClassifier { Handler = NoKeywordHitNotice() },
+            notices: notices, homework: homework, files: files,
+            noKeywordFallback: fallback,
+            memberBindings: bindings,
+            subjectRecognitionSettings: new SubjectRecognitionSettings
+            {
+                Mode = SubjectRecognitionMode.MemberSelection,
+                SelectionWindowEnabled = false
+            });
+
+        var message = new MessageRecord
+        {
+            MessageId = "m-nf-2",
+            GroupOpenId = "group-1",
+            MemberOpenId = "member-1",
+            ReceivedAt = DateTimeOffset.Now,
+            Segments =
+            [
+                Text("明天记得带实验报告"),
+                new MessageSegment
+                {
+                    Type = SegmentTypes.File, Url = "https://example.com/report.pdf", FileName = "report.pdf"
+                }
+            ]
+        };
+        await dispatch.ProcessMessageAsync(message);
+
+        var item = Assert.Single(notices.Items);
+        Assert.Equal("m-nf-2", item.MessageId);
+        Assert.Equal("明天记得带实验报告", item.Content);
+        Assert.Empty(homework.Items);
+        Assert.Equal(1, fallback.CallCount);
+        // 通知分支的成员绑定附件二次归档照旧执行（路径不变）
+        Assert.Contains(files.ReassignCalls, c => c.Subject == "物理");
+    }
+
+    [Fact]
+    public async Task KeywordHitNotice_FallbackNotCalled()
+    {
+        // 正常关键词命中（含平局默认/人工换类）不触发兜底：只有「未命中默认通知」才给用途③ 机会
+        var notices = new FakeNoticeStore();
+        var homework = new FakeHomeworkStore();
+        var fallback = new FakeNoKeywordFallbackClassifier
+        {
+            Result = new SubjectResult { Subject = "生物", Confidence = 0.9, Source = SubjectSource.CloudLlm }
+        };
+        var dispatch = CreateDispatch(
+            classifier: new FakeClassifier
+            {
+                Handler = m => new ClassifiedMessage
+                {
+                    Source = m, Kind = MessageKind.Notice, Confidence = 1.0, MatchReason = "notice_hit=[通知]"
+                }
+            },
+            notices: notices, homework: homework, noKeywordFallback: fallback);
+
+        await dispatch.ProcessMessageAsync(Message("m-nf-3", Text("停课通知：明天放假")));
+
+        Assert.Single(notices.Items);
+        Assert.Empty(homework.Items);
+        Assert.Equal(0, fallback.CallCount);
     }
 
     [Fact]

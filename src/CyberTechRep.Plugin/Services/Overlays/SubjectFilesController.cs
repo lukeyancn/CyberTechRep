@@ -33,6 +33,14 @@ public sealed class SubjectFilesController
     /// </summary>
     private string? _autoOpenedSubject;
 
+    /// <summary>
+    /// 某学科的文件内容已展示给用户（真正显示/原地切换成功后触发，参数为学科名）：
+    /// 圆圈栏订阅后清除该学科「有新文件」小红点。<see cref="ToggleOrSwitchAsync"/> 的
+    /// 隐藏分支（同学科已显示 → 隐藏）与显示失败不触发；<see cref="OpenForClassAsync"/>
+    /// 的上课联动打开同样触发（重入显示也视为内容已展示）。
+    /// </summary>
+    public event EventHandler<string>? SubjectFilesShown;
+
     public SubjectFilesController(
         ISuspensionWindowController overlays,
         ISettingsService settingsService,
@@ -80,6 +88,7 @@ public sealed class SubjectFilesController
             window.ApplyViewMode();
             _autoOpenedSubject = null;
             await _overlays.ShowAsync(key);
+            RaiseSubjectFilesShown(subject);
             _logger.LogInformation("圆圈点击：文件悬浮窗切换到学科 {Subject}", subject);
         }
         catch (Exception ex)
@@ -101,6 +110,7 @@ public sealed class SubjectFilesController
             window.ApplyViewMode();
             _autoOpenedSubject = subject;
             await _overlays.ShowAsync(SuspensionWindowController.FilesKey);
+            RaiseSubjectFilesShown(subject);
             _logger.LogInformation("上课联动：文件悬浮窗已弹出并切换到学科 {Subject}", subject);
         }
         catch (Exception ex)
@@ -156,4 +166,20 @@ public sealed class SubjectFilesController
                 _logger.LogError(ex, "圆圈顺序持久化失败（内存态保留）");
             }
         });
+
+    /// <summary>
+    /// 触发「学科文件已展示」事件：仅为通知圆圈栏清除未读红点，订阅者异常不影响控制器主流程。
+    /// 调用点均在 <see cref="Dispatcher.UIThread"/> 上（两入口内部已调度），订阅者可直接改 UI 状态。
+    /// </summary>
+    private void RaiseSubjectFilesShown(string subject)
+    {
+        try
+        {
+            SubjectFilesShown?.Invoke(this, subject);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "「学科文件已展示」事件订阅者异常（已吞掉）Subject={Subject}", subject);
+        }
+    }
 }

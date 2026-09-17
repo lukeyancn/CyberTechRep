@@ -159,6 +159,38 @@
                 </StackPanel>
             </Expander>
 
+            <!-- 图片悬浮窗（第六悬浮窗，需求 9：收到图片自动展示） -->
+            <Expander Header="图片悬浮窗（收到图片自动展示）" IsExpanded="False">
+                <StackPanel Spacing="10" Margin="0,6">
+                    <TextBlock Text="群里发来的图片归档后自动加入此悬浮窗，按到达顺序累积展示（最多 20 张，超出丢弃最旧），新图到达时自动滚动到可见位置；标题栏「打开」用系统默认图片查看器打开当前正在看的图片。本开关只控制收到图片是否自动展示；该悬浮窗是否显示由下面的「显示悬浮窗」控制。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <ToggleSwitch Content="收到图片自动展示（关闭后图片照常归档，只是不自动弹出）"
+                                  IsChecked="{Binding Settings.Overlays.ImageAutoShowOnReceive}"/>
+                    <TextBlock Text="X（逻辑坐标 DIP）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Image.X}" Minimum="-10000" Maximum="10000"/>
+                    <TextBlock Text="Y（逻辑坐标 DIP）"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Image.Y}" Minimum="-10000" Maximum="10000"/>
+                    <TextBlock Text="宽度"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Image.Width}" Minimum="80" Maximum="4000"/>
+                    <TextBlock Text="高度"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Image.Height}" Minimum="80" Maximum="4000"/>
+                    <TextBlock Text="透明度（0.1~1.0）"/>
+                    <Slider Minimum="0.1" Maximum="1" Value="{Binding Settings.Overlays.Image.Opacity}"
+                            TickFrequency="0.05"/>
+                    <TextBlock Text="字号"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.Image.FontSize}" Minimum="8" Maximum="72"/>
+                    <ToggleSwitch Content="置顶（浮在所有窗口之上，关闭时钉在桌面层）"
+                                  IsChecked="{Binding Settings.Overlays.Image.Topmost}"/>
+                    <ToggleSwitch Content="固定（禁用拖拽缩放，点击不抢焦点）"
+                                  IsChecked="{Binding Settings.Overlays.Image.Pinned}"/>
+                    <ToggleSwitch Content="鼠标穿透（点击直接穿过悬浮窗）"
+                                  IsChecked="{Binding Settings.Overlays.Image.ClickThrough}"/>
+                    <ToggleSwitch Content="显示悬浮窗（默认隐藏，收到图片自动展示仅负责弹出）"
+                                  IsChecked="{Binding Settings.Overlays.Image.Visible}"/>
+                    <Button Content="复位图片悬浮窗" Click="OnResetImageClicked" HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Expander>
+
             <!-- 圆圈栏行为 / 联动 -->
             <Expander Header="圆圈栏排列与文件悬浮窗联动" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
@@ -176,6 +208,11 @@
                     </ComboBox>
                     <ToggleSwitch Content="上课时自动弹出对应学科文件悬浮窗"
                                   IsChecked="{Binding Settings.Overlays.SubjectCircle.AutoOpenWithClass}"/>
+                    <TextBlock Text="上课联动延时（秒）：正数 = 上课后推迟 N 秒弹出；负数 = 上课前提前 |N| 秒弹出；0 = 准点（默认识别到上课立即弹出）。仅在「上课时自动弹出对应学科文件悬浮窗」开启时生效。"
+                               TextWrapping="Wrap" Opacity="0.75"/>
+                    <NumericUpDown Value="{Binding Settings.Overlays.SubjectCircle.AutoOpenDelaySeconds}"
+                                   Minimum="-600" Maximum="600" Increment="5" FormatString="0"
+                                   HorizontalAlignment="Left" MinWidth="140"/>
                     <TextBlock Text="学科顺序：圆圈栏展示「固定七学科 + 文件归档中出现过的学科」。调整方式：在悬浮窗里右键圆圈选「上移/下移」；也可在下方编辑（每行一个学科名，未列出的按固定顺序追加）。"
                                TextWrapping="Wrap" Opacity="0.75"/>
                     <TextBox x:Name="OrderTextBox" AcceptsReturn="True" MinHeight="120" MaxHeight="260"

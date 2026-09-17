@@ -19,6 +19,12 @@ public sealed class SubjectSelectionViewData
 
     public string ChainText { get; init; } = "";
 
+    /// <summary>待处理条数提示文本（需求 7：无待处理时为空串且不可见）。</summary>
+    public string PendingText { get; init; } = "";
+
+    /// <summary>待处理条数提示是否可见（0 条时隐藏）。</summary>
+    public bool PendingVisible { get; init; }
+
     public IReadOnlyList<string> Subjects { get; init; } = [];
 }
 
@@ -30,6 +36,12 @@ public static class SubjectSelectionLogic
 {
     /// <summary>消息摘要最大长度（超出截断加省略号）。</summary>
     public const int DigestMaxLength = 120;
+
+    /// <summary>
+    /// 「跳过（暂不绑定）」约定（需求 7）：点选回调的学科参数为空串 = 不写任何绑定，直接推进队列。
+    /// 窗口不新增回调（保持构造签名不变），经既有 <c>onSubjectSelected</c> 回调传递该约定。
+    /// </summary>
+    public const string SkipSubject = "";
 
     public static string FormatSender(string memberOpenId, string senderNickname, string groupOpenId)
     {
@@ -49,6 +61,10 @@ public static class SubjectSelectionLogic
             ? "识别链候选：无（本消息不经学科识别链）"
             : $"识别链候选：{chainSubject}（置信度 {chainConfidence:0.00}）";
     }
+
+    /// <summary>待处理条数提示文案（需求 7）：让用户知道后面还有多少条会依次弹出。</summary>
+    public static string FormatPendingCount(int pendingCount) =>
+        $"待处理 {Math.Max(0, pendingCount)} 条（按到达顺序逐条处理）";
 
     /// <summary>
     /// 点选学科列表：识别链候选（非未分类）置顶并标注，其余按 subjects.json 规则顺序去重追加。
@@ -80,11 +96,13 @@ public static class SubjectSelectionLogic
 }
 
 /// <summary>
-/// 未绑定学科选择悬浮窗（第五悬浮窗，需求 3）：消息需要学科分类但发送者未绑定学科时，
-/// 由 <see cref="SubjectSelectionCoordinator"/> 装载触发请求并经
+/// 未绑定学科选择悬浮窗（第五悬浮窗，需求 3 + 需求 7）：消息需要学科分类但发送者未绑定学科时，
+/// 由 <see cref="SubjectSelectionCoordinator"/> 按到达顺序装载触发请求并经
 /// <see cref="Services.Overlays.SuspensionWindowController"/>（与其他悬浮窗同一路径）显示。
-/// 展示发送者昵称/成员与群 OpenID、消息摘要、识别链候选；用户点选学科后经协调器写回
-/// 成员绑定存储并修正该消息作业，窗口随即隐藏（Show/Hide 可见性由控制器同步回设置）。
+/// 展示发送者昵称/成员与群 OpenID、消息摘要、识别链候选与待处理条数；用户点选学科后经协调器
+/// 写回成员绑定存储并修正该消息作业，然后由协调器决定「装载下一条」或「收起窗口」。
+/// 需求 7：窗口一次只展示队首请求——后面的请求排队等待，绝不覆盖本窗口内容；
+/// 底部「跳过（暂不绑定）」只丢弃当前条（不写任何绑定），后续请求继续依次弹出。
 /// </summary>
 [SupportedOSPlatform("windows")]
 public partial class SubjectSelectionSuspensionWindow : Window
@@ -95,8 +113,14 @@ public partial class SubjectSelectionSuspensionWindow : Window
     /// <summary>subjects.json 学科名单提供者（点选学科列表数据源；null 时无候选）。</summary>
     private readonly Func<IReadOnlyList<string>>? _ruleSubjectsProvider;
 
-    /// <summary>用户点选学科回调（由协调器注入；参数 = 触发请求 + 所选学科）。</summary>
+    /// <summary>
+    /// 用户点选学科回调（由协调器注入；参数 = 触发请求 + 所选学科）。
+    /// 学科为空串表示「跳过（暂不绑定）」（见 <see cref="SubjectSelectionLogic.SkipSubject"/>）。
+    /// </summary>
     private readonly Func<SubjectSelectionRequest, string, Task>? _onSubjectSelected;
+
+    /// <summary>回调处理中标记：等待写回/推进期间忽略重复点击，避免同一请求重复推进队列。</summary>
+    private bool _submitting;
 
     public SubjectSelectionSuspensionWindow()
     {
@@ -116,7 +140,10 @@ public partial class SubjectSelectionSuspensionWindow : Window
     /// <summary>当前展示的请求（测试用）。</summary>
     internal SubjectSelectionRequest? CurrentRequest => _currentRequest;
 
-    /// <summary>装载触发请求并刷新展示（显示由控制器负责；本方法只改内容）。</summary>
+    /// <summary>
+    /// 装载队首触发请求并刷新展示（显示由控制器负责；本方法只改内容）。
+    /// 需求 7：只由协调器在「队列推进到下一条」时调用，绝不覆盖正在处理中的请求。
+    /// </summary>
     public void ShowRequest(SubjectSelectionRequest request)
     {
         _currentRequest = request ?? throw new ArgumentNullException(nameof(request));
@@ -126,6 +153,18 @@ public partial class SubjectSelectionSuspensionWindow : Window
         DigestText.Text = SubjectSelectionLogic.FormatDigest(request.MessageDigest);
         ChainText.Text = SubjectSelectionLogic.FormatChain(request.ChainSubject, request.ChainConfidence);
         SubjectList.ItemsSource = subjects;
+        // 待处理条数由协调器装载后立即刷新；先清零避免短暂显示上一条的残留计数
+        UpdatePendingCount(0);
+    }
+
+    /// <summary>
+    /// 刷新「待处理 N 条」提示（需求 7）：count &gt; 0 时显示，0 条时隐藏（当前仅此一条）。
+    /// </summary>
+    public void UpdatePendingCount(int pendingCount)
+    {
+        var count = Math.Max(0, pendingCount);
+        PendingText.Text = SubjectSelectionLogic.FormatPendingCount(count);
+        PendingText.IsVisible = count > 0;
     }
 
     /// <summary>当前展示内容快照（测试用）。</summary>
@@ -134,17 +173,28 @@ public partial class SubjectSelectionSuspensionWindow : Window
         SenderText = SenderText.Text ?? "",
         DigestText = DigestText.Text ?? "",
         ChainText = ChainText.Text ?? "",
+        PendingText = PendingText.Text ?? "",
+        PendingVisible = PendingText.IsVisible,
         Subjects = SubjectList?.ItemsSource?.Cast<string>().ToList() ?? []
     };
 
-    /// <summary>点选学科（用户点击按钮与测试共用的入口）：回调写回后隐藏窗口。</summary>
-    internal async Task SelectSubjectAsync(string subject)
+    /// <summary>
+    /// 点选学科（用户点击按钮与测试共用的入口）：回调写回后**不**自行隐藏——
+    /// 需求 7 由协调器决定「装载下一条（内容替换）或收起窗口」，避免隐藏后队列停在无人可见的条目上。
+    /// </summary>
+    internal Task SelectSubjectAsync(string subject) => InvokeSelectionCallbackAsync(subject);
+
+    /// <summary>「跳过（暂不绑定）」：经既有回调以空学科通知协调器（不写绑定，直接推进队列）。</summary>
+    internal Task SkipAsync() => InvokeSelectionCallbackAsync(SubjectSelectionLogic.SkipSubject);
+
+    private async Task InvokeSelectionCallbackAsync(string subject)
     {
-        if (_currentRequest is null)
+        if (_currentRequest is null || _submitting)
         {
             return;
         }
 
+        _submitting = true;
         try
         {
             if (_onSubjectSelected is not null)
@@ -154,11 +204,11 @@ public partial class SubjectSelectionSuspensionWindow : Window
         }
         catch
         {
-            // 写回失败不阻断窗口隐藏（协调器侧已记日志；用户可在设置页/词表页手工补绑定）
+            // 写回/推进失败不阻断窗口（协调器侧已记日志；用户可在设置页/词表页手工补绑定）
         }
         finally
         {
-            Hide();
+            _submitting = false;
         }
     }
 
@@ -175,6 +225,11 @@ public partial class SubjectSelectionSuspensionWindow : Window
         {
             await SelectSubjectAsync(subject);
         }
+    }
+
+    private async void OnSkipClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        await SkipAsync();
     }
 
     private void OnHeaderPointerPressed(object? sender, PointerPressedEventArgs e)

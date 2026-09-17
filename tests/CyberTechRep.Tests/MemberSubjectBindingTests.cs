@@ -839,9 +839,113 @@ public sealed class SubjectSelectionLogicTests
     }
 }
 
-/// <summary>需求 3：选择悬浮窗 UI 装载与默认可见性（第五悬浮窗不随宿主显示）。</summary>
+/// <summary>需求 7：选择待处理队列（FIFO / 去重 / 上限淘汰 / 计数，纯逻辑）。</summary>
+public sealed class SubjectSelectionQueueTests
+{
+    private static SubjectSelectionRequest Make(string messageId, string memberOpenId = "member-1") => new(
+        messageId, memberOpenId, "数学老师", "group-1", "作业内容",
+        "数学", 0.95, SubjectSource.KeywordRule, DateTimeOffset.Now);
+
+    [Fact]
+    public void Enqueue_Fifo_OrderAndCounts()
+    {
+        var queue = new SubjectSelectionQueue();
+        queue.Enqueue(Make("m1"));
+        queue.Enqueue(Make("m2"));
+        queue.Enqueue(Make("m3"));
+
+        Assert.Equal(3, queue.PendingCount);
+        Assert.False(queue.IsDisplaying);
+
+        // 出队 → 标记为正在显示；当前条不计入待处理条数
+        Assert.True(queue.TryBeginDisplay(out var first));
+        Assert.Equal("m1", first!.MessageId);
+        Assert.Equal(2, queue.PendingCount);
+        Assert.True(queue.IsDisplaying);
+        Assert.Equal("m1", queue.Current!.MessageId);
+
+        // 已有正在显示：不再出队（不覆盖内容）
+        Assert.False(queue.TryBeginDisplay(out var blocked));
+        Assert.Null(blocked);
+
+        Assert.True(queue.TryComplete(first));
+        Assert.False(queue.IsDisplaying);
+
+        Assert.True(queue.TryBeginDisplay(out var second));
+        Assert.Equal("m2", second!.MessageId);
+        Assert.Equal(1, queue.PendingCount);
+        Assert.True(queue.TryComplete(second));
+
+        Assert.True(queue.TryBeginDisplay(out var third));
+        Assert.Equal("m3", third!.MessageId);
+        Assert.Equal(0, queue.PendingCount);
+        Assert.True(queue.TryComplete(third));
+
+        Assert.False(queue.TryBeginDisplay(out _));
+        Assert.Equal(0, queue.PendingCount);
+    }
+
+    [Fact]
+    public void Enqueue_DuplicateMessageId_NotQueuedTwice()
+    {
+        var queue = new SubjectSelectionQueue();
+        Assert.True(queue.Enqueue(Make("m1")).Enqueued);
+        Assert.False(queue.Enqueue(Make("m1")).Enqueued);
+        Assert.True(queue.Enqueue(Make("m1")).IsDuplicate);
+        Assert.Equal(1, queue.PendingCount);
+
+        // 正在显示的条目同样判重（用户尚未处理完，不重复排队）
+        Assert.True(queue.TryBeginDisplay(out var current));
+        Assert.False(queue.Enqueue(Make("m1")).Enqueued);
+
+        // 处理完成后同一 MessageId 可重新入队（例如消息重投递）
+        Assert.True(queue.TryComplete(current!));
+        Assert.True(queue.Enqueue(Make("m1")).Enqueued);
+        Assert.Equal(1, queue.PendingCount);
+    }
+
+    [Fact]
+    public void Enqueue_OverCapacity_EvictsOldest()
+    {
+        var queue = new SubjectSelectionQueue();
+        for (var i = 0; i < SubjectSelectionQueue.Capacity; i++)
+        {
+            Assert.Null(queue.Enqueue(Make($"m{i}")).Evicted);
+        }
+
+        Assert.Equal(SubjectSelectionQueue.Capacity, queue.PendingCount);
+
+        var overflow = queue.Enqueue(Make("overflow"));
+        Assert.True(overflow.Enqueued);
+        Assert.Equal("m0", overflow.Evicted!.MessageId); // 丢弃最旧
+        Assert.Equal(SubjectSelectionQueue.Capacity, queue.PendingCount);
+
+        // 队首变为 m1；被淘汰者不再判重，可重新入队
+        Assert.True(queue.TryBeginDisplay(out var first));
+        Assert.Equal("m1", first!.MessageId);
+        Assert.True(queue.Enqueue(Make("m0")).Enqueued);
+    }
+
+    [Fact]
+    public void TryComplete_StaleRequest_DoesNotAdvance()
+    {
+        var queue = new SubjectSelectionQueue();
+        queue.Enqueue(Make("m1"));
+        Assert.True(queue.TryBeginDisplay(out var current));
+
+        Assert.False(queue.TryComplete(Make("m2"))); // 非当前条：忽略，避免错序推进
+        Assert.True(queue.IsDisplaying);
+
+        Assert.True(queue.TryComplete(current!));
+        Assert.False(queue.IsDisplaying);
+        Assert.False(queue.TryComplete(current));    // 已完成条目不可重复完成
+    }
+}
+
+/// <summary>需求 3/7：选择悬浮窗 UI 装载、待处理计数与「跳过」约定（第五悬浮窗不随宿主显示）。</summary>
 public sealed class SubjectSelectionWindowTests
-{    [Fact]
+{
+    [Fact]
     public void SelectionWindow_DefaultsHidden_DoesNotLaunchWithHost()
     {
         var settings = new CyberTechRep.Shared.Models.OverlaySettings();
@@ -851,7 +955,7 @@ public sealed class SubjectSelectionWindowTests
     }
 
     [Fact]
-    public Task ShowRequest_PopulatesView_AndChoiceCallbackHidesWindow()
+    public Task ShowRequest_PopulatesView_AndChoiceCallbackInvoked()
     {
         return AvaloniaTestSetup.Session.Dispatch(async () =>
         {
@@ -871,18 +975,63 @@ public sealed class SubjectSelectionWindowTests
                 "今天的数学作业是第 3 页", HomeworkSubjectResolver.Unclassified, 0,
                 SubjectSource.Manual, DateTimeOffset.Now);
             window.ShowRequest(request);
+            window.UpdatePendingCount(2); // 后面还有两位老师排队
 
             var view = window.CaptureView();
             Assert.Contains("数学老师", view.SenderText);
             Assert.Contains("member-1", view.SenderText);
             Assert.Contains("数学作业", view.DigestText);
             Assert.Equal(["数学", "语文"], view.Subjects);
+            Assert.Contains("待处理 2 条", view.PendingText);
+            Assert.True(view.PendingVisible);
 
-            // 点选学科 → 回调收到（请求, 学科），窗口隐藏（可见性由控制器同步回设置）
+            // 点选学科 → 回调收到（请求, 学科）；窗口不再自行隐藏：
+            // 需求 7 由协调器决定「装载下一条（内容替换）或收起窗口」
             await window.SelectSubjectAsync("数学");
             Assert.Equal("数学", await selected.Task);
             Assert.Equal("msg-1", received!.MessageId);
-            Assert.False(window.IsVisible);
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task UpdatePendingCount_Zero_HidesHint()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(() =>
+        {
+            var window = new SubjectSelectionSuspensionWindow(null, () => ["数学"]);
+            window.ShowRequest(new SubjectSelectionRequest(
+                "msg-1", "member-1", "老师", "group-1", "作业", "数学", 0.9,
+                SubjectSource.KeywordRule, DateTimeOffset.Now));
+
+            window.UpdatePendingCount(0);
+
+            var view = window.CaptureView();
+            Assert.Contains("待处理 0 条", view.PendingText);
+            Assert.False(view.PendingVisible);
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task SkipButton_InvokesCallbackWithEmptySubject()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(async () =>
+        {
+            var skippedSubject = new TaskCompletionSource<string>();
+            var window = new SubjectSelectionSuspensionWindow(
+                (_, subject) =>
+                {
+                    skippedSubject.SetResult(subject);
+                    return Task.CompletedTask;
+                },
+                () => ["数学"]);
+
+            window.ShowRequest(new SubjectSelectionRequest(
+                "msg-1", "member-1", "老师", "group-1", "作业", "数学", 0.9,
+                SubjectSource.KeywordRule, DateTimeOffset.Now));
+
+            // 跳过 = 空学科：协调器据此不写任何绑定、直接推进队列
+            await window.SkipAsync();
+            Assert.Equal(SubjectSelectionLogic.SkipSubject, await skippedSubject.Task);
         }, CancellationToken.None);
     }
 }
@@ -945,9 +1094,24 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
 
     // ============ ShowAsync UI 线程接线（2026-09-06 真机缺陷：后台线程构造窗口异常被静默吞掉）============
 
-    private static SubjectSelectionRequest MakeRequest() => new(
-        "msg-1", "member-1", "数学老师", "group-1", "作业内容",
+    private static SubjectSelectionRequest MakeRequest(
+        string messageId = "msg-1", string digest = "作业内容", string memberOpenId = "member-1") => new(
+        messageId, memberOpenId, "数学老师", "group-1", digest,
         "数学", 0.95, SubjectSource.KeywordRule, DateTimeOffset.Now);
+
+    /// <summary>同步 UI 线程调度替身（测试体已运行在 Avalonia Headless 会话的 UI 线程上）。</summary>
+    private static Func<Action, Task> SynchronousMarshal => action =>
+    {
+        action();
+        return Task.CompletedTask;
+    };
+
+    /// <summary>测试收尾：关闭窗口并排空挂起的渲染任务（避免会话销毁时字体管理器已释放的宿主副作用）。</summary>
+    private static void Finish(Window window)
+    {
+        window.Close();
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+    }
 
     [Fact]
     public async Task ShowAsync_WindowAccessorThrows_IsSwallowedAndLogged()
@@ -955,19 +1119,19 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
         // 此前 windowAccessor() 位于 try 之外：后台线程抛异常 → fire-and-forget 静默失败，窗口永不显示
         var coordinator = new SubjectSelectionCoordinator(
             windowAccessor: () => throw new InvalidOperationException("Call from invalid thread"),
-            uiMarshal: action => { action(); return Task.CompletedTask; });
+            uiMarshal: SynchronousMarshal);
 
         await coordinator.ShowAsync(MakeRequest()); // 不抛：失败只留日志
     }
 
     [Fact]
-    public async Task ShowAsync_LoadsRequestViaUiMarshal_AndShowsThroughController()
+    public Task ShowAsync_LoadsRequestViaUiMarshal_AndShowsThroughController()
     {
-        var shownKeys = new List<string>();
-        var controller = new ControllerStub(k => shownKeys.Add(k));
-        await AvaloniaTestSetup.Session.Dispatch(async () =>
+        return AvaloniaTestSetup.Session.Dispatch(async () =>
         {
             var window = new SubjectSelectionSuspensionWindow(null, () => ["数学", "语文"]);
+            var shownKeys = new List<string>();
+            var controller = new ControllerStub(k => shownKeys.Add(k), window: window);
             var marshalCalls = 0;
             var coordinator = new SubjectSelectionCoordinator(
                 controller: controller,
@@ -979,25 +1143,237 @@ public sealed class SubjectSelectionCoordinatorTests : IDisposable
                     return Task.CompletedTask;
                 });
 
-            await coordinator.ShowAsync(MakeRequest());
+            try
+            {
+                await coordinator.ShowAsync(MakeRequest());
 
-            // 请求内容已装载（经 UI 线程），控制器按 subjectSelection key 显示
-            Assert.Equal(1, marshalCalls);
-            Assert.Contains("作业内容", window.CaptureView().DigestText);
+                // 请求内容已装载（经 UI 线程），控制器按 subjectSelection key 显示
+                Assert.Equal(1, marshalCalls);
+                Assert.Contains("作业内容", window.CaptureView().DigestText);
+                Assert.Equal(["subjectSelection"], shownKeys);
+                Assert.True(window.IsVisible);
+            }
+            finally
+            {
+                Finish(window);
+            }
         }, CancellationToken.None);
-        Assert.Equal(["subjectSelection"], shownKeys);
     }
 
-    /// <summary>控制器替身：记录 ShowAsync 调用的 overlayKey。</summary>
-    private sealed class ControllerStub(Action<string> onShow) : ISuspensionWindowController
+    // ============ 需求 7：FIFO 排队逐条处理（后到不覆盖先到、一条都不丢）============
+
+    [Fact]
+    public Task ShowAsync_TwoRequests_FirstStaysOnTop_SecondQueuedWithCount()
     {
+        return AvaloniaTestSetup.Session.Dispatch(async () =>
+        {
+            var window = new SubjectSelectionSuspensionWindow(null, () => ["数学", "语文"]);
+            var controller = new ControllerStub(_ => { }, window: window);
+            var coordinator = new SubjectSelectionCoordinator(
+                controller: controller,
+                windowAccessor: () => window,
+                uiMarshal: SynchronousMarshal);
+
+            try
+            {
+                await coordinator.ShowAsync(MakeRequest("msg-1", "第一位老师：数学作业 P1"));
+                await coordinator.ShowAsync(MakeRequest("msg-2", "第二位老师：语文作业 P2", "member-2"));
+
+                // 先到者仍在显示（内容未被覆盖），后到者排队；窗口提示待处理 1 条
+                Assert.Equal("msg-1", window.CurrentRequest!.MessageId);
+                var view = window.CaptureView();
+                Assert.Contains("数学作业 P1", view.DigestText);
+                Assert.Contains("待处理 1 条", view.PendingText);
+                Assert.True(view.PendingVisible);
+
+                // 窗口已显示：后到请求不重复 Show，也不收起
+                Assert.Equal(["subjectSelection"], controller.ShownKeys);
+                Assert.Empty(controller.HiddenKeys);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task ApplySelection_AdvancesQueue_ShowsNext_ThenHidesWhenDrained()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(async () =>
+        {
+            var bindings = new MemberSubjectBindingStore(_dir);
+            SubjectSelectionCoordinator? coordinator = null;
+            var window = new SubjectSelectionSuspensionWindow(
+                (request, subject) => coordinator!.ApplySelectionAsync(request, subject),
+                () => ["数学", "语文"]);
+            var controller = new ControllerStub(_ => { }, window: window);
+            coordinator = new SubjectSelectionCoordinator(
+                controller: controller,
+                windowAccessor: () => window,
+                memberBindings: bindings,
+                uiMarshal: SynchronousMarshal);
+
+            try
+            {
+                await coordinator.ShowAsync(MakeRequest("msg-1", "第一条：数学作业", "member-1"));
+                await coordinator.ShowAsync(MakeRequest("msg-2", "第二条：语文作业", "member-2"));
+                Assert.Equal("msg-1", window.CurrentRequest!.MessageId);
+
+                // 选完第一条（写回 member-1）→ 第二条自动显示，待处理减为 0
+                await window.SelectSubjectAsync("数学");
+                Assert.Equal("数学", bindings.GetSubject("member-1"));
+                Assert.Equal("msg-2", window.CurrentRequest!.MessageId);
+                var view = window.CaptureView();
+                Assert.Contains("第二条", view.DigestText);
+                Assert.Contains("待处理 0 条", view.PendingText);
+                Assert.False(view.PendingVisible);
+                Assert.Empty(controller.HiddenKeys); // 还有待处理：不收起
+
+                // 处理完最后一条 → 经控制器收起窗口
+                await window.SelectSubjectAsync("语文");
+                Assert.Equal("语文", bindings.GetSubject("member-2"));
+                Assert.Equal(["subjectSelection"], controller.HiddenKeys);
+                Assert.False(window.IsVisible);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task Skip_AdvancesQueue_WithoutWritingBinding()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(async () =>
+        {
+            var bindings = new MemberSubjectBindingStore(_dir);
+            SubjectSelectionCoordinator? coordinator = null;
+            var window = new SubjectSelectionSuspensionWindow(
+                (request, subject) => coordinator!.ApplySelectionAsync(request, subject),
+                () => ["数学", "语文"]);
+            var controller = new ControllerStub(_ => { }, window: window);
+            coordinator = new SubjectSelectionCoordinator(
+                controller: controller,
+                windowAccessor: () => window,
+                memberBindings: bindings,
+                uiMarshal: SynchronousMarshal);
+
+            try
+            {
+                var first = MakeRequest("msg-1", "第一条", "member-1");
+                var second = MakeRequest("msg-2", "第二条", "member-2");
+                await coordinator.ShowAsync(first);
+                await coordinator.ShowAsync(second);
+
+                // 跳过第一条（窗口按钮路径：空学科回调）：不写任何绑定，第二条继续弹出
+                //（否则队列会卡死，后面的老师永远轮不到）
+                await window.SkipAsync();
+                Assert.False(bindings.TryGetSubject("member-1", null, out _));
+                Assert.Equal("msg-2", window.CurrentRequest!.MessageId);
+
+                // 跳过最后一条（协调器公开入口）→ 收起窗口
+                await coordinator.SkipAsync(second);
+                Assert.False(bindings.TryGetSubject("member-2", null, out _));
+                Assert.Equal(["subjectSelection"], controller.HiddenKeys);
+                Assert.False(window.IsVisible);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task ShowAsync_DuplicateMessageId_QueuedOnlyOnce()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(async () =>
+        {
+            var window = new SubjectSelectionSuspensionWindow(null, () => ["数学"]);
+            var controller = new ControllerStub(_ => { }, window: window);
+            var coordinator = new SubjectSelectionCoordinator(
+                controller: controller,
+                windowAccessor: () => window,
+                uiMarshal: SynchronousMarshal);
+
+            try
+            {
+                var request = MakeRequest("msg-1", "同一条消息重复触发");
+                await coordinator.ShowAsync(request);
+                await coordinator.ShowAsync(request);
+
+                Assert.Equal("msg-1", window.CurrentRequest!.MessageId);
+                Assert.Equal(["subjectSelection"], controller.ShownKeys);
+                var view = window.CaptureView();
+                Assert.Contains("待处理 0 条", view.PendingText);
+                Assert.False(view.PendingVisible);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public Task ShowAsync_WindowHiddenByUser_ReShowsCurrentRequest()
+    {
+        return AvaloniaTestSetup.Session.Dispatch(async () =>
+        {
+            var window = new SubjectSelectionSuspensionWindow(null, () => ["数学"]);
+            var controller = new ControllerStub(_ => { }, window: window);
+            var coordinator = new SubjectSelectionCoordinator(
+                controller: controller,
+                windowAccessor: () => window,
+                uiMarshal: SynchronousMarshal);
+
+            try
+            {
+                await coordinator.ShowAsync(MakeRequest("msg-1", "第一条"));
+                window.Hide(); // 用户点 × 收起（标题栏语义：下次触发自动再弹出）
+                Assert.False(window.IsVisible);
+
+                await coordinator.ShowAsync(MakeRequest("msg-2", "第二条"));
+
+                // 队列不停在「正在显示但窗口不可见」：重新弹出当前条并刷新计数，第一条不会丢
+                Assert.True(window.IsVisible);
+                Assert.Equal("msg-1", window.CurrentRequest!.MessageId);
+                Assert.Contains("待处理 1 条", window.CaptureView().PendingText);
+                Assert.Equal(["subjectSelection", "subjectSelection"], controller.ShownKeys);
+            }
+            finally
+            {
+                Finish(window);
+            }
+        }, CancellationToken.None);
+    }
+
+    /// <summary>控制器替身：记录 ShowAsync/HideAsync 调用的 overlayKey；
+    /// 传入窗口时同步执行真实 Show/Hide（等价真实控制器行为，供队列推进用例断言可见性）。</summary>
+    private sealed class ControllerStub(Action<string> onShow, Action<string>? onHide = null, Window? window = null)
+        : ISuspensionWindowController
+    {
+        public List<string> ShownKeys { get; } = [];
+
+        public List<string> HiddenKeys { get; } = [];
+
         public Task ShowAsync(string overlayKey, CancellationToken ct = default)
         {
             onShow(overlayKey);
+            ShownKeys.Add(overlayKey);
+            window?.Show();
             return Task.CompletedTask;
         }
 
-        public Task HideAsync(string overlayKey, CancellationToken ct = default) => Task.CompletedTask;
+        public Task HideAsync(string overlayKey, CancellationToken ct = default)
+        {
+            onHide?.Invoke(overlayKey);
+            HiddenKeys.Add(overlayKey);
+            window?.Hide();
+            return Task.CompletedTask;
+        }
 
         public Task ResetPositionAsync(string overlayKey, CancellationToken ct = default) => Task.CompletedTask;
 

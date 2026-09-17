@@ -220,6 +220,10 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
             return false;
         }
 
+        // 需求 2：通知正文可能带「{学科}：」前缀（NoticeSubjectPrefixer 落档时加的），
+        // 前缀学科与继承到的作业学科一致时剥掉再落档，避免「语文：语文作业…」重复（幂等）。
+        var content = StripPrefixMatchingSubject(notice.Content, target);
+
         try
         {
             // ① 先写目标存档（作业条目 + 学科文档条目）
@@ -227,7 +231,7 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
             {
                 MessageId = notice.MessageId,
                 MemberOpenId = notice.MemberOpenId,
-                Content = notice.Content,
+                Content = content,
                 Subject = target,
                 SubjectConfidence = 1.0,
                 SubjectSource = SubjectSource.Manual,
@@ -238,8 +242,9 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
             {
                 SourceMessageIds = string.IsNullOrWhiteSpace(notice.MessageId) ? [] : [notice.MessageId],
                 MemberOpenId = notice.MemberOpenId,
-                SenderLabel = "",
-                Text = notice.Content,
+                // 需求 2：来源展示名随通知一并继承到作业文档条目（通知旧数据为空 → 作业侧显示「成员」）
+                SenderLabel = notice.SenderLabel ?? "",
+                Text = content,
                 CreatedAt = notice.CreatedAt
             }, ct).ConfigureAwait(false);
 
@@ -276,9 +281,12 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
 
         try
         {
-            // ① 先写通知（内容、来源、时间元信息一并迁移；学科前缀由 NoticeStore 既有规则决定）
-            await _noticeStore.AddOrUpdateAsync(item.MessageId, item.Content, item.MemberOpenId, null,
-                item.CreatedAt, ct).ConfigureAwait(false);
+            // ① 先写通知（内容、来源、时间元信息一并迁移；学科标签同步落档 Subject 与「学科：」前缀）
+            // 需求 2：来源展示名从作业文档里含该来源消息的条目继承（找不到传 null，界面不显示来源）。
+            // 学科为「未分类」/空时不传：避免落出「未分类：」前缀，改走既有成员绑定解析（行为同旧版）。
+            var senderLabel = await FindDocumentSenderLabelAsync(item, ct).ConfigureAwait(false);
+            await _noticeStore.AddOrUpdateWithSourceAsync(item.MessageId, item.Content, item.MemberOpenId, null,
+                item.CreatedAt, senderLabel, InheritedSubject(item.Subject), ct).ConfigureAwait(false);
 
             // ② 再从作业存档与学科文档移除（按来源消息 id 一并清文档条目）
             await _homeworkStore.RemoveByMessageIdAsync(item.MessageId, ct).ConfigureAwait(false);
@@ -328,11 +336,12 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
             {
                 // 手工编辑过：整篇作为一条通知（幂等键固定，重复操作不产生重复条目）。
                 // 时间元信息取文档内最早条目的原始时间（无条目时回落当前时间）。
+                // 需求 2：学科标签继承文档学科；手工文本是用户改写的整篇内容，无单一来源消息，来源展示名传 null。
                 var earliest = document.Entries.Count > 0
                     ? document.Entries.Min(e => e.CreatedAt)
                     : (DateTimeOffset?)null;
-                await _noticeStore.AddOrUpdateAsync($"document:{date:yyyyMMdd}:{normalized}", manual, null, null,
-                    earliest, ct).ConfigureAwait(false);
+                await _noticeStore.AddOrUpdateWithSourceAsync($"document:{date:yyyyMMdd}:{normalized}", manual, null, null,
+                    earliest, null, InheritedSubject(normalized), ct).ConfigureAwait(false);
                 migrated = 1;
             }
             else
@@ -342,8 +351,9 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
                     // 幂等键优先用真实来源消息 id；无来源（如常态化作业条目）时用合成键
                     var messageId = entry.SourceMessageIds.FirstOrDefault(id => !string.IsNullOrWhiteSpace(id))
                         ?? $"document-entry:{entry.Id:N}";
-                    await _noticeStore.AddOrUpdateAsync(messageId, entry.Text, entry.MemberOpenId, null,
-                        entry.CreatedAt, ct).ConfigureAwait(false);
+                    // 需求 2：每条通知继承文档学科标签，并带上自己条目的来源展示名
+                    await _noticeStore.AddOrUpdateWithSourceAsync(messageId, entry.Text, entry.MemberOpenId, null,
+                        entry.CreatedAt, entry.SenderLabel, InheritedSubject(normalized), ct).ConfigureAwait(false);
                     migrated++;
                 }
             }
@@ -370,4 +380,46 @@ public sealed class MessageReclassifyService : IMessageReclassifyService
 
     /// <inheritdoc />
     public bool TryGetKindOverride(string messageId, out MessageKind kind) => _overrides.TryGet(messageId, out kind);
+
+    // ---------- 需求 2：换类时的学科与来源继承（纯逻辑，可单测） ----------
+
+    /// <summary>
+    /// 剥掉与继承学科一致的「{学科}：」正文前缀（<see cref="NoticeSubjectPrefixer"/> 落档时加的），
+    /// 避免作业文档出现「语文：语文作业…」重复前缀。前缀学科不一致或没有前缀时保持原文。
+    /// </summary>
+    internal static string StripPrefixMatchingSubject(string? content, string subject)
+    {
+        if (string.IsNullOrEmpty(content) || string.IsNullOrWhiteSpace(subject))
+        {
+            return content ?? "";
+        }
+
+        var prefix = subject.Trim() + NoticeSubjectPrefixer.Separator;
+        return content.StartsWith(prefix, StringComparison.Ordinal) ? content[prefix.Length..] : content;
+    }
+
+    /// <summary>
+    /// 换类继承的显式学科：空 / 「未分类」返回 null——不传显式学科，避免通知落出「未分类：」前缀
+    /// （此时与旧版行为一致：按成员绑定解析决定是否加前缀）。
+    /// </summary>
+    private static string? InheritedSubject(string? subject) =>
+        HomeworkSubjectResolver.IsUnclassified(subject) ? null : subject!.Trim();
+
+    /// <summary>
+    /// 从作业文档里找「来源消息 id 含该条」的文档条目，取其来源展示名（需求 2：
+    /// 作业 → 通知时把来源带回通知落档，供「作业 → 通知 → 作业」往返继承）。
+    /// 日期取作业条目 <see cref="HomeworkItem.CreatedAt"/> 的本地归档日（与文档归档口径一致）；
+    /// 找不到条目或来源名为空返回 null。
+    /// </summary>
+    private async Task<string?> FindDocumentSenderLabelAsync(HomeworkItem item, CancellationToken ct)
+    {
+        var documents = await _homeworkStore
+            .GetDocumentsAsync(RetentionPolicies.BucketOf(item.CreatedAt), ct)
+            .ConfigureAwait(false);
+        var label = documents
+            .SelectMany(d => d.Entries)
+            .FirstOrDefault(e => e.SourceMessageIds.Contains(item.MessageId, StringComparer.Ordinal))
+            ?.SenderLabel;
+        return string.IsNullOrWhiteSpace(label) ? null : label;
+    }
 }

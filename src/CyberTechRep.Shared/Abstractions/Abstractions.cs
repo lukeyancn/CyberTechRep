@@ -140,6 +140,23 @@ public interface INoticeStore
     Task<NoticeItem> AddOrUpdateAsync(string messageId, string content, string? memberOpenId = null,
         string? groupOpenId = null, DateTimeOffset? createdAt = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// 带「来源展示名」与「显式继承学科」的幂等写入（2.1.0-beta.1 需求 2：通知/作业互转时直接继承
+    /// 原来的学科标签与来源）。
+    /// <para>
+    /// <paramref name="senderLabel"/>：来源发送者展示名（昵称）。通知界面不显示来源，
+    /// 该值随通知落档只为「作业 → 通知 → 作业」往返换类时把来源带回作业侧（旧数据为空时显示「成员」）。
+    /// <paramref name="subject"/>：显式继承的学科标签（换类时由原存档带入）：写入时按
+    /// 「学科：」前缀规则同步落档 <see cref="NoticeItem.Subject"/>；对已存在条目只在原学科为空时补写
+    /// （人工/显式语义最高，绝不覆盖已有学科）。
+    /// </para>
+    /// <para>默认实现回落到基础重载（来源展示名与显式学科被忽略），测试替身无需改动。</para>
+    /// </summary>
+    Task<NoticeItem> AddOrUpdateWithSourceAsync(string messageId, string content, string? memberOpenId = null,
+        string? groupOpenId = null, DateTimeOffset? createdAt = null, string? senderLabel = null,
+        string? subject = null, CancellationToken ct = default)
+        => AddOrUpdateAsync(messageId, content, memberOpenId, groupOpenId, createdAt, ct);
+
     Task MarkReadAsync(Guid id, CancellationToken ct = default);
 
     /// <summary>

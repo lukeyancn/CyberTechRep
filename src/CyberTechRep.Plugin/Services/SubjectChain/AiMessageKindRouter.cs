@@ -12,8 +12,10 @@ namespace CyberTechRep.Plugin.Services.SubjectChain;
 /// <para>
 /// 路由矩阵：
 /// - <see cref="AiUsageMode.Off"/>（默认）：原样返回关键词结果，AI 不参与（现状行为完全不变）；
-/// - <see cref="AiUsageMode.Backup"/>：关键词命中 → 原样返回；关键词 Unknown（含文本非空才触发）→ 问 AI，
-///   AI 失败/不可用降级回关键词结果（Unknown → 消息按现状被忽略）；
+/// - <see cref="AiUsageMode.Backup"/>：关键词给出确定结果（关键词命中/平局默认通知/空文本 Unknown）
+///   → 原样返回；关键词「未命中默认通知」（<see cref="KeywordMessageClassifier.NoKeywordHitNoticeReason"/>）
+///   或关键词 Unknown 且文本非空 → 问 AI（关键词未命中在需求 3 后默认落档为通知，AI 二分类兜底
+///   仍先于落档执行，结果照旧覆盖关键词结果）；AI 失败/不可用降级回关键词结果（未命中即默认通知）；
 /// - <see cref="AiUsageMode.Primary"/>：跳过关键词直接问 AI（每条消息都调 AI，产生持续 API 费用，
 ///   设置页有成本提示）；AI 失败降级回关键词分类，不阻塞主流程。
 /// </para>
@@ -66,15 +68,34 @@ public sealed class AiMessageKindRouter : IMessageClassifier
             return await _keyword.ClassifyAsync(message, ct).ConfigureAwait(false);
         }
 
-        // Backup：关键词先走，Unknown 且文本非空才问 AI
+        // Backup：关键词先走；关键词「未命中默认通知」或 Unknown（空文本除外）才问 AI。
+        // 需求 3 后关键词未命中的结果不再是 Unknown 而是默认通知，故触发条件同步放宽；
+        // AI 结果照旧覆盖关键词结果，AI 失败/不可用返回关键词结果（未命中即默认通知）。
         var keywordResult = await _keyword.ClassifyAsync(message, ct).ConfigureAwait(false);
-        if (keywordResult.Kind != MessageKind.Unknown || string.IsNullOrWhiteSpace(text))
+        if (!ShouldAskAiInBackupMode(keywordResult, text))
         {
             return keywordResult;
         }
 
         var backupResult = await TryClassifyWithAiAsync(message, text, mode, ct).ConfigureAwait(false);
         return backupResult ?? keywordResult;
+    }
+
+    /// <summary>
+    /// Backup 模式的 AI 触发判定（internal 纯逻辑，供单测）：
+    /// 文本非空 且（关键词 Unknown，或关键词给出「未命中关键词默认通知」）。
+    /// 文本为空（empty_text / empty_text_with_media）不去问 AI：没有可分类文本，AI 也无从判断。
+    /// </summary>
+    internal static bool ShouldAskAiInBackupMode(ClassifiedMessage keywordResult, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        return keywordResult.Kind == MessageKind.Unknown
+               || (keywordResult.Kind == MessageKind.Notice
+                   && KeywordMessageClassifier.IsNoKeywordHitDefaultReason(keywordResult.MatchReason));
     }
 
     /// <inheritdoc />

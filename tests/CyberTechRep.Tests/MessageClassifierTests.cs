@@ -81,14 +81,46 @@ public class MessageClassifierTests : IDisposable
     }
 
     [Fact]
-    public async Task 两边都不命中_返回Unknown()
+    public async Task 两边都不命中_返回默认通知()
     {
         var clf = CreateClassifier();
         var result = await clf.ClassifyAsync(Msg("今天天气不错，班级群闲聊"));
 
-        Assert.Equal(MessageKind.Unknown, result.Kind);
-        Assert.Equal(0, result.Confidence);
-        Assert.Equal("no_keyword_hit", result.MatchReason);
+        // 需求 3：文本非空但两侧关键词均未命中 → 默认归类为通知（不再返回 Unknown）
+        Assert.Equal(MessageKind.Notice, result.Kind);
+        Assert.Equal(1.0, result.Confidence);
+        Assert.Equal(KeywordMessageClassifier.NoKeywordHitNoticeReason, result.MatchReason);
+        Assert.True(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(result.MatchReason));
+    }
+
+    [Fact]
+    public void IsNoKeywordHitDefaultReason_识别默认通知原因_允许诊断后缀()
+    {
+        Assert.True(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(
+            KeywordMessageClassifier.NoKeywordHitNoticeReason));
+        // 忽略大小写与首尾空白；允许带附加诊断后缀（路由/管道可能在 reason 后拼接信息）
+        Assert.True(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(
+            "  NO_KEYWORD_HIT_NOTICE_DEFAULT; at=backup  "));
+        // 其它 reason 一律不命中，包括同前缀的枚举值
+        Assert.False(KeywordMessageClassifier.IsNoKeywordHitDefaultReason("no_keyword_hit"));
+        Assert.False(KeywordMessageClassifier.IsNoKeywordHitDefaultReason("no_keyword_hit_notice_default_x"));
+        Assert.False(KeywordMessageClassifier.IsNoKeywordHitDefaultReason("count_tie_notice_default"));
+        Assert.False(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(null));
+        Assert.False(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(""));
+    }
+
+    [Fact]
+    public async Task 空文本段_无媒体_仍返回Unknown()
+    {
+        var clf = CreateClassifier();
+        // 需求 3 边界：文本为空（含空白）不产生空通知条目，维持 Unknown
+        var blank = await clf.ClassifyAsync(Msg("   "));
+        Assert.Equal(MessageKind.Unknown, blank.Kind);
+        Assert.Equal("empty_text", blank.MatchReason);
+
+        var empty = await clf.ClassifyAsync(Msg(""));
+        Assert.Equal(MessageKind.Unknown, empty.Kind);
+        Assert.Equal("empty_text", empty.MatchReason);
     }
 
     [Fact]
@@ -163,8 +195,10 @@ public class MessageClassifierTests : IDisposable
     public async Task ReloadRules_热生效_修改JSON后立即生效()
     {
         var clf = CreateClassifier();
+        // 需求 3：无关键词命中现在是「默认通知」，故用 reason 区分「默认」与「关键词命中」
         var before = await clf.ClassifyAsync(Msg("紧急班会集合"));
-        Assert.Equal(MessageKind.Unknown, before.Kind);
+        Assert.Equal(MessageKind.Notice, before.Kind);
+        Assert.True(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(before.MatchReason));
 
         var path = Path.Combine(_dataDir, "classification-keywords.json");
         await File.WriteAllTextAsync(path, """
@@ -177,6 +211,7 @@ public class MessageClassifierTests : IDisposable
 
         var after = await clf.ClassifyAsync(Msg("紧急班会集合"));
         Assert.Equal(MessageKind.Notice, after.Kind);
+        Assert.False(KeywordMessageClassifier.IsNoKeywordHitDefaultReason(after.MatchReason));
         Assert.Contains("班会", after.MatchReason);
     }
 
