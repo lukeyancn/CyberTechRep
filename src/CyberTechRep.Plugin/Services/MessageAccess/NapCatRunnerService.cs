@@ -39,8 +39,28 @@ public sealed record NapCatRunnerStatus(NapCatRunnerState State, string Detail)
 /// 反向 WS 端口占用），跟踪退出状态，停止/插件关停时终止整个进程树。
 /// <para>
 /// 登录方式（设置页可选）：扫码（默认，二维码经 NapCat WebUI 展示）或 QQ 号快速登录
-/// （每次启动把 <c>-q QQ号</c> 作为启动参数传入，跳过扫码）。进程确认存活后从 NapCat 的
-/// <c>webui.json</c> 发现 WebUI 地址（端口/token），可按设置自动用系统浏览器打开。
+/// （每次启动把 QQ 号作为启动参数传给 NapCat 启动器，由启动器转成 NTQQ 的 <c>-q QQ号</c>
+/// 跳过扫码；实测直接传 <c>-q</c> 会被启动器丢弃，故此处必须是裸 QQ 号）。进程确认存活后从
+/// NapCat 的 <c>webui.json</c> 发现 WebUI 地址（端口/token）并探活，可按设置自动用浏览器打开。
+/// </para>
+/// <para>
+/// NapCat 以注入方式运行在 QQ 进程内，需独占 QQ 实例：QQ 已在运行时新实例会被单实例机制顶掉，
+/// NapCat 拿不到已登录会话（表现为只弹二维码、始终不接入）。设置项
+/// <see cref="ConnectionSettings.NapCatEndExistingQq"/>（默认开启）在拉起 NapCat 前结束已有 QQ 进程；
+/// 若检测到 NapCat 已在运行（反向 WS 已连接或 WebUI 端口已在监听）则跳过重复启动。
+/// </para>
+/// <para>
+/// <b>运行形态</b>（<see cref="ConnectionSettings.NapCatRunMode"/>）：
+/// <b>无头</b>（默认）= 官方 Shell/OneKey 包，不显示 QQ 界面，运行判定与日志都基于启动进程（stdout）；
+/// <b>有头</b> = 官方 Framework 有头包（一键有头版的 <c>NapCatWinBootMain.exe</c>）
+/// 或手动 LiteLoader 形态的官方 <c>QQ.exe</c>，会显示完整 QQ 登录/聊天界面——
+/// 此时注入启动器把 QQ 拉起后自身会退出，因此运行判定与「停止」以 <b>QQ 进程</b>为准
+/// （停止 = 关闭 QQ 界面），日志改为跟随 NapCat 的 <c>logs\*.log</c>；
+/// 入口是否接受「裸 QQ 号」快速登录参数按入口名判定（官方 QQ.exe 不吃该参数，登录在界面里完成）。
+/// </para>
+/// <para>
+/// 「进程存活」不等于「已就绪」：启动结果以反向 WS 连接确认，未接入时给出排查指引；
+/// 「打开 WebUI」同样先探活，避免打开死页面。
 /// </para>
 /// <para>
 /// 另含连接僵死看门狗：进程存活但本插件反向 WS 曾连上后断开超过阈值（5 分钟）时自动
@@ -64,6 +84,9 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     /// <summary>反向 WS 断开多久后判定「连接僵死」并自动重启 NapCat。</summary>
     private static readonly TimeSpan WatchdogRestartDelay = TimeSpan.FromMinutes(5);
 
+    /// <summary>有头形态日志文件跟随的轮询间隔。</summary>
+    private static readonly TimeSpan LogFileTailInterval = TimeSpan.FromSeconds(1);
+
     private readonly IngestOptionsProvider _provider;
     private readonly ILogger? _logger;
 
@@ -73,14 +96,41 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     /// <summary>查询消息接入当前连接状态（看门狗判断反向 WS 是否断开）。</summary>
     private readonly Func<ConnectionStatus>? _getConnectionStatus;
 
+    /// <summary>端口探活委托（WebUI 可用性判断；未接线时用默认 TCP 回环连接探测）。</summary>
+    private readonly Func<int, bool>? _probePort;
+
+    /// <summary>结束已在运行的 QQ 进程委托（NapCat 需独占 QQ 实例；未接线时用默认实现）。</summary>
+    private readonly Func<int>? _endExistingQqProcesses;
+
+    /// <summary>
+    /// 查询 QQ 进程是否在运行（有头形态的运行判定与「停止」依据；未接线时用默认实现探测 QQ/QQEX）。
+    /// 有头形态的注入启动器拉起 QQ 后会自行退出，只有 QQ 进程才是 NapCat 真正活着的标志。
+    /// </summary>
+    private readonly Func<bool>? _isQqProcessRunning;
+
     private readonly object _lock = new();
     private Process? _process;
     private NapCatRunnerStatus _status = NapCatRunnerStatus.NotRunning;
     private volatile bool _stopRequested;
     private CancellationTokenSource? _watchdogCts;
 
+    /// <summary>本次运行的取消源（停止/进程退出/释放时取消连接确认与 WebUI 探活）。</summary>
+    private CancellationTokenSource? _runCts;
+
     /// <summary>本次运行 stdout/stderr 读取循环的取消源（进程退出后延迟取消，先排空管道余量）。</summary>
     private CancellationTokenSource? _logReadCts;
+
+    /// <summary>
+    /// 有头形态的 NapCat 日志文件跟随器（无头形态不用——stdout 已足够）。
+    /// 有头形态启动的是官方 QQ，进程不写 stdout，日志只在 NapCat 的 <c>logs\*.log</c> 里。
+    /// </summary>
+    private NapCatLogFileTailer? _logFileTailer;
+
+    /// <summary>有头形态日志跟随循环的取消源。</summary>
+    private CancellationTokenSource? _logFileTailCts;
+
+    /// <summary>「未发现 NapCat 日志文件」提示是否已写入日志流（避免每秒刷屏）。</summary>
+    private volatile bool _logFileHintLogged;
 
     /// <summary>本次运行期间反向 WS 是否曾连上（看门狗只干预「连上过又断开」的场景）。</summary>
     private volatile bool _everConnectedSinceStart;
@@ -91,13 +141,32 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     /// <summary>本次拉起进程发现的 NapCat WebUI 地址（登录/管理页面；null = 未发现）。</summary>
     private volatile string? _webUiUrl;
 
+    /// <summary>本次拉起进程发现的 NapCat WebUI 端口（0 = 未解析到）。</summary>
+    private int _webUiPort;
+
+    /// <summary>WebUI 是否已探活通过（端口可连接；false = WebUI 未启动或端口不可绑定）。</summary>
+    private volatile bool _webUiReady;
+
+    /// <summary>「WebUI 端口未监听」排查提示是否已写入日志流（避免看门狗重试时重复刷屏）。</summary>
+    private volatile bool _webUiHintLogged;
+
+    /// <summary>本次运行的可执行文件路径与工作目录（看门狗重试 WebUI 发现时复用）。</summary>
+    private string _runningExePath = "";
+
+    private string? _runningWorkDirectory;
+
     public NapCatRunnerService(IngestOptionsProvider provider, ILogger? logger = null,
-        Func<int?>? getSelfListeningPort = null, Func<ConnectionStatus>? getConnectionStatus = null)
+        Func<int?>? getSelfListeningPort = null, Func<ConnectionStatus>? getConnectionStatus = null,
+        Func<int, bool>? probePort = null, Func<int>? endExistingQqProcesses = null,
+        Func<bool>? isQqProcessRunning = null)
     {
         _provider = provider;
         _logger = logger;
         _getSelfListeningPort = getSelfListeningPort;
         _getConnectionStatus = getConnectionStatus;
+        _probePort = probePort;
+        _endExistingQqProcesses = endExistingQqProcesses;
+        _isQqProcessRunning = isQqProcessRunning;
 
         // 容量经设置读取（热生效）；提供者异常/非法值由缓冲内部回退，不影响启动
         LogBuffer = new NapCatLogBuffer(() => provider.GetSettings().NapCatLogBufferLines);
@@ -126,6 +195,9 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
 
     /// <summary>当前已发现的 NapCat WebUI 地址（null = 未发现；进程启动后从 webui.json 解析）。</summary>
     public string? WebUiUrl => _webUiUrl;
+
+    /// <summary>WebUI 当前是否可访问（端口探活通过）。false 时「打开 WebUI」不会打开死页面，而是写入失败原因。</summary>
+    public bool WebUiReady => _webUiReady;
 
     // ---- IHostedService：插件关停兜底终止进程 + 可选自动启动 NapCat ----
 
@@ -174,13 +246,35 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     /// <summary>停止 NapCat（终止整个进程树）。</summary>
     public Task StopNapCatAsync() => StopInternalAsync(waitExit: false);
 
-    /// <summary>用系统默认浏览器打开当前已发现的 WebUI 地址（未发现时仅记日志，不抛异常）。</summary>
+    /// <summary>
+    /// 用系统默认浏览器打开当前已发现的 WebUI 地址。打开前先探活：WebUI 未监听时不打开死页面，
+    /// 而是把明确原因写入日志流（常见原因：端口落在系统保留端口段内，NapCat 报 EACCES 无法绑定）。
+    /// </summary>
     public void OpenWebUi()
     {
         var url = _webUiUrl;
         if (string.IsNullOrEmpty(url))
         {
             _logger?.LogWarning("打开 WebUI 失败：尚未发现 WebUI 地址（NapCat 启动后才会生成 webui.json）");
+            LogBuffer.Append("打开 WebUI 失败：尚未发现 WebUI 地址（NapCat 启动后才会生成 webui.json 并监听 WebUI 端口）",
+                NapCatLogStream.System);
+            return;
+        }
+
+        // 迟到就绪兜底：WebUI 起得慢时，点击即重新探活一次
+        if (!_webUiReady && _webUiPort > 0 && ProbePort(_webUiPort))
+        {
+            _webUiReady = true;
+            RaisePropertyChangedSafe();
+        }
+
+        if (!_webUiReady)
+        {
+            _logger?.LogWarning("打开 WebUI 失败：端口 {Port} 未监听（WebUI 未启动或端口不可绑定）", _webUiPort);
+            LogBuffer.Append($"打开 WebUI 失败：端口 {_webUiPort} 未监听。"
+                + "WebUI 未启动，或该端口被系统保留端口段占用（NapCat 日志会出现「host或port不可用 EACCES」）——"
+                + @"可把 napcat\config\webui.json 的 port 改到未被保留的端口后重启 NapCat",
+                NapCatLogStream.System);
             return;
         }
 
@@ -201,9 +295,14 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         int reversePort;
         lock (_lock)
         {
-            if (_process is { HasExited: false })
+            // 已在运行：启动器进程还活着；或有头形态下本次托管运行中且 QQ 进程仍在
+            // （有头形态的启动器拉起 QQ 后自身会退出，只看进程会重复拉起第二个实例）
+            if (_process is { HasExited: false }
+                || (IsFrameworkMode()
+                    && _status.State is NapCatRunnerState.Running or NapCatRunnerState.Starting
+                    && IsQqProcessRunning()))
             {
-                return; // 已在运行
+                return;
             }
 
             _stopRequested = false;
@@ -213,6 +312,16 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         exePath = settings.NapCatExePath;
         workDirectory = settings.NapCatWorkDirectory;
         reversePort = settings.NapCatReversePort;
+
+        // 已在运行检测（先于路径校验）：NapCat 由外部启动（插件未托管）或上一次实例仍在时不重复拉起——
+        // 重复拉起会出现第二个 QQ 实例，后启动的拿不到已登录会话（只弹二维码、始终不接入）。
+        var external = DetectRunningNapCat(exePath, workDirectory);
+        if (external is not null)
+        {
+            SetStatus(NapCatRunnerState.Running, $"已在运行（{external}），跳过重复启动");
+            LogBuffer.Append($"检测到 NapCat 已在运行（{external}），跳过重复启动", NapCatLogStream.System);
+            return;
+        }
 
         // 校验 1：可执行文件路径
         if (string.IsNullOrWhiteSpace(exePath))
@@ -242,23 +351,58 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
             return;
         }
 
-        // 校验 4：QQ 号快速登录模式必须有 QQ 号
-        var arguments = BuildArguments(settings.NapCatLoginMode, settings.NapCatQuickLoginQQ, out var argError);
+        // 校验 4：启动参数（有头形态下按入口决定是否传裸 QQ 号：官方 QQ.exe 不吃该参数）
+        var arguments = BuildArguments(
+            settings.NapCatRunMode, settings.NapCatLoginMode, exePath, settings.NapCatQuickLoginQQ,
+            out var argError);
         if (argError is not null)
         {
             SetStatus(NapCatRunnerState.Failed, argError);
             return;
         }
 
-        // 每次拉起重置连接跟踪与 WebUI 地址（属于新一次运行）
+        var frameworkMode = settings.NapCatRunMode == NapCatRunMode.Framework;
+        if (frameworkMode && !AcceptsQuickLoginArgument(exePath))
+        {
+            LogBuffer.Append(
+                "有头形态：入口不是 NapCat 注入启动器，快速登录设置对该入口不适用，"
+                + "请在 QQ 界面里完成登录（登录态由 QQ 客户端自己保存）",
+                NapCatLogStream.System);
+        }
+
+        // 结束已有 QQ 进程：NapCat 注入在 QQ 进程内运行，需独占 QQ 实例（QQ 已在运行时注入拿不到会话）
+        if (settings.NapCatEndExistingQq)
+        {
+            var killed = (_endExistingQqProcesses ?? EndQqProcesses)();
+            LogBuffer.Append(killed > 0
+                    ? $"已结束 {killed} 个已在运行的 QQ 进程（NapCat 需独占 QQ 实例）"
+                    : "未发现已在运行的 QQ 进程（无需结束）",
+                NapCatLogStream.System);
+            if (killed > 0)
+            {
+                await Task.Delay(1500).ConfigureAwait(false); // 等 QQ 释放登录会话与单实例锁
+            }
+        }
+
+        // 每次拉起重置连接跟踪与 WebUI 状态（属于新一次运行）
         _everConnectedSinceStart = false;
         _disconnectedSinceUtc = null;
         _webUiUrl = null;
+        _webUiPort = 0;
+        _webUiReady = false;
+        _webUiHintLogged = false;
+        _runningExePath = exePath;
+        _runningWorkDirectory = workDirectory;
+
+        var runCts = new CancellationTokenSource();
+        Interlocked.Exchange(ref _runCts, runCts)?.Cancel();
 
         try
         {
             var startInfo = BuildProcessStartInfo(exePath, workDirectory, arguments);
-            LogBuffer.Append($"启动 NapCat：{startInfo.FileName} {startInfo.Arguments}".TrimEnd(),
+            LogBuffer.Append(
+                $"启动 NapCat（{(frameworkMode ? "有头：会显示 QQ 界面" : "无头")}）："
+                + $"{startInfo.FileName} {startInfo.Arguments}".TrimEnd(),
                 NapCatLogStream.System);
 
             var process = Process.Start(startInfo);
@@ -279,26 +423,41 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
             // 无控制台窗口运行时 stdout/stderr 是唯一日志出口；必须持续读取，否则管道写满会阻塞 NapCat
             StartLogReadLoops(process);
 
+            // 有头形态：启动的是官方 QQ（界面程序不写 stdout），日志改从 NapCat 日志文件跟随
+            if (frameworkMode)
+            {
+                StartLogFileTail();
+            }
+
             SetStatus(NapCatRunnerState.Starting, $"正在启动（pid {process.Id}）…");
-            _logger?.LogInformation("NapCat 进程已拉起：pid={Pid} exe={Exe} args={Args}",
-                process.Id, exePath, string.IsNullOrEmpty(arguments) ? "（无，扫码登录）" : arguments);
+            _logger?.LogInformation("NapCat 进程已拉起：pid={Pid} exe={Exe} args={Args} mode={Mode}",
+                process.Id, exePath, string.IsNullOrEmpty(arguments) ? "（无，扫码登录）" : arguments,
+                settings.NapCatRunMode);
 
             // 等待窗口期确认存活：立即退出视为失败并暴露退出码
             await Task.Delay(2000).ConfigureAwait(false);
-            if (process.HasExited)
+            if (!IsRunAlive(process))
             {
                 SetStatus(NapCatRunnerState.Failed, $"进程启动后立即退出（退出码 {process.ExitCode}）");
                 return;
             }
 
-            SetStatus(NapCatRunnerState.Running, $"运行中 [pid {process.Id}]");
-            LogBuffer.Append($"NapCat 进程已就绪（pid {process.Id}）", NapCatLogStream.System);
+            // 有头形态：注入启动器把 QQ 拉起后自身退出属正常现象（NapCat 活在 QQ 进程里）
+            SetStatus(NapCatRunnerState.Running, RunningDetail(process, "等待 NapCat 接入…"));
+            LogBuffer.Append(process.HasExited
+                    ? "NapCat 启动器已退出、QQ 进程已接管（有头形态的正常现象）；等待反向 WS 接入"
+                    : $"NapCat 进程已就绪（pid {process.Id}）",
+                NapCatLogStream.System);
 
-            // 发现 WebUI 地址（webui.json 由 NapCat 启动时生成；失败不阻塞运行）
-            DiscoverWebUiUrl(exePath, workDirectory);
+            // WebUI 地址发现 + 探活（与接入确认并行；未监听时写入可操作提示，不阻塞接入）
+            var webUiTask = Task.Run(() => DiscoverWebUiUrlAsync(process, runCts.Token), runCts.Token);
 
             // 启动看门狗（进程存活期间监控反向 WS 僵死）
             StartWatchdog(process);
+
+            // 启动结果以反向 WS 连接确认（进程存活 ≠ 已就绪）
+            await ConfirmConnectionAsync(process, runCts.Token).ConfigureAwait(false);
+            await webUiTask.ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -307,9 +466,130 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// 组装启动参数：快速登录模式传 <c>-q QQ号</c>（NapCat 启动器官方参数，跳过扫码）；
-    /// 扫码模式不传参。QQ 号为空/非法时经 <paramref name="error"/> 返回明确原因。
+    /// 组装启动参数：快速登录模式传<b>裸 QQ 号</b>，扫码模式不传参。
+    /// <para>
+    /// Q 号必须是裸数字：NapCat 的启动器（<c>NapCatWinBootMain.exe</c>）只认裸 QQ 号并转成
+    /// NTQQ 的 <c>-q QQ号</c> 启动参数；实测直接传 <c>-q QQ号</c> 会被启动器丢弃，
+    /// NapCat 侧仍走扫码登录（4.18.x 实测：命令行不带 <c>-q</c>，日志输出「没有 -q 指令指定快速登录」）。
+    /// </para>
+    /// QQ 号为空/非法时经 <paramref name="error"/> 返回明确原因。
     /// </summary>
+    // ============ 运行形态（无头 Shell / 有头 Framework）============
+
+    /// <summary>当前是否为「有头」形态（Framework/LiteLoader：显示官方 QQ 完整界面）。</summary>
+    private bool IsFrameworkMode()
+    {
+        try
+        {
+            return _provider.GetSettings().NapCatRunMode == NapCatRunMode.Framework;
+        }
+        catch
+        {
+            return false; // 设置读取失败按无头（既有行为）处理
+        }
+    }
+
+    /// <summary>QQ 进程是否在运行（有头形态的运行判定依据；未接线时用默认探测）。</summary>
+    private bool IsQqProcessRunning() => (_isQqProcessRunning ?? AnyQqProcessRunning)();
+
+    /// <summary>默认 QQ 进程探测（`QQ` 与 `QQEX`，与结束 QQ 进程用的进程名一致）。</summary>
+    private static bool AnyQqProcessRunning()
+    {
+        foreach (var name in new[] { "QQ", "QQEX" })
+        {
+            Process[] processes;
+            try
+            {
+                processes = Process.GetProcessesByName(name);
+            }
+            catch
+            {
+                continue;
+            }
+
+            try
+            {
+                if (processes.Length > 0)
+                {
+                    return true;
+                }
+            }
+            finally
+            {
+                foreach (var process in processes)
+                {
+                    process.Dispose();
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 「本次运行是否还活着」：无头形态看启动进程（stdout 泵与进程树都挂在它上面）；
+    /// 有头形态看启动进程<b>或</b> QQ 进程——注入启动器把 QQ 拉起后自身会退出，
+    /// QQ 进程还在就说明 NapCat 仍在运行（否则会被误判为「已停止」而丢掉看门狗与状态）。
+    /// </summary>
+    private bool IsRunAlive(Process? process)
+    {
+        if (process is { HasExited: false })
+        {
+            return true;
+        }
+
+        return IsFrameworkMode() && IsQqProcessRunning();
+    }
+
+    /// <summary>
+    /// 运行状态详情：有头形态下启动器可能已退出（QQ 进程接管），此时不显示启动器 pid，
+    /// 改成「QQ 进程内」以免用户以为进程没了。
+    /// </summary>
+    private string RunningDetail(Process process, string suffix)
+    {
+        var who = process.HasExited ? "QQ 进程内（有头）" : $"pid {process.Id}";
+        return $"运行中 [{who}]（{suffix}）";
+    }
+
+    /// <summary>
+    /// 组装启动参数（按运行形态与入口类型）：
+    /// <list type="bullet">
+    /// <item>无头形态：沿用既有规则（快速登录传裸 QQ 号，扫码不传）；</item>
+    /// <item>有头形态且入口是 NapCat 注入启动器（<c>NapCatWinBootMain.exe</c>、<c>launcher*.bat</c>）：
+    /// 同样传裸 QQ 号（官方一键有头版的 quick 用法即 <c>NapCatWinBootMain.exe 10001</c>）；</item>
+    /// <item>有头形态且入口是官方 <c>QQ.exe</c> 等不吃该参数的入口：不传参（登录在 QQ 界面里完成），
+    /// 也不因「QQ 号为空/非法」报错——快速登录设置对该入口不适用。</item>
+    /// </list>
+    /// </summary>
+    internal static string BuildArguments(NapCatRunMode runMode, NapCatLoginMode loginMode, string exePath,
+        string quickLoginQQ, out string? error)
+    {
+        if (runMode == NapCatRunMode.Framework && !AcceptsQuickLoginArgument(exePath))
+        {
+            error = null;
+            return "";
+        }
+
+        return BuildArguments(loginMode, quickLoginQQ, out error);
+    }
+
+    /// <summary>
+    /// 该入口是否接受「裸 QQ 号」快速登录参数：NapCat 注入启动器（<c>NapCatWinBootMain*.exe</c>）
+    /// 与 Shell/一键包的 <c>launcher*.bat</c> 认；官方 <c>QQ.exe</c> 与普通 LiteLoader 启动器不认
+    /// （参数会被忽略，甚至引发客户端异常）。
+    /// </summary>
+    internal static bool AcceptsQuickLoginArgument(string? exePath)
+    {
+        var name = Path.GetFileName(exePath ?? "");
+        if (string.IsNullOrEmpty(name))
+        {
+            return false;
+        }
+
+        return name.StartsWith("NapCatWinBootMain", StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith("launcher", StringComparison.OrdinalIgnoreCase);
+    }
+
     internal static string BuildArguments(NapCatLoginMode mode, string quickLoginQQ, out string? error)
     {
         error = null;
@@ -325,7 +605,7 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
             return "";
         }
 
-        return $"-q {qq}";
+        return qq;
     }
 
     /// <summary>
@@ -466,58 +746,320 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         }
     }
 
+    // ============ 有头形态：NapCat 日志文件跟随 ============
+
     /// <summary>
-    /// 从 NapCat 安装目录发现 <c>webui.json</c> 并解析出 WebUI 访问地址
-    /// （<c>http://127.0.0.1:{port}/webui?token={token}</c>）；结果存入 <see cref="_webUiUrl"/>，
-    /// 按设置自动打开。找不到/解析失败仅记日志，不影响 NapCat 运行。
+    /// 启动有头形态的日志跟随：启动的是官方 QQ（界面程序不写 stdout），NapCat 日志只在安装目录的
+    /// <c>logs\*.log</c> 里，因此逐秒把新增行写入 <see cref="LogBuffer"/>——与无头形态的 stdout 泵
+    /// 共用同一个日志缓冲，排错面板体验一致。
     /// </summary>
-    private void DiscoverWebUiUrl(string exePath, string workDirectory)
+    private void StartLogFileTail()
+    {
+        StopLogFileTail();
+        var cts = new CancellationTokenSource();
+        _logFileTailCts = cts;
+        _logFileTailer = new NapCatLogFileTailer();
+        _logFileHintLogged = false;
+        _ = Task.Run(() => LogFileTailLoopAsync(cts.Token));
+    }
+
+    private void StopLogFileTail()
     {
         try
         {
-            var exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath)) ?? "";
-            var configPath = FindWebUiConfigPath(exeDir,
-                string.IsNullOrWhiteSpace(workDirectory) ? exeDir : workDirectory);
+            _logFileTailCts?.Cancel();
+            _logFileTailCts?.Dispose();
+        }
+        catch
+        {
+            // 取消/释放竞态：忽略
+        }
+
+        _logFileTailCts = null;
+        _logFileTailer?.Dispose();
+        _logFileTailer = null;
+    }
+
+    private async Task LogFileTailLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(LogFileTailInterval);
+        string? followedPath = null;
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                var path = FindNewestNapCatLogFile(_runningWorkDirectory ?? "", _runningExePath);
+                if (path is null)
+                {
+                    if (!_logFileHintLogged && !string.IsNullOrEmpty(_runningExePath))
+                    {
+                        _logFileHintLogged = true;
+                        LogBuffer.Append(
+                            "未发现 NapCat 日志文件（logs\\*.log）：有头形态不读 stdout，"
+                            + "日志请在 NapCat WebUI 或安装目录的 logs 下查看；"
+                            + "若日志目录不在默认位置，可在设置里把工作目录指向 NapCat 安装目录",
+                            NapCatLogStream.System);
+                    }
+
+                    continue;
+                }
+
+                if (!string.Equals(path, followedPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    followedPath = path;
+                    LogBuffer.Append($"开始跟随 NapCat 日志文件：{path}", NapCatLogStream.System);
+                }
+
+                foreach (var line in _logFileTailer!.Poll(path))
+                {
+                    LogBuffer.Append(line, NapCatLogStream.StdOut);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "有头形态 NapCat 日志文件跟随异常退出（不影响运行）");
+        }
+    }
+
+    /// <summary>
+    /// 从 NapCat 安装目录发现 <c>webui.json</c>，解析出 WebUI 访问地址
+    /// （<c>http://127.0.0.1:{port}/webui?token={token}</c>）并<b>探活</b>：
+    /// 地址解析成功即缓存（<see cref="WebUiUrl"/>），但只要端口未真正监听就不标记为可用
+    /// （<see cref="WebUiReady"/>），以免把陈旧 webui.json 当作已就绪、或打开死页面。
+    /// 探活失败时写入可操作提示（最常见原因：端口落在 Windows 保留端口段内，NapCat 报 EACCES）。
+    /// 找不到/解析失败仅记日志，不影响 NapCat 运行。
+    /// </summary>
+    private async Task DiscoverWebUiUrlAsync(Process process, CancellationToken ct)
+    {
+        try
+        {
+            var (port, token) = ReadWebUiConfig(_runningExePath, _runningWorkDirectory, out var configPath);
             if (configPath is null)
             {
-                _logger?.LogInformation("未找到 NapCat webui.json（WebUI 地址发现跳过；不影响扫码登录）");
+                _logger?.LogInformation("未找到 NapCat webui.json（WebUI 地址发现跳过；不影响登录/接入）");
                 return;
             }
 
-            var json = File.ReadAllText(configPath);
-            var (port, token) = ParseWebUiConfig(json);
             if (port <= 0)
             {
                 _logger?.LogWarning("NapCat webui.json 解析失败或端口非法：{Path}", configPath);
                 return;
             }
 
-            var url = string.IsNullOrEmpty(token)
+            _webUiPort = port;
+            _webUiUrl = string.IsNullOrEmpty(token)
                 ? $"http://127.0.0.1:{port}/webui"
                 : $"http://127.0.0.1:{port}/webui?token={Uri.EscapeDataString(token)}";
-            _webUiUrl = url;
-            _logger?.LogInformation("NapCat WebUI 地址已发现：{Url}", url);
-            // 日志流只记地址不记 token（WebUI token 亦属凭据，不落入可复制的面板文本）
-            LogBuffer.Append(string.IsNullOrEmpty(token)
-                ? $"已发现 NapCat WebUI：http://127.0.0.1:{port}/webui"
-                : $"已发现 NapCat WebUI：http://127.0.0.1:{port}/webui（token 已隐藏）",
-                NapCatLogStream.System);
-            RaisePropertyChangedSafe();
 
-            if (_provider.GetSettings().NapCatOpenWebUiOnStart)
+            // 探活重试：NapCat 启动后 WebUI 需要数百毫秒到数秒
+            for (var attempt = 0; attempt < 6; attempt++)
             {
-                // 延迟打开：给 NapCat WebUI 服务一点就绪时间
-                _ = Task.Run(async () =>
+                if (!IsRunAlive(process) || ct.IsCancellationRequested)
                 {
-                    await Task.Delay(3000).ConfigureAwait(false);
-                    OpenWebUi();
-                });
+                    return;
+                }
+
+                if (ProbePort(port))
+                {
+                    _webUiReady = true;
+                    _logger?.LogInformation("NapCat WebUI 可用：{Url}", _webUiUrl);
+                    // 日志流只记地址不记 token（WebUI token 亦属凭据，不落入可复制的面板文本）
+                    LogBuffer.Append($"NapCat WebUI 可用：http://127.0.0.1:{port}/webui"
+                        + (string.IsNullOrEmpty(token) ? "" : "（token 已隐藏）"), NapCatLogStream.System);
+                    RaisePropertyChangedSafe();
+
+                    if (_provider.GetSettings().NapCatOpenWebUiOnStart)
+                    {
+                        // 延迟打开：给 NapCat WebUI 服务一点就绪时间
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(1500, CancellationToken.None).ConfigureAwait(false);
+                            OpenWebUi();
+                        }, CancellationToken.None);
+                    }
+
+                    return;
+                }
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
+
+            _logger?.LogWarning("NapCat WebUI 端口 {Port} 未监听（WebUI 暂不可用）", port);
+            LogBuffer.Append($"NapCat WebUI 未在端口 {port} 监听（WebUI 暂不可用）。"
+                + "若 NapCat 日志出现「host或port不可用 EACCES」，说明该端口落在系统保留端口段内："
+                + "可用 netsh int ipv4 show excludedportrange protocol=tcp 查看保留段，"
+                + @"并把 napcat\config\webui.json 的 port 改到未被保留的端口后重启 NapCat",
+                NapCatLogStream.System);
+            _webUiHintLogged = true;
+            RaisePropertyChangedSafe();
         }
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "NapCat WebUI 地址发现失败（不影响运行）");
         }
+    }
+
+    /// <summary>
+    /// 读取 NapCat webui.json 得到（端口, token）；<paramref name="configPath"/> 为命中的配置文件路径
+    /// （null = 未找到）。读盘/解析异常按「未找到」处理，不向调用方抛。
+    /// </summary>
+    private static (int Port, string Token) ReadWebUiConfig(string exePath, string? workDirectory, out string? configPath)
+    {
+        configPath = null;
+        try
+        {
+            var exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath)) ?? "";
+            configPath = FindWebUiConfigPath(exeDir,
+                string.IsNullOrWhiteSpace(workDirectory) ? exeDir : workDirectory);
+            return configPath is null ? (0, "") : ParseWebUiConfig(File.ReadAllText(configPath));
+        }
+        catch
+        {
+            return (0, "");
+        }
+    }
+
+    /// <summary>
+    /// 外部 NapCat 运行检测（避免重复拉起第二个实例）：反向 WS 已连接，或 webui.json 端口已在监听。
+    /// 返回判定依据文本（用于状态展示）；未检测到返回 null。
+    /// </summary>
+    private string? DetectRunningNapCat(string exePath, string? workDirectory)
+    {
+        try
+        {
+            if (_getConnectionStatus?.Invoke() == ConnectionStatus.Connected)
+            {
+                return "反向 WS 已连接";
+            }
+        }
+        catch
+        {
+            // 状态查询失败不阻断启动流程
+        }
+
+        try
+        {
+            var (port, _) = ReadWebUiConfig(exePath, workDirectory, out _);
+            if (port > 0 && ProbePort(port))
+            {
+                return $"NapCat WebUI（端口 {port}）已在监听";
+            }
+        }
+        catch
+        {
+            // 同上：读取失败按「未运行」处理
+        }
+
+        return null;
+    }
+
+    /// <summary>端口探活：能否建立 TCP 连接（WebUI 可能仅绑 IPv6，故 IPv4/IPv6 回环各试一次）。</summary>
+    private bool ProbePort(int port)
+        => (_probePort ?? DefaultProbePort)(port);
+
+    private static bool DefaultProbePort(int port)
+        => IsPortConnectable(IPAddress.Loopback, port) || IsPortConnectable(IPAddress.IPv6Loopback, port);
+
+    private static bool IsPortConnectable(IPAddress address, int port)
+    {
+        try
+        {
+            using var client = new TcpClient(address.AddressFamily);
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(700));
+            client.ConnectAsync(address, port, cts.Token).GetAwaiter().GetResult();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 结束已在运行的 QQ 进程（默认实现，`QQ` 与 `QQEX`）。NapCat 注入在 QQ 进程内运行，
+    /// 需独占 QQ 实例；单个进程结束失败（权限/已退出）不阻断后续启动。返回成功结束的进程数。
+    /// </summary>
+    private static int EndQqProcesses()
+    {
+        var killed = 0;
+        foreach (var name in new[] { "QQ", "QQEX" })
+        {
+            foreach (var process in Process.GetProcessesByName(name))
+            {
+                using (process)
+                {
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                        killed++;
+                    }
+                    catch
+                    {
+                        // 单个进程不可结束：忽略（其余进程继续尝试）
+                    }
+                }
+            }
+        }
+
+        return killed;
+    }
+
+    /// <summary>
+    /// 以反向 WS 连接确认启动结果：进程存活只说明「启动器没退出」，真正就绪以 NapCat 接入为准。
+    /// 轮询最长约 35 秒，未接入时把排查指引写入日志流（登录方式 / QQ 是否被独占 / WebUI 端口）。
+    /// </summary>
+    private async Task ConfirmConnectionAsync(Process process, CancellationToken ct)
+    {
+        if (_getConnectionStatus is null)
+        {
+            return; // 未接线（如单元测试场景）：不做连接确认
+        }
+
+        var deadline = DateTime.UtcNow.AddSeconds(35);
+        while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+        {
+            if (!IsRunAlive(process))
+            {
+                return; // 进程（与有头形态的 QQ）都不在：由 OnProcessExited 结算状态
+            }
+
+            if (_getConnectionStatus() == ConnectionStatus.Connected)
+            {
+                SetStatus(NapCatRunnerState.Running, RunningDetail(process, "已接入：反向 WS 已连接"));
+                LogBuffer.Append("NapCat 已接入（反向 WS 已连接）", NapCatLogStream.System);
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+
+        if (!IsRunAlive(process) || ct.IsCancellationRequested)
+        {
+            return;
+        }
+
+        SetStatus(NapCatRunnerState.Running, RunningDetail(process, "尚未接入：等待登录或反向连接"));
+        LogBuffer.Append("NapCat 进程已就绪但反向 WS 尚未连接：首次登录请在 WebUI 扫码；"
+            + "已配置快速登录时请核对 QQ 号；并确认启动前已结束其他 QQ 进程（NapCat 需独占 QQ 实例）",
+            NapCatLogStream.System);
     }
 
     /// <summary>按常见目录布局查找 webui.json（exe 目录/工作目录及其上级 napcat\config）。</summary>
@@ -558,6 +1100,86 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 按常见目录布局查找 NapCat 日志目录下的<b>最新日志文件</b>（有头形态的日志来源）。
+    /// 候选：给定目录及其上级目录下的 <c>logs</c> 与 <c>napcat\logs</c>；找不到返回 null
+    /// （调用方据此提示「日志请在 WebUI 或安装目录查看」，不影响运行）。
+    /// </summary>
+    internal static string? FindNewestNapCatLogFile(params string[] baseDirectories)
+    {
+        string? newestPath = null;
+        var newestWriteTime = DateTime.MinValue;
+        foreach (var directory in EnumerateCandidateLogDirectories(baseDirectories))
+        {
+            try
+            {
+                // 在所有候选目录里取「最后写入时间最晚」的日志文件（候选目录本身有先后，
+                // 但不能因为先命中一个旧目录就放弃更晚写的日志）
+                foreach (var path in Directory.EnumerateFiles(directory, "*.log"))
+                {
+                    DateTime writeTime;
+                    try
+                    {
+                        writeTime = File.GetLastWriteTimeUtc(path);
+                    }
+                    catch (IOException)
+                    {
+                        continue;
+                    }
+
+                    if (writeTime > newestWriteTime)
+                    {
+                        newestWriteTime = writeTime;
+                        newestPath = path;
+                    }
+                }
+            }
+            catch (IOException)
+            {
+                // 目录被占用/枚举竞态：换下一个候选
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return newestPath;
+    }
+
+    /// <summary>候选日志目录（去重，只返回真实存在的）：各基目录及其上级目录下的 logs、napcat\logs。</summary>
+    private static IEnumerable<string> EnumerateCandidateLogDirectories(IEnumerable<string> baseDirectories)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var baseDir in baseDirectories.Where(d => !string.IsNullOrWhiteSpace(d)))
+        {
+            var roots = new[]
+            {
+                baseDir,
+                Path.GetDirectoryName(baseDir.TrimEnd(Path.DirectorySeparatorChar))
+            };
+            foreach (var root in roots.Where(r => !string.IsNullOrEmpty(r)))
+            {
+                foreach (var relative in new[] { "logs", Path.Combine("napcat", "logs") })
+                {
+                    string candidate;
+                    try
+                    {
+                        candidate = Path.GetFullPath(Path.Combine(root!, relative));
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    if (seen.Add(candidate) && Directory.Exists(candidate))
+                    {
+                        yield return candidate;
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>解析 webui.json 的 port/token（NapCat 结构：{"port":6099,"token":"...","host":"..."}）。</summary>
@@ -616,9 +1238,15 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         {
             while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
-                if (process.HasExited)
+                if (!IsRunAlive(process))
                 {
                     return;
+                }
+
+                // WebUI 起得晚（NapCat 就绪慢）：未探活通过时重试发现，避免「地址一直不可用」
+                if (!_webUiReady && !_webUiHintLogged && !string.IsNullOrEmpty(_runningExePath))
+                {
+                    await DiscoverWebUiUrlAsync(process, ct).ConfigureAwait(false);
                 }
 
                 var connected = _getConnectionStatus?.Invoke() == ConnectionStatus.Connected;
@@ -657,6 +1285,19 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         }
     }
 
+    /// <summary>安全读取退出码（进程对象已释放/不可用时返回 null，不抛异常）。</summary>
+    private static int? TryReadExitCode(Process process)
+    {
+        try
+        {
+            return process.HasExited ? process.ExitCode : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private void RaisePropertyChangedSafe()
     {
         try
@@ -675,8 +1316,25 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
     /// </summary>
     private void OnProcessExited(Process process)
     {
+        // 有头形态：注入启动器把 QQ 拉起后自身退出属正常现象——NapCat 活在 QQ 进程里，
+        // 此时必须保留看门狗与日志文件跟随、状态继续按「运行中」，否则会被误判为已停止。
+        // 保留 _process 引用（已退出的对象不再 dispose）：启动按钮据此判「已在运行」不重复拉起，
+        // 停止按钮走「结束 QQ 进程」路径。
+        if (IsFrameworkMode() && IsQqProcessRunning())
+        {
+            StopLogReadLoops();
+            LogBuffer.Append(
+                $"NapCat 启动器进程已退出（退出码 {TryReadExitCode(process)?.ToString() ?? "未知"}）；"
+                + "QQ 进程仍在运行——有头形态按「运行中」继续（停止请点「停止 NapCat」，会关闭 QQ 界面）",
+                NapCatLogStream.System);
+            SetStatus(NapCatRunnerState.Running, RunningDetail(process, "等待 NapCat 接入…"));
+            return;
+        }
+
         StopWatchdog();
         StopLogReadLoops();
+        StopLogFileTail();
+        CancelRun();
 
         if (_stopRequested)
         {
@@ -738,6 +1396,8 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
 
     private async Task StopInternalAsync(bool waitExit)
     {
+        CancelRun();
+
         Process? process;
         lock (_lock)
         {
@@ -746,6 +1406,27 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
 
         if (process is null || process.HasExited)
         {
+            // 有头形态：注入启动器拉起 QQ 后自身已退出，「停止」必须结束 QQ 进程——
+            // 否则 NapCat 仍在 QQ 进程里运行、反向 WS 也不会断，而插件已认为停止。
+            if (IsFrameworkMode() && IsQqProcessRunning())
+            {
+                var killed = (_endExistingQqProcesses ?? EndQqProcesses)();
+                LogBuffer.Append(killed > 0
+                        ? $"有头形态停止：已结束 {killed} 个 QQ 进程（NapCat 随之退出，QQ 界面关闭）"
+                        : "有头形态停止：QQ 进程已不在运行",
+                    NapCatLogStream.System);
+                if (killed > 0)
+                {
+                    try
+                    {
+                        await Task.Delay(1000).ConfigureAwait(false); // 等 QQ 释放 NapCat 句柄与端口
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }
+            }
+
             if (process is not null)
             {
                 lock (_lock)
@@ -816,10 +1497,36 @@ public sealed class NapCatRunnerService : IHostedService, IDisposable
         }
     }
 
+    /// <summary>取消本次运行的后台任务（连接确认 / WebUI 探活重试）；停止、进程退出与释放时调用。</summary>
+    private void CancelRun()
+    {
+        try
+        {
+            _runCts?.Cancel();
+        }
+        catch
+        {
+            // 取消竞态：忽略
+        }
+    }
+
     public void Dispose()
     {
         StopWatchdog();
         StopLogReadLoops();
+        StopLogFileTail();
+        CancelRun();
+
+        // 有头形态：宿主关停时若 QQ 仍在运行，一并结束（与无头形态「关闭宿主即结束机器人进程树」一致），
+        // 否则 NapCat 会在后台留着 QQ 界面继续运行。
+        if (IsFrameworkMode() && IsQqProcessRunning())
+        {
+            var killed = (_endExistingQqProcesses ?? EndQqProcesses)();
+            if (killed > 0)
+            {
+                _logger?.LogInformation("宿主关停：已结束 {Count} 个 QQ 进程（有头形态 NapCat 随之停止）", killed);
+            }
+        }
         Process? process;
         lock (_lock)
         {

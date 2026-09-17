@@ -54,8 +54,19 @@
 
                 <Expander Header="NapCat 一键启动（后台运行：登录方式 / 自动启动 / WebUI）" IsExpanded="False">
                     <StackPanel Spacing="10" Margin="0,6">
-                        <TextBlock Text="NapCat 可执行文件路径（exe / bat / 启动器脚本）" FontWeight="SemiBold"/>
-                        <TextBox Text="{Binding Settings.Connection.NapCatExePath}" Watermark="例如 D:\NapCat\NapCat.Win32.bat"/>
+                        <TextBlock Text="运行形态" FontWeight="SemiBold"/>
+                        <StackPanel Orientation="Horizontal" Spacing="24">
+                            <RadioButton Content="无头（Shell 包：不显示 QQ 界面）" GroupName="ctrNapCatRunMode"
+                                         IsChecked="{Binding IsHeadlessRunMode}"/>
+                            <RadioButton Content="有头（Framework 包：显示完整 QQ 界面）" GroupName="ctrNapCatRunMode"
+                                         IsChecked="{Binding IsFrameworkRunMode}"/>
+                        </StackPanel>
+                        <TextBlock Text="无头：官方 Shell / OneKey 包（启动脚本 napcat\launcher-user.bat），不显示 QQ 界面，日志来自进程输出。有头：官方 Framework 有头包（一键有头版的 NapCatWinBootMain.exe，或手动 LiteLoader 形态的官方 QQ.exe），会弹出完整 QQ 登录/聊天界面；此时「停止 NapCat」等于关闭该 QQ 界面，日志改为跟随 NapCat 的 logs 目录。有头包与无头包请用各自独立的安装目录，不要共用 config/cache。"
+                                   FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
+
+                        <TextBlock Text="NapCat 可执行文件路径（无头填 Shell 启动脚本；有头填有头包入口或官方 QQ.exe）" FontWeight="SemiBold"/>
+                        <TextBox Text="{Binding Settings.Connection.NapCatExePath}"
+                                 Watermark="无头：D:\NapCat\napcat\launcher-user.bat；有头：D:\NapCatFramework\NapCatWinBootMain.exe"/>
 
                         <TextBlock Text="工作目录（可选；留空 = 可执行文件所在目录）" FontWeight="SemiBold"/>
                         <TextBox Text="{Binding Settings.Connection.NapCatWorkDirectory}" Watermark="可选"/>
@@ -68,14 +79,16 @@
                                          IsChecked="{Binding IsQuickLogin}"/>
                         </StackPanel>
                         <StackPanel Spacing="6" IsVisible="{Binding IsQuickLogin}">
-                            <TextBlock Text="快速登录 QQ 号（每次启动自动传入该 QQ 号跳过扫码；新电脑首次使用建议先扫码登录一次）"
-                                       FontWeight="SemiBold"/>
+                            <TextBlock Text="快速登录 QQ 号（每次启动自动传入该 QQ 号跳过扫码；需该账号已在本机 QQ 登录过。新电脑首次使用建议先扫码登录一次）"
+                                       FontWeight="SemiBold" TextWrapping="Wrap"/>
                             <TextBox Text="{Binding Settings.Connection.NapCatQuickLoginQQ}" Watermark="机器人 QQ 号（纯数字）"/>
                         </StackPanel>
 
                         <ToggleSwitch Content="ClassIsland 启动后自动后台拉起 NapCat（随插件退出自动结束）"
                                       IsChecked="{Binding Settings.Connection.NapCatAutoStart}"/>
-                        <ToggleSwitch Content="NapCat 启动后自动用浏览器打开 WebUI（登录/管理页面）"
+                        <ToggleSwitch Content="启动 NapCat 前先结束已在运行的 QQ 进程（NapCat 需独占 QQ 实例；QQ 已在运行会导致注入失败、只能扫码登录）"
+                                      IsChecked="{Binding Settings.Connection.NapCatEndExistingQq}"/>
+                        <ToggleSwitch Content="NapCat 启动后自动用浏览器打开 WebUI（登录/管理页面；WebUI 未监听时不打开死页面）"
                                       IsChecked="{Binding Settings.Connection.NapCatOpenWebUiOnStart}"/>
 
                         <StackPanel Orientation="Horizontal" Spacing="10">
@@ -87,7 +100,7 @@
                         </StackPanel>
                         <TextBlock Text="{Binding NapCatWebUiUrlText}" FontStyle="Italic" Opacity="0.8"
                                    TextWrapping="Wrap"/>
-                        <TextBlock Text="说明：停止与插件关停会终止整个 NapCat 进程树；进程存活但反向 WS 断开超过 5 分钟会自动重启；消息接入由上方连接设置（正向/反向 WS）独立承担。"
+                        <TextBlock Text="说明：停止与插件关停会终止整个 NapCat 进程树；启动结果以反向 WS 连接确认（进程存活但未接入时会给出排查指引）；已检测到 NapCat 在运行时不重复启动；进程存活但反向 WS 断开超过 5 分钟会自动重启；消息接入由上方连接设置（正向/反向 WS）独立承担。"
                                    FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Expander>

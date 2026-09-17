@@ -112,6 +112,40 @@ public partial class ConnectionSettingsPage : CyberTechRepSettingsPageBase
         }
     }
 
+    // ---- 运行形态（RadioButton 双向绑定桥接 NapCatRunMode 枚举） ----
+
+    /// <summary>无头形态选中状态（默认；官方 Shell/OneKey 包不显示 QQ 界面，日志来自进程 stdout）。</summary>
+    public bool IsHeadlessRunMode
+    {
+        get => Settings.Connection.NapCatRunMode == NapCatRunMode.Headless;
+        set
+        {
+            if (value)
+            {
+                Settings.Connection.NapCatRunMode = NapCatRunMode.Headless;
+            }
+
+            RaisePropertyChanged(nameof(IsHeadlessRunMode));
+            RaisePropertyChanged(nameof(IsFrameworkRunMode));
+        }
+    }
+
+    /// <summary>有头形态选中状态（Framework/LiteLoader 有头包：显示完整 QQ 界面；「停止」等于关闭该界面）。</summary>
+    public bool IsFrameworkRunMode
+    {
+        get => Settings.Connection.NapCatRunMode == NapCatRunMode.Framework;
+        set
+        {
+            if (value)
+            {
+                Settings.Connection.NapCatRunMode = NapCatRunMode.Framework;
+            }
+
+            RaisePropertyChanged(nameof(IsHeadlessRunMode));
+            RaisePropertyChanged(nameof(IsFrameworkRunMode));
+        }
+    }
+
     // ---- 登录方式（RadioButton 双向绑定桥接 NapCatLoginMode 枚举） ----
 
     /// <summary>扫码登录选中状态（默认；二维码经 NapCat WebUI/控制台展示）。</summary>
@@ -130,7 +164,7 @@ public partial class ConnectionSettingsPage : CyberTechRepSettingsPageBase
         }
     }
 
-    /// <summary>QQ 号快速登录选中状态（每次启动传 <c>-q QQ号</c> 跳过扫码）。</summary>
+    /// <summary>QQ 号快速登录选中状态（每次启动把 QQ 号传给 NapCat 启动器，由启动器转成 NTQQ 的 -q 参数，跳过扫码）。</summary>
     public bool IsQuickLogin
     {
         get => Settings.Connection.NapCatLoginMode == NapCatLoginMode.QuickLoginQQ;
@@ -149,9 +183,11 @@ public partial class ConnectionSettingsPage : CyberTechRepSettingsPageBase
     /// <summary>是否已发现 NapCat WebUI 地址（控制「打开 WebUI」按钮可用性）。</summary>
     public bool HasWebUiUrl => !string.IsNullOrEmpty(_napCatRunner.WebUiUrl);
 
-    /// <summary>WebUI 地址展示文本（未发现时给出指引）。</summary>
-    public string NapCatWebUiUrlText => HasWebUiUrl
-        ? $"WebUI 地址：{_napCatRunner.WebUiUrl}"
+    /// <summary>WebUI 地址展示文本（未发现 / 已发现但未监听时分别给出指引）。</summary>
+    public string NapCatWebUiUrlText => _napCatRunner.WebUiUrl is { Length: > 0 } url
+        ? _napCatRunner.WebUiReady
+            ? $"WebUI 地址（可访问）：{url}"
+            : $"WebUI 地址：{url}（端口未监听，暂不可访问；点击按钮会给出原因）"
         : "WebUI 地址：启动 NapCat 后自动从其配置中发现（用于扫码登录与账号管理）";
 
     private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);

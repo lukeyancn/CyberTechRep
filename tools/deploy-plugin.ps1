@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     把 Release 构建产物部署到本机 ClassIsland 插件目录（开发联调用）。
 

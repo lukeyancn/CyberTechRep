@@ -248,7 +248,9 @@ public class NapCatIngestTests : IDisposable
                 DataDirectory = _dataDir
             },
             new XunitLogger(_output),
-            selfPort);
+            selfPort,
+            // 测试环境绝不真的结束机器上运行的 QQ 进程
+            endExistingQqProcesses: () => 0);
     }
 
     private static async Task<NapCatRunnerStatus> WaitForTerminalAsync(NapCatRunnerService runner)

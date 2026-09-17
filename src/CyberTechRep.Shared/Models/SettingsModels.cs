@@ -82,6 +82,28 @@ public enum NapCatLoginMode
     QuickLoginQQ = 1
 }
 
+/// <summary>
+/// NapCat 运行形态（决定是否显示官方 QQ 完整界面，以及运行判定/停止/日志来源）。
+/// <para>
+/// 形态由 NapCat 的<b>发行包</b>决定：官方 Shell 包（如 <c>NapCat.Shell</c>、
+/// <c>NapCat.Shell.Windows.OneKey</c>）是「无头」包，不显示 QQ 界面；
+/// 官方 Framework 形态（<c>NapCat.Shell.Windows.Framework</c> 有头绿色版、
+/// <c>NapCat.Framework.Windows.Once</c>，或手动 LiteLoaderQQNT + NapCat.Framework）会启动官方 QQ
+/// 客户端并显示完整界面（登录框/聊天面板），NapCat 作为插件在进程内提供 OneBot 服务。
+/// </para>
+/// </summary>
+public enum NapCatRunMode
+{
+    /// <summary>无头（默认，零回归）：NapCat.Shell 等无界面包；运行判定与日志都基于启动进程（stdout）。</summary>
+    Headless = 0,
+
+    /// <summary>
+    /// 有头（Framework/LiteLoader 形态）：会显示官方 QQ 界面。
+    /// 运行判定与停止以 QQ 进程为准（注入启动器拉起 QQ 后自身会退出），日志改读 NapCat 日志文件。
+    /// </summary>
+    Framework = 1
+}
+
 /// <summary>连接设置（QQ 官方机器人开放平台）。</summary>
 public sealed class ConnectionSettings
 {
@@ -140,7 +162,17 @@ public sealed class ConnectionSettings
     /// <summary>NapCat access token（DPAPI 加密存储，UI 脱敏显示，绝不入日志）。</summary>
     public string NapCatAccessTokenProtected { get; set; } = "";
 
-    /// <summary>NapCat 可执行文件路径（一键启动 NapCat 用；插件不内置 NapCat 本体）。</summary>
+    /// <summary>
+    /// NapCat 运行形态（默认无头，零回归）。无头 = 官方 Shell 包，不显示 QQ 界面，
+    /// 运行判定/日志基于启动进程；有头 = Framework/LiteLoader 形态，会显示官方 QQ 完整界面，
+    /// 运行判定与「停止」以 QQ 进程为准、日志改读 NapCat 日志文件。
+    /// </summary>
+    public NapCatRunMode NapCatRunMode { get; set; } = NapCatRunMode.Headless;
+
+    /// <summary>NapCat 可执行文件路径（一键启动 NapCat 用；插件不内置 NapCat 本体）。
+    /// 无头形态填 Shell 包的启动脚本（如 <c>napcat\launcher-user.bat</c>）；
+    /// 有头形态填 Framework 有头包的入口（一键有头版的 <c>NapCatWinBootMain.exe</c>，
+    /// 或手动 LiteLoader 形态的官方 <c>QQ.exe</c>）。</summary>
     public string NapCatExePath { get; set; } = "";
 
     /// <summary>NapCat 工作目录（可选；为空时使用可执行文件所在目录）。</summary>
@@ -157,6 +189,13 @@ public sealed class ConnectionSettings
 
     /// <summary>ClassIsland 启动后自动后台拉起 NapCat（无窗口；仅 NapCat 模式且已配置可执行文件时生效）。</summary>
     public bool NapCatAutoStart { get; set; }
+
+    /// <summary>
+    /// 启动 NapCat 前结束已在运行的 QQ 进程（默认开启）。NapCat 以注入方式运行在 QQ 进程内，
+    /// 需独占 QQ 实例：QQ 已在运行时新实例会被单实例机制顶掉，NapCat 拿不到已登录会话
+    /// （表现为只弹二维码、始终不接入插件）。关闭后由用户自行保证启动 NapCat 前 QQ 未运行。
+    /// </summary>
+    public bool NapCatEndExistingQq { get; set; } = true;
 
     /// <summary>NapCat 启动成功后自动用系统默认浏览器打开 WebUI（登录/管理页面）。</summary>
     public bool NapCatOpenWebUiOnStart { get; set; }
