@@ -25,13 +25,17 @@ jobs:
       - name: Restore
         run: dotnet restore CyberTechRep.sln
 
-      # Release 构建同时产出 .cipx 与 checksums.md
+      # 注意顺序：Debug 测试必须先跑（dotnet test 会以 Debug 配置重新构建插件，
+      # 而 CreateCipx 对所有配置生效 → 会重新生成 cipx/checksums.md）。
+      # 若把测试放在 Release 构建之后，最终上传/发布的会是 Debug 包
+      #（体积更大、未优化），Release 包反而被覆盖。
+      - name: Test (Debug)
+        run: dotnet test CyberTechRep.sln -c Debug
+
+      # Release 构建必须放在测试之后：它产出最终要发布的 .cipx 与 checksums.md
       #（ClassIsland.PluginSdk targets 调用 pwsh generate-md5.ps1；windows-latest 自带 pwsh）
       - name: Build (Release)
         run: dotnet build CyberTechRep.sln -c Release --no-restore
-
-      - name: Test (Debug)
-        run: dotnet test CyberTechRep.sln -c Debug
 
       # 本地同样的校验逻辑：checksums.md 中的 MD5 必须与实际包一致
       - name: Verify cipx MD5 checksum
