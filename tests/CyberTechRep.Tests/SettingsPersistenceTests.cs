@@ -116,6 +116,14 @@ public class SettingsPersistenceTests : IDisposable
         await svc.ResetToDefaultsAsync(); // Current 整体替换 → 广播 → 控制器应重捕获
 
         var changed = new OverlayWindowSettings { X = 111.5, Y = 222.5, Pinned = true, ClickThrough = true };
+
+        // 落盘完成信号：SettingsService.SaveAsync 是「先写盘、后广播」，故一次广播即代表写盘已完成。
+        // 订阅必须放在 ResetToDefaultsAsync 之后（重置自身也会广播），这样第一次广播就是控制器回写。
+        // 注意不要用「轮询新开 SettingsService 读文件」等待落盘：轮询读取会持续持有 settings.json 句柄，
+        // 与写盘的原子替换（File.Move 覆盖）互锁，是 CI 上本用例偶发超时的根因。
+        var saved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        svc.SettingsChanged += (_, _) => saved.TrySetResult();
+
         await controller.ApplySettingsAsync(SuspensionWindowController.NoticeKey, changed);
 
         // 控制器的写入必须落在新 Current（活实例）上
@@ -124,19 +132,13 @@ public class SettingsPersistenceTests : IDisposable
         Assert.True(svc.Current.Overlays.Notice.Pinned);
         Assert.True(svc.Current.Overlays.Notice.ClickThrough);
 
-        // 并最终持久化到 settings.json（ApplySettingsAsync 的落盘为后台任务，轮询等待）
-        await TestWait.WaitForAsync(() =>
-        {
-            try
-            {
-                var reloaded = new SettingsService(_dir);
-                return reloaded.Current.Overlays.Notice.Pinned;
-            }
-            catch
-            {
-                return false;
-            }
-        }, TimeSpan.FromSeconds(15), "重捕获后控制器写入应持久化到 settings.json");
+        // 并最终持久化到 settings.json（ApplySettingsAsync 的落盘为后台任务，等写盘完成广播）
+        await TestWait.WaitForAsync(() => saved.Task.IsCompleted,
+            TimeSpan.FromSeconds(15), "重捕获后控制器写入应完成一次保存（写盘后广播）");
+
+        var reloaded = new SettingsService(_dir);
+        Assert.True(reloaded.Current.Overlays.Notice.Pinned);
+        Assert.Equal(111.5, reloaded.Current.Overlays.Notice.X);
     }
 
     [Fact]
