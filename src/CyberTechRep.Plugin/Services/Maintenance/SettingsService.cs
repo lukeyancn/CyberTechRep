@@ -23,6 +23,16 @@ public sealed class SettingsService : ISettingsService
     /// <summary>当前支持的配置结构版本；导入时强校验，不匹配即拒绝。</summary>
     public const int SupportedSchemaVersion = 1;
 
+    /// <summary>
+    /// 原子替换（临时文件 → File.Move 覆盖）遇到目标文件被占用时的重试窗口。
+    /// Windows 上只要有其他句柄打开着 settings.json，覆盖替换就会失败（共享冲突），
+    /// 因此重试到该期限为止：既不无限等待，也不因一次偶发占用丢掉整次保存。
+    /// </summary>
+    internal static readonly TimeSpan ReplaceRetryWindow = TimeSpan.FromSeconds(3);
+
+    /// <summary>占用重试间隔（<see cref="ReplaceRetryWindow"/> 内的轮询步长）。</summary>
+    internal static readonly TimeSpan ReplaceRetryStep = TimeSpan.FromMilliseconds(50);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -237,8 +247,12 @@ public sealed class SettingsService : ISettingsService
                 await stream.FlushAsync(ct).ConfigureAwait(false);
             }
 
-            // Windows 下若并发读取方恰好持有 settings.json 句柄（如启动加载/诊断读取），
-            // Move(overwrite) 会瞬时 IOException；有界重试避免一次偶发冲突丢失整次保存。
+            // Windows 下若并发读取方恰好持有 settings.json 句柄（宿主启动加载 / 排错面板读取 /
+            // 杀毒与备份软件扫描 / 用户编辑器打开），File.Move(overwrite) 会抛
+            // UnauthorizedAccessException（实测：目标文件被任何其他句柄打开时覆盖替换都会失败，
+            // 与对方共享模式无关）。因此重试到期才放弃——固定 3 次（150ms）会让一次偶发占用
+            // 静默丢掉整次保存：用户改完设置看到「已保存」，重启却回退（写盘重试窗口见调用方注释）。
+            var moveDeadline = DateTime.UtcNow + ReplaceRetryWindow;
             for (var attempt = 1; ; attempt++)
             {
                 try
@@ -246,9 +260,24 @@ public sealed class SettingsService : ISettingsService
                     File.Move(tempPath, _filePath, overwrite: true);
                     break;
                 }
-                catch (Exception ex) when (attempt < 3 && (ex is IOException or UnauthorizedAccessException))
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-                    await Task.Delay(50, ct).ConfigureAwait(false);
+                    if (DateTime.UtcNow >= moveDeadline)
+                    {
+                        _logger.LogError(
+                            ex, "设置写盘失败：目标文件被占用超过 {Window}，本次保存放弃（内存中状态保留）",
+                            ReplaceRetryWindow);
+                        throw;
+                    }
+
+                    if (attempt == 1)
+                    {
+                        _logger.LogWarning(
+                            "设置写盘遇到文件占用（{Reason}），重试至 {Window} 内成功为止：{Path}",
+                            ex.GetType().Name, ReplaceRetryWindow, _filePath);
+                    }
+
+                    await Task.Delay(ReplaceRetryStep, ct).ConfigureAwait(false);
                 }
             }
         }
