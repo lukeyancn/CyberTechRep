@@ -2,71 +2,464 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="480" d:DesignHeight="540"
+        mc:Ignorable="d" d:DesignWidth="620" d:DesignHeight="680"
         x:Class="CyberTechRep.Plugin.Views.FirstRunWizardWindow"
-        Title="CyberTechRep 首次启动引导" Width="480" Height="540" MinWidth="420" MinHeight="420"
+        Title="CyberTechRep 首次启动引导" Width="620" Height="680" MinWidth="480" MinHeight="420"
         SystemDecorations="None" Topmost="True" ShowInTaskbar="True" CanResize="True"
         WindowStartupLocation="CenterScreen" FontSize="14" Background="Transparent">
 
   <Border CornerRadius="10" Background="#F2FAFAFA" BorderBrush="#33000000" BorderThickness="1">
     <Grid RowDefinitions="Auto,*,Auto">
 
-      <!-- 标题栏：拖拽区（风格与模块 6 悬浮窗一致：无边框 + 置顶 + 圆角） -->
+      <!-- 标题栏：拖拽区（风格与悬浮窗一致：无边框 + 置顶 + 圆角） -->
       <Border Grid.Row="0" Background="#14000000" CornerRadius="10,10,0,0"
               PointerPressed="OnHeaderPointerPressed">
-        <Grid ColumnDefinitions="*,Auto" Margin="14,10,8,10">
+        <Grid ColumnDefinitions="*,Auto,Auto" Margin="14,10,8,10">
           <TextBlock Text="CyberTechRep 首次启动引导" FontWeight="SemiBold" VerticalAlignment="Center" />
-          <Button Grid.Column="1" Content="×" Click="OnSkipClick"
+          <TextBlock x:Name="StepIndicator" Grid.Column="1" VerticalAlignment="Center"
+                     FontSize="12" Opacity="0.7" Margin="0,0,10,0" />
+          <Button Grid.Column="2" Content="×" Click="OnCloseClick" ToolTip.Tip="关闭引导（视为跳过，之后不再自动弹出）"
                   Padding="6,0" MinWidth="28" Background="Transparent" BorderThickness="0" />
         </Grid>
       </Border>
 
-      <!-- 步骤内容 -->
-      <Panel Grid.Row="1" Margin="24,16">
+      <!-- 步骤内容（每步一个面板，按当前步骤切换可见性；窗口只做渲染与绑定） -->
+      <ScrollViewer Grid.Row="1" x:Name="StepScroll">
+        <Panel Margin="24,16">
 
-        <!-- 第 1 步：欢迎/说明 -->
-        <StackPanel x:Name="StepWelcome" Spacing="10">
-          <TextBlock Text="欢迎使用 CyberTechRep" FontSize="22" FontWeight="Bold" />
-          <TextBlock TextWrapping="Wrap" Opacity="0.85"
-                     Text="CyberTechRep 是 ClassIsland 的课堂信息分发插件：接入 QQ 群消息后自动分类通知/作业、识别学科，并在桌面悬浮窗展示与归档文件。"/>
-          <TextBlock Text="首次使用建议先完成连接配置：" FontWeight="SemiBold" Margin="0,8,0,0"/>
-          <TextBlock TextWrapping="Wrap" Opacity="0.85"
-                     Text="• 在 q.qq.com（QQ 机器人开放平台）注册并创建机器人，获得 AppID / AppSecret；&#10;• 在下一步填入连接参数，插件即可接收班级群消息；&#10;• 其余设置（分类 / 悬浮窗 / 文件 / 维护）可随时在 ClassIsland 设置中调整。"/>
-          <TextBlock TextWrapping="Wrap" FontStyle="Italic" Opacity="0.7"
-                     Text="也可以选择「跳过引导」，稍后在「CyberTechRep 连接」设置页完成配置。"/>
-        </StackPanel>
+          <!-- ===== 步骤 1：欢迎 ===== -->
+          <StackPanel x:Name="StepWelcome" Spacing="10">
+            <TextBlock Text="欢迎使用 CyberTechRep" FontSize="22" FontWeight="Bold" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="这个插件把班级 QQ 群里的消息搬到桌面上：群里发的通知、作业、文件和图片会被自动分开、按学科归类，桌面悬浮窗随时能看，文件按学科存到本机。" />
+            <TextBlock Text="接下来会带你配好 6 件事：" FontWeight="SemiBold" Margin="0,6,0,0" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="① 连接 QQ（QQ 官方机器人 / NapCat）&#10;② 接管哪些群的消息&#10;③ 作业清单发到哪个群&#10;④ 通知、作业和学科怎么分&#10;⑤ 桌面上显示哪些悬浮窗&#10;⑥ 文件存到哪、留多久" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85" Margin="0,6,0,0"
+                       Text="最后一步是日常使用手册：照着做一遍，就会用「已读 / 转为作业 / 整理并发送 / 点圆圈看文件」这些操作了。" />
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8" Margin="0,6,0,0">
+              <StackPanel Spacing="4">
+                <TextBlock Text="关于跳过" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="需要填写的每一步都能点「跳过这一步」，稍后到对应的设置页补上；已经点过「下一步」的内容会立即保存，不会丢。机器人密钥只保存在本机，是加密存放的。" />
+              </StackPanel>
+            </Border>
+          </StackPanel>
 
-        <!-- 第 2 步：连接配置 -->
-        <StackPanel x:Name="StepConnection" Spacing="8" IsVisible="False">
-          <TextBlock Text="连接配置（QQ 官方机器人开放平台）" FontSize="18" FontWeight="Bold" Margin="0,0,0,4"/>
-          <TextBlock Text="机器人 AppID（q.qq.com 注册获得）" FontWeight="SemiBold"/>
-          <TextBox x:Name="AppIdBox" Watermark="AppID"/>
-          <TextBlock Text="AppSecret（DPAPI 加密存储）" FontWeight="SemiBold"/>
-          <TextBox x:Name="SecretBox" PasswordChar="●" Watermark="AppSecret"/>
-          <TextBlock Text="开放平台 API 根地址" FontWeight="SemiBold"/>
-          <TextBox x:Name="ApiBaseBox"/>
-          <TextBlock Text="AccessToken 服务地址" FontWeight="SemiBold"/>
-          <TextBox x:Name="TokenApiBox"/>
-          <TextBlock x:Name="ConnectionFeedback" Text="" TextWrapping="Wrap" Foreground="#B0000000"
-                     FontStyle="Italic" IsVisible="False" Margin="0,4,0,0"/>
-        </StackPanel>
+          <!-- ===== 步骤 2：连接方式 ===== -->
+          <StackPanel x:Name="StepConnection" Spacing="10" IsVisible="False">
+            <TextBlock Text="第 1 步：连接 QQ（必须配）" FontSize="18" FontWeight="Bold" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="先选一种连接方式，插件才能收到群消息。两种方式选一个就行（默认沿用你当前的设置）：" />
+            <StackPanel Orientation="Horizontal" Spacing="24">
+              <RadioButton x:Name="OfficialModeRadio" GroupName="ctrWizardMode"
+                           Content="QQ 官方机器人（推荐，不用装东西）" Checked="OnConnectionModeChanged" />
+              <RadioButton x:Name="NapCatModeRadio" GroupName="ctrWizardMode"
+                           Content="NapCat（需要自己先装好 NapCat）" Checked="OnConnectionModeChanged" />
+            </StackPanel>
 
-        <!-- 第 3 步：完成 -->
-        <StackPanel x:Name="StepFinish" Spacing="10" VerticalAlignment="Center" IsVisible="False">
-          <TextBlock Text="设置完成！" FontSize="22" FontWeight="Bold" HorizontalAlignment="Center"/>
-          <TextBlock x:Name="FinishSummary" TextWrapping="Wrap" TextAlignment="Center" Opacity="0.85"
-                     Text="CyberTechRep 已就绪。连接参数与引导状态已保存，之后可在 ClassIsland 设置的 CyberTechRep 分组中随时调整。"/>
-        </StackPanel>
-      </Panel>
+            <!-- QQ 官方机器人 -->
+            <StackPanel x:Name="OfficialPanel" Spacing="6">
+              <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                         Text="去哪拿：打开 q.qq.com（QQ 机器人开放平台）注册并创建机器人，创建后就能看到「机器人 AppID」和「AppSecret」；把机器人拉进班级群，并允许它读群消息。" />
+              <TextBlock Text="机器人 AppID（必填）" FontWeight="SemiBold" />
+              <TextBox x:Name="AppIdBox" Watermark="AppID" />
+              <TextBlock Text="AppSecret（必填，加密保存在本机）" FontWeight="SemiBold" />
+              <TextBox x:Name="SecretBox" PasswordChar="●" Watermark="AppSecret" />
+              <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12"
+                         Text="AppSecret 只在保存时加密写入本机设置，不会写进日志；重新打开引导时会自动填回来。" />
+              <Expander Header="接口地址（通常不用改，留空 = 用官方默认地址）" IsExpanded="False">
+                <StackPanel Spacing="6" Margin="0,6">
+                  <TextBlock Text="API 根地址" />
+                  <TextBox x:Name="ApiBaseBox" Watermark="留空 = 官方默认地址" />
+                  <TextBlock Text="AccessToken 服务地址" />
+                  <TextBox x:Name="TokenApiBox" Watermark="留空 = 官方默认地址" />
+                </StackPanel>
+              </Expander>
+            </StackPanel>
 
-      <!-- 底部按钮 -->
-      <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="24,0,24,16">
-        <Button x:Name="BackButton" Content="上一步" Click="OnBackClick"
-                HorizontalAlignment="Left" IsVisible="False" MinWidth="88"/>
-        <Button x:Name="NextButton" Grid.Column="1" Content="下一步" Click="OnNextClick" MinWidth="88"/>
-        <Button x:Name="SkipButton" Grid.Column="2" Content="跳过引导" Click="OnSkipClick" Margin="8,0,0,0"
-                MinWidth="88"/>
-      </Grid>
+            <!-- NapCat（OneBot 11） -->
+            <StackPanel x:Name="NapCatPanel" Spacing="6" IsVisible="False">
+              <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                         Text="去哪拿：NapCat 是一个让 QQ 支持 OneBot 11 接口的程序，需要自己去官网下载解压（插件不自带）；装好后在「CyberTechRep 连接」页可以一键启动、打开 WebUI 看登录二维码。" />
+              <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                         Text="更细的下载、解压、登录步骤：看随插件提供的《使用教程》里的 NapCat 一节；也可以直接到「CyberTechRep 连接」页 →「NapCat 一键启动」按提示操作。" />
+              <TextBlock Text="NapCat 可执行文件路径（必填）" FontWeight="SemiBold" />
+              <TextBox x:Name="NapCatExeBox"
+                       Watermark="无头：D:\NapCat\napcat\launcher-user.bat；有头：D:\NapCatFramework\NapCatWinBootMain.exe" />
+              <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12"
+                         Text="无头 = 官方 Shell 包，不显示 QQ 界面；有头 = Framework 包，会显示完整的 QQ 登录 / 聊天界面。两种包请分开目录安装。" />
+              <TextBlock Text="工作目录（可选，留空 = 可执行文件所在目录）" FontWeight="SemiBold" />
+              <TextBox x:Name="NapCatWorkDirBox" Watermark="可选" />
+              <TextBlock Text="运行方式" FontWeight="SemiBold" />
+              <StackPanel Orientation="Horizontal" Spacing="24">
+                <RadioButton x:Name="HeadlessRadio" GroupName="ctrWizardRunMode" Content="无头（不显示 QQ 界面）" />
+                <RadioButton x:Name="FrameworkRadio" GroupName="ctrWizardRunMode" Content="有头（显示 QQ 界面）" />
+              </StackPanel>
+              <TextBlock Text="登录方式" FontWeight="SemiBold" />
+              <StackPanel Orientation="Horizontal" Spacing="24">
+                <RadioButton x:Name="ScanQrRadio" GroupName="ctrWizardLoginMode"
+                             Content="扫码登录（新电脑第一次用这个）" />
+                <RadioButton x:Name="QuickLoginRadio" GroupName="ctrWizardLoginMode"
+                             Content="QQ 号快速登录" Checked="OnLoginModeChanged" />
+              </StackPanel>
+              <StackPanel x:Name="QuickLoginPanel" Spacing="6" IsVisible="False">
+                <TextBlock Text="机器人 QQ 号（纯数字）" FontWeight="SemiBold" />
+                <TextBox x:Name="QuickLoginQqBox" Watermark="123456789" />
+              </StackPanel>
+              <TextBlock Text="连接方式（两个填一个）" FontWeight="SemiBold" />
+              <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                         Text="填了「正向 WS 地址」就按它去连 NapCat；这一栏留空，就用「反向监听端口」等 NapCat 连进来（把 NapCat 的「WebSocket 客户端」指向 ws://127.0.0.1:该端口）。" />
+              <TextBox x:Name="NapCatWsBox" Watermark="ws://127.0.0.1:3001（留空 = 用反向监听）" />
+              <Grid ColumnDefinitions="Auto,*" Margin="0,4,0,0">
+                <TextBlock Text="反向监听端口" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <NumericUpDown Grid.Column="1" x:Name="NapCatPortBox" Minimum="0" Maximum="65535"
+                               Increment="1" HorizontalAlignment="Left" MinWidth="140" />
+              </Grid>
+              <TextBlock Text="access token（可选：留空 = 不校验；要和 NapCat 里的配置一致）" FontWeight="SemiBold" />
+              <TextBox x:Name="NapCatTokenBox" PasswordChar="●" Watermark="可选" />
+              <ToggleSwitch x:Name="NapCatAutoStartSwitch"
+                            Content="ClassIsland 启动后自动后台拉起 NapCat（随插件退出自动结束）" />
+
+              <!-- 启动 NapCat 并打开 WebUI：按上面填的路径真的把 NapCat 拉起来，等 WebUI 就绪后打开浏览器扫码登录 -->
+              <Border Background="#0F000000" CornerRadius="6" Padding="10,8" Margin="0,4,0,0">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="启动 NapCat 并打开 WebUI" FontWeight="SemiBold" />
+                  <TextBlock TextWrapping="Wrap" FontSize="12" Opacity="0.7"
+                             Text="点下面的按钮会按上面填的路径真的把 NapCat 启动起来（和「CyberTechRep 连接」页的「NapCat 一键启动」一样）；等 WebUI 就绪后自动用浏览器打开登录页面，扫码登录一次就行。以后想再打开 WebUI，到「CyberTechRep 连接」页点「打开 WebUI」。" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="NapCatLaunchButton" Content="启动 NapCat 并打开 WebUI"
+                            Click="OnNapCatLaunchClick" Classes="accent" />
+                    <Button x:Name="NapCatOpenWebUiButton" Content="打开 WebUI" Click="OnNapCatOpenWebUiClick"
+                            IsVisible="False" />
+                  </StackPanel>
+                  <TextBlock x:Name="NapCatLaunchStatus" IsVisible="False" TextWrapping="Wrap"
+                             FontSize="12" Opacity="0.85" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="怎么验证接通了" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="点「下一步」保存后，让群里发一条消息，打开「CyberTechRep 维护」页 → 展开「排错面板」→ 点「刷新」，「最近消息」里能看到这条消息，就说明接通了。" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="换过连接方式（QQ 官方机器人 ↔ NapCat）后，要重启一次 ClassIsland，才会按新的方式连接。" />
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
+          <!-- ===== 步骤 3：接管哪些群 ===== -->
+          <StackPanel x:Name="StepIngestScope" Spacing="10" IsVisible="False">
+            <TextBlock Text="第 2 步：接管哪些群的消息" FontSize="18" FontWeight="Bold" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="机器人可能被拉进很多群，这里决定插件只处理哪些群的消息。一行一个，填几个就接管几个群。" />
+            <TextBox x:Name="GroupWhitelistBox" AcceptsReturn="True" Height="110"
+                     Watermark="每一行一个群号（NapCat）或群 OpenID（QQ 官方机器人）" />
+            <TextBlock TextWrapping="Wrap" FontWeight="SemiBold"
+                       Text="留空 = 不限制：机器人已经在的每个群，消息都会被接管（插件不会自己去加群）。刚上手可以先留空试试；长期使用建议只填班级群和任课群。" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="填什么：NapCat 模式填群号（纯数字，例如 123456789）；QQ 官方机器人模式填群 OpenID（一串字母数字，不是群号）。" />
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="怎么拿到群号 / 群 OpenID" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="把机器人拉进群后，在群里发一条消息，然后打开「CyberTechRep 维护」页 →「排错面板」→「刷新」，「最近消息」里 group= 后面那串值就是，复制进来即可；NapCat 模式下也可以在自己的 WebUI 或日志里看群号。" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="怎么验证：保存后在群里再发一条消息，排错面板「最近消息」里出现它，就说明这个群被接管了；没出现就回来检查群号 / 群 OpenID 填得对不对。" />
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
+          <!-- ===== 步骤 4：发送目标群 ===== -->
+          <StackPanel x:Name="StepSendTargets" Spacing="10" IsVisible="False">
+            <TextBlock Text="第 3 步：作业清单发到哪个群" FontSize="18" FontWeight="Bold" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="作业悬浮窗左下角有「整理并发送」：把当天作业按学科整理成一段文字，点确认后发到你指定的群，老师不用再自己敲一遍。" />
+            <ToggleSwitch x:Name="HomeworkSendSwitch"
+                          Content="打开「整理并发送」（关掉后作业悬浮窗不显示发送入口）" />
+            <TextBlock Text="目标群（一行一个；留空 = 没配，点发送会失败）" FontWeight="SemiBold" />
+            <TextBox x:Name="TargetGroupsBox" AcceptsReturn="True" Height="90"
+                     Watermark="NapCat 填群号；QQ 官方机器人填群 OpenID" />
+            <TextBlock TextWrapping="Wrap" FontWeight="SemiBold"
+                       Text="「群白名单」和「发送目标群」是两件独立的事：白名单决定「收哪些群的消息」，这里决定「把作业清单发到哪个群」；改白名单不会影响发送目标。" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="填什么：NapCat 模式填群号（纯数字）；QQ 官方机器人模式填群 OpenID。发送用的还是同一个机器人 / QQ 账号，所以这个账号必须已经在目标群里。" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="怎么验证：作业悬浮窗里出现作业后点「整理并发送」，确认窗里会写明要发到几个群，发送结果也会直接显示在窗口上。" />
+          </StackPanel>
+
+          <!-- ===== 步骤 5：通知、作业与学科 ===== -->
+          <StackPanel x:Name="StepClassification" Spacing="10" IsVisible="False">
+            <TextBlock Text="第 4 步：通知、作业和学科怎么分" FontSize="18" FontWeight="Bold" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="插件先按关键词把每条消息分成「通知」或「作业」：哪边命中的关键词多就算哪边；两边一样多或都没命中，按通知处理（消息不会丢）。" />
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="关键词（当前值，也是默认示例）" FontWeight="SemiBold" />
+                <TextBlock x:Name="NoticeKeywordText" TextWrapping="Wrap" Opacity="0.85" />
+                <TextBlock x:Name="HomeworkKeywordText" TextWrapping="Wrap" Opacity="0.85" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12"
+                           Text="要改关键词：到「CyberTechRep 词表编辑」页 →「消息分类关键词」，保存后立即生效。" />
+              </StackPanel>
+            </Border>
+            <TextBlock Text="学科怎么认" FontWeight="SemiBold" />
+            <StackPanel Orientation="Horizontal" Spacing="24">
+              <RadioButton x:Name="MemberSelectionRadio" GroupName="ctrWizardRecognition"
+                           Content="按发送者绑定优先（推荐）" />
+              <RadioButton x:Name="KeywordOnlyRadio" GroupName="ctrWizardRecognition" Content="只按关键词" />
+            </StackPanel>
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="按发送者绑定优先：先看这位老师绑定过哪个学科（例如数学老师 → 数学），认不出来再按消息里的学科词猜；老师没绑定过、又猜不出来时，会弹一个选择窗让他点一下。只按关键词：完全不看发送者，只看消息内容里的学科词。" />
+            <ToggleSwitch x:Name="SelectionWindowSwitch"
+                          Content="老师没绑定学科时，弹选择窗让他点选学科（点过之后他的消息都按这个学科归）" />
+            <ToggleSwitch x:Name="NoticePrefixSwitch"
+                          Content="通知正文加学科前缀（例如「数学：明天带三角板」；只有知道学科时才加）" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12"
+                       Text="小提示：「加学科前缀」这个开关目前只在引导里能改；以后想改，可以再打开一次引导（维护页 →「首次启动引导」）。" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="怎么验证：随便发一条带「作业」字样的消息，看它是否出现在作业悬浮窗里、并且归到了正确学科；归错了就点作业悬浮窗里的文字直接改。" />
+          </StackPanel>
+
+          <!-- ===== 步骤 6：悬浮窗 ===== -->
+          <StackPanel x:Name="StepOverlays" Spacing="10" IsVisible="False">
+            <TextBlock Text="第 5 步：桌面上显示哪些悬浮窗" FontSize="18" FontWeight="Bold" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="每个窗口一张卡片：卡片里的「显示」= 这个窗口要不要出现在桌面上，「置顶」= 要不要浮在所有窗口之上。悬浮窗默认钉在桌面最底层：其他窗口都会挡住它，按 Win+D 显示桌面也不会消失；打开「置顶」才会浮在所有窗口之上。「固定」= 不能拖动和缩放；「鼠标穿透」= 鼠标点击直接穿过这个窗口。位置、大小、透明度、字号可以到「CyberTechRep 悬浮窗」页精调。" />
+
+            <!-- 卡片 1：圆圈栏 -->
+            <Border CornerRadius="6" Background="#0F000000" Padding="10,8" Margin="0,0,0,6">
+              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                <TextBlock Text="圆圈栏" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <CheckBox x:Name="CircleVisibleBox" Content="显示" />
+                  <CheckBox x:Name="CircleTopmostBox" Content="置顶" />
+                </StackPanel>
+                <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0" FontSize="12" Opacity="0.7"
+                           TextWrapping="Wrap"
+                           Text="桌面边上的一列学科圆圈：点一下看该学科的文件；有新文件时圆圈上出现小红点" />
+              </Grid>
+            </Border>
+
+            <!-- 卡片 2：通知 -->
+            <Border CornerRadius="6" Background="#0F000000" Padding="10,8" Margin="0,0,0,6">
+              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                <TextBlock Text="通知" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <CheckBox x:Name="NoticeVisibleBox" Content="显示" />
+                  <CheckBox x:Name="NoticeTopmostBox" Content="置顶" />
+                </StackPanel>
+                <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0" FontSize="12" Opacity="0.7"
+                           TextWrapping="Wrap"
+                           Text="群里的通知：可以点「已读」，也可以一键「转为作业」" />
+              </Grid>
+            </Border>
+
+            <!-- 卡片 3：作业 -->
+            <Border CornerRadius="6" Background="#0F000000" Padding="10,8" Margin="0,0,0,6">
+              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                <TextBlock Text="作业" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <CheckBox x:Name="HomeworkVisibleBox" Content="显示" />
+                  <CheckBox x:Name="HomeworkTopmostBox" Content="置顶" />
+                </StackPanel>
+                <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0" FontSize="12" Opacity="0.7"
+                           TextWrapping="Wrap"
+                           Text="按学科分组：点文字可以直接改，左下角「整理并发送」把清单发到目标群" />
+              </Grid>
+            </Border>
+
+            <!-- 卡片 4：学科文件 -->
+            <Border CornerRadius="6" Background="#0F000000" Padding="10,8" Margin="0,0,0,6">
+              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                <TextBlock Text="学科文件" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <CheckBox x:Name="FilesVisibleBox" Content="显示" />
+                  <CheckBox x:Name="FilesTopmostBox" Content="置顶" />
+                </StackPanel>
+                <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0" FontSize="12" Opacity="0.7"
+                           TextWrapping="Wrap"
+                           Text="点圆圈（或右键圆圈）打开，上课时也能自动弹出" />
+              </Grid>
+            </Border>
+
+            <!-- 卡片 5：图片 -->
+            <Border CornerRadius="6" Background="#0F000000" Padding="10,8" Margin="0,0,0,6">
+              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                <TextBlock Text="图片" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <CheckBox x:Name="ImageVisibleBox" Content="显示" />
+                  <CheckBox x:Name="ImageTopmostBox" Content="置顶" />
+                </StackPanel>
+                <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0" FontSize="12" Opacity="0.7"
+                           TextWrapping="Wrap"
+                           Text="群里发的图片会自动弹到这个窗口，标题栏「打开」用系统看图程序打开当前这张" />
+              </Grid>
+            </Border>
+
+            <TextBlock TextWrapping="Wrap" FontSize="12" Opacity="0.7"
+                       Text="另外还有一个「未绑定学科选择窗」：只有老师没绑定学科、消息需要判断学科时才会自动弹出，不需要在这里开。" />
+
+            <!-- 卡片 6：上课自动弹出 -->
+            <Border CornerRadius="6" Background="#0F000000" Padding="10,8">
+              <StackPanel Spacing="6">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="上课时自动弹出对应学科的文件悬浮窗" FontWeight="SemiBold"
+                             VerticalAlignment="Center" TextWrapping="Wrap" />
+                  <ToggleSwitch Grid.Column="1" x:Name="AutoOpenSwitch" Content="打开"
+                                VerticalAlignment="Center" />
+                </Grid>
+                <Grid ColumnDefinitions="Auto,Auto">
+                  <TextBlock Text="提前 / 推迟秒数" VerticalAlignment="Center" FontSize="12" Opacity="0.7"
+                             Margin="0,0,8,0" />
+                  <NumericUpDown Grid.Column="1" x:Name="AutoOpenDelayBox" Minimum="-600" Maximum="600"
+                                 Increment="5" HorizontalAlignment="Left" MinWidth="140" />
+                </Grid>
+                <TextBlock TextWrapping="Wrap" FontSize="12" Opacity="0.7"
+                           Text="秒数说明：正数 = 上课后推迟 N 秒弹出；负数 = 上课前提前 |N| 秒弹出；0 = 准点弹出。只在上面开关打开时生效。" />
+              </StackPanel>
+            </Border>
+
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="怎么验证：保存后桌面马上会按上面的选择显示 / 隐藏窗口（被窗口挡住时按 Win+D 就能看到）；关掉的窗口以后可以在「CyberTechRep 悬浮窗」页重新打开。" />
+          </StackPanel>
+
+          <!-- ===== 步骤 7：文件与保留 ===== -->
+          <StackPanel x:Name="StepFilesRetention" Spacing="10" IsVisible="False">
+            <TextBlock Text="第 6 步：文件存到哪、留多久" FontSize="18" FontWeight="Bold" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="群里发的文件会自动下载到本机，默认按「学科 / 日期」分文件夹存放，找起来和班里的文件夹习惯一致。" />
+            <TextBlock Text="下载目录" FontWeight="SemiBold" />
+            <TextBox x:Name="DownloadRootBox" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12"
+                       Text="默认「下载文件」在插件的「数据目录」下：到「CyberTechRep 关于」页可以一键打开数据目录看实际位置；也可以填绝对路径（例如 D:\班级文件）。" />
+            <ToggleSwitch x:Name="GroupBySubjectSwitch" Content="按学科分组存放（学科 / 日期 / 文件名）" />
+            <Grid ColumnDefinitions="Auto,*" Margin="0,4,0,0">
+              <TextBlock Text="磁盘占用上限（MB）" VerticalAlignment="Center" Margin="0,0,8,0" />
+              <NumericUpDown Grid.Column="1" x:Name="MaxDiskBox" Minimum="0" Maximum="10485760"
+                             Increment="128" HorizontalAlignment="Left" MinWidth="160" />
+            </Grid>
+            <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12" Text="0 = 不限；到上限时按下面的方式处理。" />
+            <TextBlock Text="到上限时怎么办" FontWeight="SemiBold" />
+            <ComboBox x:Name="CleanupPolicyBox" MinWidth="320" HorizontalAlignment="Left">
+              <ComboBoxItem Content="停止接收新文件并告警（默认）" />
+              <ComboBoxItem Content="自动清理最旧的文件" />
+            </ComboBox>
+            <Grid ColumnDefinitions="Auto,*" Margin="0,4,0,0">
+              <TextBlock Text="单个文件大小上限（MB）" VerticalAlignment="Center" Margin="0,0,8,0" />
+              <NumericUpDown Grid.Column="1" x:Name="MaxFileBox" Minimum="1" Maximum="65536"
+                             Increment="16" HorizontalAlignment="Left" MinWidth="160" />
+            </Grid>
+            <TextBlock TextWrapping="Wrap" Opacity="0.7" FontSize="12"
+                       Text="超过这个大小的文件不会下载（群里照常能看到，只是本机不留档）。" />
+            <Grid ColumnDefinitions="Auto,*" Margin="0,4,0,0">
+              <TextBlock Text="通知保留天数" VerticalAlignment="Center" Margin="0,0,8,0" />
+              <NumericUpDown Grid.Column="1" x:Name="NoticeRetentionBox" Minimum="0" Maximum="3650"
+                             HorizontalAlignment="Left" MinWidth="160" />
+            </Grid>
+            <Grid ColumnDefinitions="Auto,*">
+              <TextBlock Text="作业保留天数" VerticalAlignment="Center" Margin="0,0,8,0" />
+              <NumericUpDown Grid.Column="1" x:Name="HomeworkRetentionBox" Minimum="0" Maximum="3650"
+                             HorizontalAlignment="Left" MinWidth="160" />
+            </Grid>
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="0 = 永久保留（默认）。大于 0 时：通知里已经点过「已读」的只留当天，没读的通知一直留着；作业保留最近 N 天（含今天）。" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="怎么验证：在群里发一个文件，下载完成后到「CyberTechRep 关于」页点「打开数据目录」，在下载目录里就能看到它按学科和日期放好了。" />
+          </StackPanel>
+
+          <!-- ===== 步骤 8：日常怎么用（操作手册） ===== -->
+          <StackPanel x:Name="StepUsage" Spacing="10" IsVisible="False">
+            <TextBlock Text="第 7 步：日常怎么用（照着做一遍就会了）" FontSize="18" FontWeight="Bold" />
+
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="① 群里发了一条通知" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="「通知」悬浮窗会按到达时间列出来。点右边的「已读」把它移进已读；点「转为作业」把它变成作业（原来的学科和来源会一起带过去）。" />
+              </StackPanel>
+            </Border>
+
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="② 群里发了作业" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="「作业」悬浮窗按学科分组显示。点某条文字可以直接改内容（改完就保存）；点左下角「整理并发送」，会弹出确认窗，里面能勾选常态化作业、也能直接编辑这段文字，点「发送」才真正发到目标群。" />
+              </StackPanel>
+            </Border>
+
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="③ 群里发了文件或图片" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="文件会自动下载、按学科归档：对应学科的圆圈上出现一个小红点，点圆圈就能看该学科的文件列表，点文件名用系统默认程序打开；图片会弹到「图片」悬浮窗，标题栏的「打开」用系统看图程序打开当前这张。" />
+              </StackPanel>
+            </Border>
+
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="④ 上课时自动弹出" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="在「CyberTechRep 悬浮窗」页 →「圆圈栏排列与文件悬浮窗联动」里打开「上课时自动弹出对应学科文件悬浮窗」，还能设置提前 / 推迟秒数；到点后该学科的文件窗会自动弹出来，下课自动收起。" />
+              </StackPanel>
+            </Border>
+
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="⑤ 有老师没绑定学科" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="他发的消息会弹出一个选择窗，按到达顺序一条条处理，窗口上会写明后面还有几条；点一下学科就绑定好了（以后他的消息自动归到这个学科），不想绑就点「跳过（暂不绑定）」，只跳过这一条。" />
+              </StackPanel>
+            </Border>
+
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="⑥ 通知和作业可以互相转" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="通知上的「转为作业」、作业分组里的「转为通知」都能用，转换时会带着原来的学科和来源，不用让对方重发。" />
+              </StackPanel>
+            </Border>
+
+            <Border Background="#14000000" CornerRadius="6" Padding="12,8">
+              <StackPanel Spacing="4">
+                <TextBlock Text="⑦ 出问题时看哪里" FontWeight="SemiBold" />
+                <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                           Text="「CyberTechRep 维护」页有排错面板（连接状态、最近消息、待重试任务）、NapCat 后台日志和设置导入导出；日常不用管，收不到消息时先看这里。" />
+              </StackPanel>
+            </Border>
+
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="记不住也没关系：「CyberTechRep 维护」页 →「首次启动引导」→「重新打开引导」，随时能再看一遍。" />
+          </StackPanel>
+
+          <!-- ===== 步骤 9：完成汇总 ===== -->
+          <StackPanel x:Name="StepFinish" Spacing="10" IsVisible="False">
+            <TextBlock Text="可以开始用了" FontSize="20" FontWeight="Bold" />
+            <TextBlock x:Name="FinishHeadline" TextWrapping="Wrap" Opacity="0.85" />
+            <TextBox x:Name="FinishSummaryBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                     MinHeight="300" FontSize="13" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.85"
+                       Text="想补哪一项，就按上面的位置到对应设置页改；想再看一遍引导，「CyberTechRep 维护」页 →「首次启动引导」→「重新打开引导」。点「关闭」回到 ClassIsland。" />
+          </StackPanel>
+
+        </Panel>
+      </ScrollViewer>
+
+      <!-- 提示区（错误红色 / 说明黑色）+ 底部按钮 -->
+      <StackPanel Grid.Row="2" Margin="24,0,24,16" Spacing="8">
+        <Border x:Name="FeedbackBox" IsVisible="False" Background="#14000000" CornerRadius="6" Padding="10,6">
+          <TextBlock x:Name="StepFeedback" TextWrapping="Wrap" FontSize="12" />
+        </Border>
+        <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+          <Button x:Name="BackButton" Content="上一步" Click="OnBackClick" MinWidth="88"
+                  HorizontalAlignment="Left" IsVisible="False" />
+          <Button x:Name="SkipButton" Grid.Column="2" Content="跳过这一步" Click="OnSkipClick"
+                  MinWidth="96" Margin="8,0,0,0" />
+          <Button x:Name="NextButton" Grid.Column="3" Content="下一步" Click="OnNextClick"
+                  MinWidth="88" Margin="8,0,0,0" Classes="accent" />
+        </Grid>
+      </StackPanel>
     </Grid>
   </Border>
 </Window>

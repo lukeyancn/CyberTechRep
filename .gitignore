@@ -27,5 +27,8 @@ Thumbs.db
 # ---- ?? ClassIsland ????? ----
 ClassIsland_app_windows_x64_full_folder/
 
+# ---- 宿主崩溃转储（本地运行产生，不提交） ----
+crashdumps/
+
 # ---- 个人密钥，严禁提交 ----
 docs/qq机器人密钥.txt

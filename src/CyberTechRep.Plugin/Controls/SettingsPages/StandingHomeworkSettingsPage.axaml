@@ -13,7 +13,7 @@
             <TextBlock Text="常态化作业" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
 
             <TextBlock TextWrapping="Wrap" FontStyle="Italic" Opacity="0.8"
-                       Text="按学科维护固定作业项（如数学「校本往后做一课」）。作业悬浮窗「整理并发送 · 确认」窗口会列出启用项并支持勾选：勾选即时进入预览、取消即从预览移除，点「发送」才写入该学科作业文档末尾。"/>
+                       Text="把每天都要做的作业按学科记在这里（例如数学的「校本往后做一课」）。在作业悬浮窗的「整理并发送」确认窗口里，可以勾选这些固定作业：勾上就出现在预览里，取消就移除，点「发送」后才会写进对应学科的作业内容里。"/>
 
             <!-- 常态化作业列表：学科 / 内容 / 启用 / 删除 -->
             <ItemsControl x:Name="ItemList" ItemsSource="{Binding Items}">
@@ -24,13 +24,13 @@
                                 <ComboBox Grid.Column="0" HorizontalAlignment="Stretch"
                                           ItemsSource="{Binding SubjectCandidates}"
                                           SelectedItem="{Binding Subject, Mode=TwoWay}"
-                                          ToolTip.Tip="学科（决定写入哪份学科文档）"/>
+                                          ToolTip.Tip="学科（决定写进哪个学科的作业）"/>
                                 <TextBox Grid.Column="1" HorizontalAlignment="Stretch"
                                          Text="{Binding Content, Mode=TwoWay}"
                                          Watermark="作业内容，例如：校本往后做一课"/>
                                 <CheckBox Grid.Column="2" Content="启用"
                                           IsChecked="{Binding Enabled, Mode=TwoWay}"
-                                          ToolTip.Tip="关闭后确认窗口不列出该项（存档保留）"/>
+                                          ToolTip.Tip="关闭后确认窗口里不显示这一条（内容仍然保留）"/>
                                 <Button Grid.Column="3" Content="删除" Click="OnDeleteClick"
                                         Padding="8,2" FontSize="12"
                                         Background="Transparent" BorderThickness="0"

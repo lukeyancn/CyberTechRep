@@ -10,9 +10,9 @@
     <ScrollViewer>
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
-            <TextBlock Text="连接设置（QQ 官方机器人开放平台 / NapCat）" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
+            <TextBlock Text="连接设置（QQ 官方机器人 / NapCat）" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
 
-            <!-- ===== 模式选择（默认官方 = 现状行为完全不变；NapCat 为可选替代） ===== -->
+            <!-- ===== 接入模式（默认 QQ 官方机器人；NapCat 为可选替代） ===== -->
             <TextBlock Text="接入模式" FontWeight="SemiBold"/>
             <StackPanel Orientation="Horizontal" Spacing="24" Margin="0,0,0,4">
                 <RadioButton Content="QQ 官方机器人（默认）" GroupName="ctrConnectionMode"
@@ -20,36 +20,36 @@
                 <RadioButton Content="NapCat（OneBot 11）" GroupName="ctrConnectionMode"
                              IsChecked="{Binding IsNapCatMode}"/>
             </StackPanel>
-            <TextBlock Text="说明：切换模式后需经排错面板手动重连或重启插件生效；群白名单与断线重连参数两种模式共用。"
+            <TextBlock Text="说明：切换模式后，到「维护与排错」页点一次「手动重连」，或者重启 ClassIsland 才会生效。群白名单和断线重连参数两种模式共用。"
                        FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
 
-            <!-- ===== 官方模式专属设置（控件与原版完全一致，仅增加模式可见性） ===== -->
+            <!-- ===== QQ 官方机器人模式专属设置 ===== -->
             <StackPanel IsVisible="{Binding IsOfficialMode}" Spacing="10">
-                <TextBlock Text="机器人 AppID（q.qq.com 注册获得）" FontWeight="SemiBold"/>
+                <TextBlock Text="机器人 AppID（在 q.qq.com 注册机器人后获得）" FontWeight="SemiBold"/>
                 <TextBox Text="{Binding Settings.Connection.AppId}" Watermark="AppID"/>
 
-                <TextBlock Text="AppSecret（DPAPI 加密存储，脱敏显示）" FontWeight="SemiBold"/>
+                <TextBlock Text="AppSecret（只保存在本机并加密；输入时不显示明文）" FontWeight="SemiBold"/>
                 <TextBox Text="{Binding AppSecretPlain, Mode=TwoWay}" PasswordChar="●" Watermark="AppSecret"/>
 
-                <TextBlock Text="开放平台 API 根地址" FontWeight="SemiBold"/>
+                <TextBlock Text="开放平台 API 地址（一般不用改）" FontWeight="SemiBold"/>
                 <TextBox Text="{Binding Settings.Connection.ApiBase}"/>
 
-                <TextBlock Text="AccessToken 服务地址" FontWeight="SemiBold"/>
+                <TextBlock Text="AccessToken 服务地址（一般不用改）" FontWeight="SemiBold"/>
                 <TextBox Text="{Binding Settings.Connection.TokenApiUrl}"/>
             </StackPanel>
 
             <!-- ===== NapCat 模式专属设置 ===== -->
             <StackPanel IsVisible="{Binding IsNapCatMode}" Spacing="10">
-                <TextBlock Text="NapCat 正向 WS 地址（NapCat「WebSocket 服务器」配置项，如 ws://127.0.0.1:3001；留空则用反向监听）"
+                <TextBlock Text="NapCat 正向 WebSocket 地址（对应 NapCat 的「WebSocket 服务器」配置，例如 ws://127.0.0.1:3001；留空则改用下面的反向监听端口）"
                            FontWeight="SemiBold"/>
                 <TextBox Text="{Binding Settings.Connection.NapCatWsUrl}" Watermark="ws://127.0.0.1:3001"/>
 
-                <TextBlock Text="NapCat 反向 WS 监听端口（NapCat「WebSocket 客户端」配置项指向 ws://127.0.0.1:此端口；0 = 不启用）"
+                <TextBlock Text="NapCat 反向 WebSocket 监听端口（在 NapCat 的「WebSocket 客户端」里指向 ws://127.0.0.1:此端口；0 = 不启用）"
                            FontWeight="SemiBold"/>
                 <NumericUpDown Value="{Binding Settings.Connection.NapCatReversePort}" Minimum="0"
                                Maximum="65535" Increment="1"/>
 
-                <TextBlock Text="access token（与 NapCat 配置一致；DPAPI 加密存储，脱敏显示；留空 = 不校验）" FontWeight="SemiBold"/>
+                <TextBlock Text="access token（要和 NapCat 里的配置一致；只保存在本机并加密，输入时不显示明文；留空 = 不校验）" FontWeight="SemiBold"/>
                 <TextBox Text="{Binding NapCatAccessTokenPlain, Mode=TwoWay}" PasswordChar="●" Watermark="token"/>
 
                 <Expander Header="NapCat 一键启动（后台运行：登录方式 / 自动启动 / WebUI）" IsExpanded="False">
@@ -61,14 +61,14 @@
                             <RadioButton Content="有头（Framework 包：显示完整 QQ 界面）" GroupName="ctrNapCatRunMode"
                                          IsChecked="{Binding IsFrameworkRunMode}"/>
                         </StackPanel>
-                        <TextBlock Text="无头：官方 Shell / OneKey 包（启动脚本 napcat\launcher-user.bat），不显示 QQ 界面，日志来自进程输出。有头：官方 Framework 有头包（一键有头版的 NapCatWinBootMain.exe，或手动 LiteLoader 形态的官方 QQ.exe），会弹出完整 QQ 登录/聊天界面；此时「停止 NapCat」等于关闭该 QQ 界面，日志改为跟随 NapCat 的 logs 目录。有头包与无头包请用各自独立的安装目录，不要共用 config/cache。"
+                        <TextBlock Text="无头：使用 NapCat 官方 Shell / OneKey 包（启动脚本 napcat\launcher-user.bat），不显示 QQ 界面，日志直接来自后台进程。有头：使用官方 Framework 有头包（一键有头版的 NapCatWinBootMain.exe，或手动 LiteLoader 形态的官方 QQ.exe），会弹出完整的 QQ 登录和聊天界面；此时点「停止 NapCat」就等于关闭这个 QQ 界面，日志改从 NapCat 的 logs 目录读取。两种包请分别放在不同的安装目录，不要共用配置和缓存。"
                                    FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
 
-                        <TextBlock Text="NapCat 可执行文件路径（无头填 Shell 启动脚本；有头填有头包入口或官方 QQ.exe）" FontWeight="SemiBold"/>
+                        <TextBlock Text="NapCat 启动文件路径（无头填启动脚本；有头填有头包入口或官方 QQ.exe）" FontWeight="SemiBold"/>
                         <TextBox Text="{Binding Settings.Connection.NapCatExePath}"
                                  Watermark="无头：D:\NapCat\napcat\launcher-user.bat；有头：D:\NapCatFramework\NapCatWinBootMain.exe"/>
 
-                        <TextBlock Text="工作目录（可选；留空 = 可执行文件所在目录）" FontWeight="SemiBold"/>
+                        <TextBlock Text="工作目录（可选，留空 = 启动文件所在目录）" FontWeight="SemiBold"/>
                         <TextBox Text="{Binding Settings.Connection.NapCatWorkDirectory}" Watermark="可选"/>
 
                         <TextBlock Text="登录方式" FontWeight="SemiBold"/>
@@ -79,16 +79,16 @@
                                          IsChecked="{Binding IsQuickLogin}"/>
                         </StackPanel>
                         <StackPanel Spacing="6" IsVisible="{Binding IsQuickLogin}">
-                            <TextBlock Text="快速登录 QQ 号（每次启动自动传入该 QQ 号跳过扫码；需该账号已在本机 QQ 登录过。新电脑首次使用建议先扫码登录一次）"
+                            <TextBlock Text="快速登录 QQ 号（每次启动自动用这个 QQ 号登录、跳过扫码；需要该账号已在本机登录过 QQ。新电脑第一次使用建议先扫码登录一次）"
                                        FontWeight="SemiBold" TextWrapping="Wrap"/>
                             <TextBox Text="{Binding Settings.Connection.NapCatQuickLoginQQ}" Watermark="机器人 QQ 号（纯数字）"/>
                         </StackPanel>
 
-                        <ToggleSwitch Content="ClassIsland 启动后自动后台拉起 NapCat（随插件退出自动结束）"
+                        <ToggleSwitch Content="ClassIsland 启动后自动在后台启动 NapCat（插件退出时一起结束）"
                                       IsChecked="{Binding Settings.Connection.NapCatAutoStart}"/>
-                        <ToggleSwitch Content="启动 NapCat 前先结束已在运行的 QQ 进程（NapCat 需独占 QQ 实例；QQ 已在运行会导致注入失败、只能扫码登录）"
+                        <ToggleSwitch Content="启动 NapCat 前先结束正在运行的 QQ（NapCat 需要独占 QQ；QQ 已在运行会启动失败，只能改用扫码登录）"
                                       IsChecked="{Binding Settings.Connection.NapCatEndExistingQq}"/>
-                        <ToggleSwitch Content="NapCat 启动后自动用浏览器打开 WebUI（登录/管理页面；WebUI 未监听时不打开死页面）"
+                        <ToggleSwitch Content="NapCat 启动后自动用浏览器打开 WebUI（登录和管理页面；WebUI 还没就绪时不会打开空白页）"
                                       IsChecked="{Binding Settings.Connection.NapCatOpenWebUiOnStart}"/>
 
                         <StackPanel Orientation="Horizontal" Spacing="10">
@@ -100,45 +100,44 @@
                         </StackPanel>
                         <TextBlock Text="{Binding NapCatWebUiUrlText}" FontStyle="Italic" Opacity="0.8"
                                    TextWrapping="Wrap"/>
-                        <TextBlock Text="说明：停止与插件关停会终止整个 NapCat 进程树；启动结果以反向 WS 连接确认（进程存活但未接入时会给出排查指引）；已检测到 NapCat 在运行时不重复启动；进程存活但反向 WS 断开超过 5 分钟会自动重启；消息接入由上方连接设置（正向/反向 WS）独立承担。"
+                        <TextBlock Text="说明：点「停止 NapCat」或关闭 ClassIsland 会结束整个 NapCat 进程；启动成功以反向 WebSocket 连接建好为准，若进程在运行但一直没连上，会给出排查提示。已经在运行的 NapCat 不会重复启动；进程还在但反向连接断开超过 5 分钟会自动重启。消息能不能接入，仍由上面的正向 / 反向 WebSocket 设置决定。"
                                    FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Expander>
             </StackPanel>
 
             <!-- ===== 两种模式共用设置 ===== -->
-            <TextBlock Text="群白名单（群 OpenID，一行一个；留空 = 接收全部已接入群。NapCat 模式填群号，官方模式填群 OpenID）" FontWeight="SemiBold"/>
+            <TextBlock Text="允许接管的群（一行一个；留空 = 接收全部已接入的群。NapCat 模式填群号，QQ 官方机器人模式填群 OpenID）" FontWeight="SemiBold"/>
             <TextBox Text="{Binding GroupWhitelistText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
-                     Watermark="每一行一个群 OpenID（NapCat 模式为群号）"/>
+                     Watermark="每行一个群号 / 群 OpenID"/>
 
-            <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗展示发送入口，确认后发送当天作业清单到目标群；仅官方模式可用）"
+            <ToggleSwitch Content="作业「整理并发送」（作业悬浮窗显示发送入口，确认后把当天作业清单发到目标群；仅 QQ 官方机器人模式可用）"
                           IsChecked="{Binding Settings.Connection.HomeworkSendEnabled}"/>
 
-            <ToggleSwitch Content="整理并发送：自动补填序号（清单条目加「1. 2. 3. …」；关闭后按原样输出，可在确认窗里自行编辑）"
+            <ToggleSwitch Content="「整理并发送」自动补序号（清单每条加上「1. 2. 3. …」；关闭后按原样输出，可在确认窗口里自己编辑）"
                           IsChecked="{Binding Settings.Connection.NumberDigestLines}"/>
 
-            <TextBlock Text="作业清单发送目标群（群 OpenID，一行一个；与消息接管白名单相互独立，需单独填写）" FontWeight="SemiBold"/>
+            <TextBlock Text="作业清单发送到哪些群（群 OpenID，一行一个；与上面的接管群列表互不影响，需要单独填写）" FontWeight="SemiBold"/>
             <TextBox Text="{Binding TargetGroupsText, Mode=TwoWay}" AcceptsReturn="True" Height="90"
-                     Watermark="每一行一个群 OpenID（整理并发送专用）"/>
-            <TextBlock Text="说明：发送目标群与消息接管白名单相互独立——此处列表仅决定「整理并发送」发送到哪些群，修改白名单不影响发送目标；列表为空时点发送会明确提示未配置目标群。"
+                     Watermark="每行一个群 OpenID（只用于「整理并发送」）"/>
+            <TextBlock Text="说明：这里只决定「整理并发送」把作业清单发到哪些群，和上面的接管群列表没有关系，改一个不会影响另一个。列表为空时点发送会提示还没有填目标群。"
                        FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
 
             <Expander Header="断线重连参数" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="初始重连延迟（秒）"/>
+                    <TextBlock Text="说明：网络断开后插件会自动重连，一般保持默认即可；网络不太稳定时可以适当调大延迟上限。"
+                               FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
+                    <TextBlock Text="第一次重连前等待几秒"/>
                     <NumericUpDown Value="{Binding Settings.Connection.ReconnectInitialDelaySec}" Minimum="1"
                                    Maximum="3600" Increment="1"/>
-                    <TextBlock Text="重连延迟倍增系数"/>
+                    <TextBlock Text="每次重连失败后，等待时间乘以几倍"/>
                     <NumericUpDown Value="{Binding Settings.Connection.ReconnectBackoffFactor}" Minimum="1"
                                    Maximum="10" Increment="0.5" FormatString="0.0"/>
-                    <TextBlock Text="重连延迟上限（秒）"/>
+                    <TextBlock Text="两次重连之间最多等待几秒"/>
                     <NumericUpDown Value="{Binding Settings.Connection.ReconnectMaxDelaySec}" Minimum="1"
                                    Maximum="3600" Increment="1"/>
                 </StackPanel>
             </Expander>
-
-            <TextBlock Text="历史消息回溯天数：官方机器人平台不提供历史补拉 API，该功能当前不可用（设置项保留以兼容未来）。"
-                       FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
 
             <Button Content="保存并应用" Click="OnSaveClicked" HorizontalAlignment="Left"
                     Margin="0,10,0,0"/>

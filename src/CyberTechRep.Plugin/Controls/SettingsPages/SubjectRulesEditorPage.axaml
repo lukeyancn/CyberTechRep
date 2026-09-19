@@ -10,14 +10,14 @@
     <ScrollViewer>
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
-            <TextBlock Text="分类词表编辑器" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
-            <TextBlock Text="在此可视化编辑学科关键词规则（subjects.json）与消息分类关键词（classification-keywords.json），无需手动改文件；点击「保存并应用」后立即写入并热生效。"
+            <TextBlock Text="词表编辑" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
+            <TextBlock Text="在这里可以直接编辑学科关键词和通知 / 作业关键词，不用手动改文件。改完点「保存并应用」立即生效。"
                        TextWrapping="Wrap" Opacity="0.75"/>
 
-            <!-- 学科关键词规则（subjects.json） -->
-            <Expander Header="学科关键词规则（subjects.json）" IsExpanded="False">
+            <!-- 学科关键词规则 -->
+            <Expander Header="学科关键词规则" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="学科名同时用作归档目录名，不能包含斜杠、冒号、问号等非法字符。关键词一行一个，任一关键词命中即计分；一条消息命中多个学科时，先比命中关键词数，再比优先级（数值大者优先）。"
+                    <TextBlock Text="学科名同时会用作文件夹名，不能包含斜杠、冒号、问号等符号。关键词一行一个，出现任意一个就算命中；一条消息同时命中多个学科时，先看命中关键词的个数，多的优先；个数一样再看「优先级」，数值大的优先。"
                                TextWrapping="Wrap" Opacity="0.75"/>
                     <ListBox x:Name="RulesList" ItemsSource="{Binding Rules}" MinHeight="160" MaxHeight="420">
                         <ListBox.ItemTemplate>
@@ -39,48 +39,48 @@
                     </ListBox>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="＋ 添加学科" Click="OnAddSubjectClicked"/>
-                        <Button Content="导出 JSON（剪贴板）" Click="OnExportSubjectsClicked"/>
-                        <Button Content="导入 JSON（剪贴板）" Click="OnImportSubjectsClicked"/>
-                        <Button Content="恢复默认（Assets 模板）" Click="OnRestoreSubjectsClicked"/>
+                        <Button Content="导出到剪贴板" Click="OnExportSubjectsClicked"/>
+                        <Button Content="从剪贴板导入" Click="OnImportSubjectsClicked"/>
+                        <Button Content="恢复默认" Click="OnRestoreSubjectsClicked"/>
                     </StackPanel>
                 </StackPanel>
             </Expander>
 
-            <!-- 消息分类关键词（classification-keywords.json） -->
-            <Expander Header="消息分类关键词（classification-keywords.json）" IsExpanded="False">
+            <!-- 通知 / 作业关键词 -->
+            <Expander Header="通知 / 作业关键词" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="区分「通知」与「作业」两类消息的关键词，一行一个；两侧同时命中时按作业处理。保存后写入文件并热生效。"
+                    <TextBlock Text="判断消息是通知还是作业用的关键词，一行一个。通知和作业的关键词如果同时命中，按作业处理。保存后立即生效。"
                                TextWrapping="Wrap" Opacity="0.75"/>
                     <TextBlock Text="通知关键词" FontWeight="SemiBold"/>
                     <TextBox Text="{Binding NoticeKeywordsText, Mode=TwoWay}" AcceptsReturn="True" Height="80"/>
                     <TextBlock Text="作业关键词" FontWeight="SemiBold"/>
                     <TextBox Text="{Binding HomeworkKeywordsText, Mode=TwoWay}" AcceptsReturn="True" Height="80"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Content="导出 JSON（剪贴板）" Click="OnExportKeywordsClicked"/>
-                        <Button Content="导入 JSON（剪贴板）" Click="OnImportKeywordsClicked"/>
-                        <Button Content="恢复默认（Assets 模板）" Click="OnRestoreKeywordsClicked"/>
+                        <Button Content="导出到剪贴板" Click="OnExportKeywordsClicked"/>
+                        <Button Content="从剪贴板导入" Click="OnImportKeywordsClicked"/>
+                        <Button Content="恢复默认" Click="OnRestoreKeywordsClicked"/>
                     </StackPanel>
                 </StackPanel>
             </Expander>
 
-            <!-- 学科识别模式（需求 4） -->
-            <Expander Header="学科识别模式（成员绑定优先 / 纯关键词）" IsExpanded="False">
+            <!-- 学科识别方式 -->
+            <Expander Header="学科识别方式（成员绑定优先 / 只用关键词）" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="成员绑定优先（默认）：优先按成员 OpenID 的显式学科绑定归类；未绑定时照常走关键词识别链；链仍无结果且未绑定时弹出「未绑定学科选择悬浮窗」点选补绑定。纯关键词：完全不读取成员绑定、不触发选择悬浮窗，行为与历史版本完全一致（人工修正 &gt; 识别链 &gt; 发送者映射的优先级不变）。"
+                    <TextBlock Text="成员绑定优先（默认）：先看发消息的人有没有绑定过学科；没绑定就照常用关键词判断；都认不出来时弹出选择窗，让用户点选一个学科。只用关键词：完全忽略成员绑定，也不弹选择窗，只按关键词判断。"
                                TextWrapping="Wrap" Opacity="0.75"/>
                     <ComboBox x:Name="ModeBox" SelectionChanged="OnModeChanged">
                         <ComboBoxItem Content="成员绑定优先（默认）" Tag="MemberSelection"/>
-                        <ComboBoxItem Content="纯关键词（现状）" Tag="Keyword"/>
+                        <ComboBoxItem Content="只用关键词" Tag="Keyword"/>
                     </ComboBox>
-                    <ToggleSwitch Content="未绑定学科选择悬浮窗（发送者未绑定时弹出点选）"
+                    <ToggleSwitch Content="用「未绑定学科选择悬浮窗」让用户点选学科"
                                   IsChecked="{Binding Settings.SubjectRecognition.SelectionWindowEnabled}"/>
                 </StackPanel>
             </Expander>
 
-            <!-- 成员学科绑定管理（需求 2） -->
-            <Expander Header="成员学科绑定（member-subject-bindings.json）" IsExpanded="False">
+            <!-- 成员学科绑定管理 -->
+            <Expander Header="成员学科绑定" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="以群成员 OpenID 为单位显式绑定学科。每行可填：群 OpenID + 成员 OpenID + 学科；群 OpenID 留空 = 对所有群生效（全局绑定），非空则仅对该群生效，群内绑定优先于全局绑定。保存后立即写入并热生效；此后该成员的作业/文件在「成员绑定优先」模式下按绑定学科归档。"
+                    <TextBlock Text="给群成员指定固定学科。每行填写群 OpenID、成员 OpenID 和学科：群 OpenID 留空表示对所有群都有效，填了则只对这个群有效；同一个成员既有全局绑定又有本群绑定时，以本群绑定为准。保存后立即生效；在「成员绑定优先」方式下，这个成员发的作业和文件都会归到这个学科。"
                                TextWrapping="Wrap" Opacity="0.75"/>
                     <ListBox x:Name="BindingsList" ItemsSource="{Binding Bindings}" MinHeight="80" MaxHeight="320">
                         <ListBox.ItemTemplate>
@@ -102,12 +102,12 @@
                         <Button Content="＋ 添加绑定" Click="OnAddBindingClicked"/>
                     </StackPanel>
 
-                    <!-- 危险区：完全重置（仅学科识别相关，两段式轻确认） -->
+                    <!-- 危险区：完全重置（重新点一次确认） -->
                     <Separator Margin="0,8,0,0"/>
                     <TextBlock Text="危险区：完全重置学科识别数据" FontWeight="SemiBold" Foreground="Firebrick"/>
-                    <TextBlock Text="仅重置以下学科识别相关数据：清空全部成员学科绑定（member-subject-bindings.json）、清空按发送者学习映射（user-subjects.json）、学科识别模式恢复默认（成员绑定优先 + 显示选择窗）。不影响作业/通知数据、files.json 归档库、AI 凭据与其他页面设置。点击后需 3 秒内再次确认才执行。"
+                    <TextBlock Text="点这个按钮只会清空和学科识别有关的内容：全部成员学科绑定、插件自动学习到的发送者学科记录，并把学科识别方式恢复为默认（成员绑定优先、显示选择窗）。不会影响作业和通知、已归档的文件、AI 密钥以及其它页面设置。点击后需要在 3 秒内再点一次确认才会执行。"
                                TextWrapping="Wrap" Opacity="0.75"/>
-                    <Button x:Name="ResetButton" Content="完全重置（清空绑定与学习映射）" Click="OnResetClicked"
+                    <Button x:Name="ResetButton" Content="完全重置（清空绑定和学习记录）" Click="OnResetClicked"
                             HorizontalAlignment="Left" FontWeight="SemiBold"
                             Foreground="Firebrick" BorderBrush="Firebrick"/>
                     <TextBlock Text="{Binding ResetFeedback}" Foreground="Firebrick" TextWrapping="Wrap"/>

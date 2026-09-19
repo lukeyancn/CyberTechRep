@@ -63,7 +63,7 @@ public partial class AiSettingsPage : CyberTechRepSettingsPageBase
     }
 
     /// <summary>置信度阈值显示。</summary>
-    public string ConfidenceThresholdText => $"当前阈值：{Settings.Ai.ConfidenceThreshold:0.00}";
+    public string ConfidenceThresholdText => $"当前阈值：{Settings.Ai.ConfidenceThreshold:0.00}（数值越大，判得越严格）";
 
     private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 }

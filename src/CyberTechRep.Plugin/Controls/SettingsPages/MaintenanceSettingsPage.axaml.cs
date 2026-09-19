@@ -11,6 +11,7 @@ using CyberTechRep.Plugin.Services.FirstRun;
 using CyberTechRep.Plugin.Services.Maintenance;
 using CyberTechRep.Plugin.Services.MessageAccess;
 using CyberTechRep.Shared.Abstractions;
+using CyberTechRep.Shared.Models;
 using ClassIsland.Core.Attributes;
 
 namespace CyberTechRep.Plugin.Controls.SettingsPages;
@@ -37,7 +38,7 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
 
     /// <summary>日志服务未注入时的状态提示（DI 缺失，页面仍可用其余功能）。</summary>
     private const string NapCatLogNotWiredText =
-        "日志服务未接线（NapCatRunnerService 未注入，无法读取后台日志）。";
+        "后台日志暂不可用（当前环境没有提供日志服务）。";
 
     private readonly IDiagnosticsService? _diagnostics;
     private readonly IFirstRunService? _firstRun;
@@ -45,7 +46,7 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
     private readonly NapCatRunnerService? _napCatRunner;
     private readonly DispatcherTimer? _napCatLogTimer;
 
-    private string _diagnosticsSummaryText = "尚未加载（点击「刷新」）";
+    private string _diagnosticsSummaryText = "还没加载，点「刷新」查看。";
     private IReadOnlyList<string> _recentMessages = [];
     private IReadOnlyList<RetryLine> _retryQueueLines = [];
     private RetryLine? _selectedRetryLine;
@@ -281,7 +282,7 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
             _lastRenderedSequence = lastSequence;
             _lastRenderedDropped = dropped;
             NapCatLogText = builder.ToString();
-            NapCatDroppedText = dropped > 0 ? $"已丢弃 {dropped} 行（环形缓冲上限）" : "";
+            NapCatDroppedText = dropped > 0 ? $"有 {dropped} 行日志已被丢弃（超出显示上限）" : "";
         }
 
         if (NapCatLogPaused)
@@ -357,15 +358,56 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
     private ScrollViewer? FindLogScrollViewer()
         => NapCatLogView?.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
 
-    /// <summary>状态行文本：未运行/已停止给出操作提示，其余显示状态枚举与详情。</summary>
+    /// <summary>状态行文本：按运行状态给出中文提示；未运行/已停止时附带启动入口指引。</summary>
     private static string FormatNapCatStatus(NapCatRunnerStatus status)
         => status.State switch
         {
             NapCatRunnerState.NotRunning =>
-                "NapCat 未运行：暂无日志。可在「连接设置 → NapCat 一键启动」中启动或开启自动启动。",
+                "NapCat 未运行，暂无日志。可在「连接设置」的「NapCat 一键启动」里启动，或打开自动启动。",
+            NapCatRunnerState.Starting =>
+                $"NapCat 正在启动…（{status.Detail}）",
+            NapCatRunnerState.Running =>
+                $"NapCat 运行中（{status.Detail}）",
             NapCatRunnerState.Stopped =>
-                $"NapCat 已停止（{status.Detail}）：可在「连接设置 → NapCat 一键启动」中重新启动。",
-            _ => $"状态：{status.State}｜{status.Detail}"
+                $"NapCat 已停止（{status.Detail}）。可在「连接设置」的「NapCat 一键启动」里重新启动。",
+            NapCatRunnerState.Failed =>
+                $"NapCat 启动失败：{status.Detail}",
+            _ => status.Detail
+        };
+
+    /// <summary>连接状态的中文显示文案（仅影响排错面板显示，不改变任何行为）。</summary>
+    private static string DescribeConnectionStatus(ConnectionStatus status)
+        => status switch
+        {
+            ConnectionStatus.Connected => "已连接",
+            ConnectionStatus.Connecting => "正在连接",
+            ConnectionStatus.Authenticating => "正在确认登录状态",
+            ConnectionStatus.AuthenticationFailed => "登录被拒绝（请检查密钥或 token）",
+            ConnectionStatus.Reconnecting => "正在重连",
+            ConnectionStatus.Faulted => "连接异常",
+            ConnectionStatus.Disconnected => "未连接",
+            _ => status.ToString()
+        };
+
+    /// <summary>重试任务状态的中文显示文案（仅影响排错面板显示，不改变任何行为）。</summary>
+    private static string DescribeRetryStatus(RetryItemStatus status)
+        => status switch
+        {
+            RetryItemStatus.Waiting => "等待重试",
+            RetryItemStatus.Retrying => "正在重试",
+            RetryItemStatus.Succeeded => "已完成",
+            RetryItemStatus.GivenUp => "已放弃",
+            _ => status.ToString()
+        };
+
+    /// <summary>重试任务类型的中文显示文案（仅影响排错面板显示，不改变任何行为）。</summary>
+    private static string DescribeRetryOperation(RetryOperationType operation)
+        => operation switch
+        {
+            RetryOperationType.FileDownload => "下载文件",
+            RetryOperationType.SubjectClassify => "识别学科",
+            RetryOperationType.StoreWrite => "保存记录",
+            _ => "其他任务"
         };
 
     // ============ 导入导出反馈 ============
@@ -388,7 +430,7 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
     {
         if (_diagnostics is null)
         {
-            DiagnosticsSummaryText = "排错服务未注册。";
+            DiagnosticsSummaryText = "排错服务不可用。";
             return;
         }
 
@@ -397,23 +439,23 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
             var snapshot = await _diagnostics.GetSnapshotAsync().ConfigureAwait(true);
             var offline = snapshot.OfflineDuration is { } d ? $"{d.TotalMinutes:F0} 分钟" : "在线";
             DiagnosticsSummaryText =
-                $"连接状态：{snapshot.ConnectionStatus}；协议端离线时长：{offline}；" +
+                $"连接状态：{DescribeConnectionStatus(snapshot.ConnectionStatus)}；QQ 消息通道离线时长：{offline}；" +
                 $"磁盘剩余：{(snapshot.DiskFreeMb is { } mb ? $"{mb} MB" : "未知")}；" +
-                $"重试队列：{snapshot.RetryQueue.Count} 条";
+                $"待重试任务：{snapshot.RetryQueue.Count} 个";
 
             RecentMessages = snapshot.RecentMessages
-                .Select(m => $"[{m.ReceivedAt:MM-dd HH:mm:ss}] group={m.GroupOpenId} {m.SenderNickname}：{m.Preview}")
+                .Select(m => $"[{m.ReceivedAt:MM-dd HH:mm:ss}] 群 {m.GroupOpenId} {m.SenderNickname}：{m.Preview}")
                 .ToList();
 
             RetryQueueLines = snapshot.RetryQueue
                 .Select(i => new RetryLine(
-                    $"[{i.Status}] {i.OperationType}｜尝试 {i.AttemptCount} 次｜下次 {i.NextAttemptAt:HH:mm:ss}｜{i.LastError}",
+                    $"{DescribeRetryStatus(i.Status)}｜{DescribeRetryOperation(i.OperationType)}｜已尝试 {i.AttemptCount} 次｜下次 {i.NextAttemptAt:HH:mm:ss}｜{i.LastError}",
                     i.Id))
                 .ToList();
         }
         catch (Exception ex)
         {
-            DiagnosticsSummaryText = $"获取排错快照失败：{ex.Message}";
+            DiagnosticsSummaryText = $"读取排错信息失败：{ex.Message}";
         }
     }
 
@@ -427,7 +469,7 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
         try
         {
             await _diagnostics.ReconnectAsync().ConfigureAwait(true);
-            TransferFeedback = "已触发手动重连。";
+            TransferFeedback = "已重新连接。";
         }
         catch (Exception ex)
         {
@@ -440,24 +482,24 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
         var line = SelectedRetryLine;
         if (line is null)
         {
-            TransferFeedback = "请先在重试队列列表中选中一条。";
+            TransferFeedback = "请先在「待重试任务」列表里选中一条。";
             return;
         }
 
         if (_diagnostics is null)
         {
-            TransferFeedback = "重试队列未注册，无法重放。";
+            TransferFeedback = "重试服务不可用，暂时无法重新执行。";
             return;
         }
 
         try
         {
             await _diagnostics.ReplayAsync(line.Id).ConfigureAwait(true);
-            TransferFeedback = "已重放选中条目。";
+            TransferFeedback = "已重新执行选中的任务。";
         }
         catch (Exception ex)
         {
-            TransferFeedback = $"重放失败：{ex.Message}";
+            TransferFeedback = $"重新执行失败：{ex.Message}";
         }
     }
 
@@ -465,14 +507,14 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
     {
         if (_messageDump is null)
         {
-            DumpFeedback = "消息日志 dump 服务未注册。";
+            DumpFeedback = "消息记录导出暂不可用。";
             return;
         }
 
         var topLevel = TopLevel.GetTopLevel(this);
         if (topLevel is null)
         {
-            DumpFeedback = "无法获取窗口句柄，导出取消。";
+            DumpFeedback = "无法获取窗口，导出已取消。";
             return;
         }
 
@@ -483,10 +525,10 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
             var picker = topLevel.StorageProvider;
             var file = await picker.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "导出消息日志 dump（JSONL）",
-                SuggestedFileName = $"CyberTechRep-消息dump-{DateTime.Now:yyyyMMdd-HHmmss}",
+                Title = "导出消息记录",
+                SuggestedFileName = $"CyberTechRep-消息记录-{DateTime.Now:yyyyMMdd-HHmmss}",
                 DefaultExtension = "jsonl",
-                FileTypeChoices = [new FilePickerFileType("JSONL（每行一条 JSON）")
+                FileTypeChoices = [new FilePickerFileType("JSONL 文本文件（每行一条消息）")
                 {
                     Patterns = ["*.jsonl"]
                 }]
@@ -502,11 +544,11 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
         {
             filePath ??= Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                $"CyberTechRep-消息dump-{DateTime.Now:yyyyMMdd-HHmmss}.jsonl");
+                $"CyberTechRep-消息记录-{DateTime.Now:yyyyMMdd-HHmmss}.jsonl");
 
             var count = await _messageDump.ExportAsync(filePath).ConfigureAwait(true);
             DumpFeedback = count == 0
-                ? $"缓冲为空（尚未收到消息），已导出空文件：{filePath}"
+                ? $"还没收到消息，已导出空文件：{filePath}"
                 : $"已导出 {count} 条消息 → {filePath}";
         }
         catch (Exception ex)
@@ -519,14 +561,14 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
     {
         if (_firstRun is null)
         {
-            TransferFeedback = "首次启动引导服务未注册。";
+            TransferFeedback = "引导窗口暂不可用。";
             return;
         }
 
         try
         {
             var shown = await _firstRun.ShowWizardAsync().ConfigureAwait(true);
-            TransferFeedback = shown ? "已打开首次启动引导窗口。" : "打开引导窗口失败，详见插件日志。";
+            TransferFeedback = shown ? "已打开首次启动引导。" : "打开引导窗口失败，详情见插件日志。";
         }
         catch (Exception ex)
         {
@@ -548,7 +590,7 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
             }
 
             await clipboard.SetTextAsync(json).ConfigureAwait(true);
-            TransferFeedback = "已导出脱敏设置 JSON 到剪贴板。";
+            TransferFeedback = "已把设置复制到剪贴板（不含密钥等敏感信息）。";
         }
         catch (Exception ex)
         {
@@ -570,16 +612,16 @@ public partial class MaintenanceSettingsPage : CyberTechRepSettingsPageBase
             var json = await clipboard.GetTextAsync().ConfigureAwait(true);
             if (string.IsNullOrWhiteSpace(json))
             {
-                TransferFeedback = "剪贴板没有可导入的设置 JSON。";
+                TransferFeedback = "剪贴板里没有可导入的设置内容。";
                 return;
             }
 
             await SettingsService.ImportAsync(json).ConfigureAwait(true);
-            TransferFeedback = "导入成功（敏感字段保留本机值）。";
+            TransferFeedback = "导入成功；本机已保存的密钥类信息保持不变。";
         }
         catch (FormatException ex)
         {
-            TransferFeedback = $"导入被拒绝：{ex.Message}";
+            TransferFeedback = $"导入失败，内容格式不正确：{ex.Message}";
         }
         catch (Exception ex)
         {

@@ -11,7 +11,7 @@ namespace CyberTechRep.Plugin.Controls.SettingsPages;
 /// 形如 <c>2.1.0.0-beta.1</c>），为空则回落 <see cref="AssemblyFileVersionAttribute"/> /
 /// <see cref="AssemblyName.Version"/>，最后回落随包分发的 manifest.yml（<c>AppContext.BaseDirectory</c> 下）。
 /// </para>
-/// 作者/仓库地址/插件 ID 为插件固定信息；运行环境取 .NET 版本、操作系统版本与设置文件路径。
+/// 作者/仓库地址/插件 ID/交流 QQ 群号/作者 QQ 号为插件固定信息；运行环境取 .NET 版本、操作系统版本与设置文件路径。
 /// </summary>
 public sealed record AboutInfo
 {
@@ -23,6 +23,12 @@ public sealed record AboutInfo
 
     /// <summary>插件 ID（宿主 manifest.yml 的 id）。</summary>
     public const string PluginId = "classisland.classing";
+
+    /// <summary>插件交流 QQ 群号（用户加群反馈问题、交流用法）。</summary>
+    public const string SupportQqGroupNumber = "305535138";
+
+    /// <summary>作者 QQ 号（用户直接联系作者）。</summary>
+    public const string SupportQqNumber = "2175983782";
 
     /// <summary>设置文件名（位于数据目录下）。</summary>
     public const string SettingsFileName = "settings.json";
@@ -44,6 +50,12 @@ public sealed record AboutInfo
 
     /// <summary>插件 ID。</summary>
     public string PluginIdText { get; init; } = PluginId;
+
+    /// <summary>交流 QQ 群号（关于页显示与「复制群号」按钮复制的都是它）。</summary>
+    public string SupportQqGroup { get; init; } = SupportQqGroupNumber;
+
+    /// <summary>作者 QQ 号（关于页显示与「复制 QQ 号」按钮复制的都是它）。</summary>
+    public string SupportQq { get; init; } = SupportQqNumber;
 
     /// <summary>插件数据目录（settings.json 等文件根）。</summary>
     public string DataDirectory { get; init; } = "";
@@ -94,6 +106,8 @@ public sealed record AboutInfo
             Author = AuthorName,
             RepositoryUrl = Repository,
             PluginIdText = PluginId,
+            SupportQqGroup = SupportQqGroupNumber,
+            SupportQq = SupportQqNumber,
             DataDirectory = dataDir,
             NetVersion = Environment.Version.ToString(),
             OsVersion = Environment.OSVersion.VersionString,

@@ -102,11 +102,11 @@ public partial class ConnectionSettingsPage : CyberTechRepSettingsPageBase
             var status = _napCatRunner.Status;
             return status.State switch
             {
-                NapCatRunnerState.NotRunning => "未运行",
+                NapCatRunnerState.NotRunning => "未运行（点左侧「启动 NapCat」可启动）",
                 NapCatRunnerState.Starting => status.Detail,
                 NapCatRunnerState.Running => status.Detail,
                 NapCatRunnerState.Stopped => status.Detail,
-                NapCatRunnerState.Failed => $"失败：{status.Detail}",
+                NapCatRunnerState.Failed => $"启动失败：{status.Detail}",
                 _ => status.Detail
             };
         }
@@ -186,9 +186,9 @@ public partial class ConnectionSettingsPage : CyberTechRepSettingsPageBase
     /// <summary>WebUI 地址展示文本（未发现 / 已发现但未监听时分别给出指引）。</summary>
     public string NapCatWebUiUrlText => _napCatRunner.WebUiUrl is { Length: > 0 } url
         ? _napCatRunner.WebUiReady
-            ? $"WebUI 地址（可访问）：{url}"
-            : $"WebUI 地址：{url}（端口未监听，暂不可访问；点击按钮会给出原因）"
-        : "WebUI 地址：启动 NapCat 后自动从其配置中发现（用于扫码登录与账号管理）";
+            ? $"WebUI 地址（可以打开）：{url}"
+            : $"WebUI 地址：{url}（暂时还打不开，稍后再试或点按钮查看原因）"
+        : "WebUI 地址：启动 NapCat 后会自动找到（用于扫码登录和账号管理）";
 
     private void OnSaveClicked(object? sender, RoutedEventArgs e) => SaveNow(sender);
 

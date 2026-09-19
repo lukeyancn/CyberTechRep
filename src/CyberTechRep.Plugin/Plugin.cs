@@ -385,7 +385,9 @@ public class CyberTechRepPlugin : PluginBase
             sp.GetService<ILogger<Services.FirstRun.FirstRunService>>(),
             () => new Views.FirstRunWizardWindow(
                 sp.GetRequiredService<ISettingsService>(),
-                sp.GetRequiredService<Services.FirstRun.IFirstRunService>())));
+                sp.GetRequiredService<Services.FirstRun.IFirstRunService>(),
+                // 第 1 步的「启动 NapCat 并打开 WebUI」复用同一个一键启动服务（与「连接」页同一份实现）
+                sp.GetRequiredService<Services.MessageAccess.NapCatRunnerService>())));
         services.AddSingleton<Services.FirstRun.IFirstRunService>(sp =>
             sp.GetRequiredService<Services.FirstRun.FirstRunService>());
         // 宿主启动后检测首次启动并自动弹出引导（失败只记日志，不阻断启动）

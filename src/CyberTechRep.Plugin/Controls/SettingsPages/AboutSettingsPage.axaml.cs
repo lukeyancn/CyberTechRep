@@ -10,7 +10,8 @@ namespace CyberTechRep.Plugin.Controls.SettingsPages;
 /// <summary>
 /// 「关于 CyberTechRep」设置页（需求 5）：展示插件标题与一句话说明、动态版本号（程序集信息优先，
 /// 随包 manifest.yml 兜底，见 <see cref="AboutInfo"/>）、作者、GitHub 仓库（可复制文本 + 打开仓库）、
-/// 插件 ID、数据目录（可复制路径 + 打开目录，不存在时先创建）、运行环境（.NET/操作系统/设置文件路径）。
+/// 插件 ID、数据目录（可复制路径 + 打开目录，不存在时先创建）、运行环境（.NET/操作系统/设置文件路径）、
+/// 交流与反馈（交流 QQ 群号与作者 QQ 号，均可选中复制、可一键复制到剪贴板）。
 /// <para>
 /// 本页只读、不改配置：打开外部链接/目录与复制到剪贴板失败只给出提示文本，绝不抛异常。
 /// </para>
@@ -21,6 +22,7 @@ namespace CyberTechRep.Plugin.Controls.SettingsPages;
 public partial class AboutSettingsPage : CyberTechRepSettingsPageBase
 {
     private string _feedback = "";
+    private string _contactFeedback = "";
 
     public AboutSettingsPage(ISettingsService settingsService)
         : base(settingsService, PluginRuntime.DataDirectory)
@@ -31,7 +33,7 @@ public partial class AboutSettingsPage : CyberTechRepSettingsPageBase
         InitializeComponent();
     }
 
-    /// <summary>关于信息快照（版本/作者/仓库/插件 ID/数据目录/运行环境）。</summary>
+    /// <summary>关于信息快照（版本/作者/仓库/插件 ID/交流 QQ 群号/作者 QQ 号/数据目录/运行环境）。</summary>
     public AboutInfo Info { get; }
 
     /// <summary>操作反馈文本（打开仓库/打开数据目录/复制结果）。</summary>
@@ -42,6 +44,22 @@ public partial class AboutSettingsPage : CyberTechRepSettingsPageBase
         {
             _feedback = value;
             RaisePropertyChanged(nameof(Feedback));
+        }
+    }
+
+    /// <summary>「交流与反馈」区块内的复制结果提示（成功/失败都只写这里，页面不抛异常）。</summary>
+    public string ContactFeedback
+    {
+        get => _contactFeedback;
+        private set
+        {
+            if (_contactFeedback == value)
+            {
+                return;
+            }
+
+            _contactFeedback = value;
+            RaisePropertyChanged(nameof(ContactFeedback));
         }
     }
 
@@ -73,6 +91,36 @@ public partial class AboutSettingsPage : CyberTechRepSettingsPageBase
 
     private async void OnCopyDataDirectoryClicked(object? sender, RoutedEventArgs e) =>
         await CopyToClipboardAsync(Info.DataDirectory, "数据目录路径");
+
+    private async void OnCopyQqGroupClick(object? sender, RoutedEventArgs e) =>
+        await CopyContactAsync(AboutInfo.SupportQqGroupNumber, "群号");
+
+    private async void OnCopyQqNumberClick(object? sender, RoutedEventArgs e) =>
+        await CopyContactAsync(AboutInfo.SupportQqNumber, "QQ 号");
+
+    /// <summary>
+    /// 复制联系方式到剪贴板：写入剪贴板的内容只有号码本身（前后无空格、无其他文字）；
+    /// 成功/失败都在「交流与反馈」区块内给一句提示，绝不抛异常。
+    /// </summary>
+    private async Task CopyContactAsync(string number, string label)
+    {
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is null)
+            {
+                ContactFeedback = $"复制失败：剪贴板不可用，请手动记下{label} {number}。";
+                return;
+            }
+
+            await clipboard.SetTextAsync(number);
+            ContactFeedback = $"已复制{label} {number}，可直接粘贴到 QQ 里搜索。";
+        }
+        catch (Exception ex)
+        {
+            ContactFeedback = $"复制失败：{ex.Message}（{label}：{number}）";
+        }
+    }
 
     /// <summary>经系统外壳打开 URL/目录（UseShellExecute）；失败只提示不抛。</summary>
     private void OpenByShell(string target, string label)

@@ -491,7 +491,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                     messageId, message.GroupOpenId);
                 await EnqueueRetrySafeAsync(
                     RetryOperationType.StoreWrite,
-                    new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, boundSubject, memberOpenId),
+                    new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, boundSubject, memberOpenId,
+                        CreatedAt: message.ReceivedAt),
                     messageId).ConfigureAwait(false);
                 return;
             }
@@ -519,7 +520,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 messageId, message.GroupOpenId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.SubjectClassify,
-                BuildSubjectClassifyPayload(messageId, text, memberOpenId),
+                BuildSubjectClassifyPayload(messageId, text, memberOpenId, message.ReceivedAt),
                 messageId).ConfigureAwait(false);
             return;
         }
@@ -540,7 +541,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 messageId, message.GroupOpenId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
-                new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject, memberOpenId),
+                new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject, memberOpenId,
+                    CreatedAt: message.ReceivedAt),
                 messageId).ConfigureAwait(false);
         }
 
@@ -567,7 +569,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             SubjectConfidence = confidence,
             SubjectSource = source,
             AttachmentIds = attachmentIds,
-            CreatedAt = DateTimeOffset.Now
+            // 时间口径：消息在群里的真实发送时间（收到即处理，此处不再取本机当前时间）
+            CreatedAt = message.ReceivedAt
         };
         await _homeworkStore!.UpsertAsync(item, ct).ConfigureAwait(false);
         _logger.LogInformation(
@@ -904,7 +907,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 SubjectConfidence = subject.Confidence,
                 SubjectSource = subject.Source,
                 AttachmentIds = attachmentIds,
-                CreatedAt = DateTimeOffset.Now
+                // 时间口径：消息发送时间优先、接收时间兜底（与通知/文档同源）
+                CreatedAt = message.ReceivedAt
             }, ct).ConfigureAwait(false);
             _logger.LogInformation(
                 "无关键词兜底作业已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Subject={Subject}, Source={Source}, Confidence={Confidence}）",
@@ -924,7 +928,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 messageId, message.GroupOpenId);
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
-                new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject, memberOpenId),
+                new StoreWritePayload(StoreWriteKind.HomeworkUpsert, messageId, text, subject.Subject, memberOpenId,
+                    CreatedAt: message.ReceivedAt),
                 messageId).ConfigureAwait(false);
         }
 
@@ -940,7 +945,7 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         try
         {
             await _noticeStore!.AddOrUpdateWithSourceAsync(
-                    messageId, text, memberOpenId, message.GroupOpenId, null,
+                    messageId, text, memberOpenId, message.GroupOpenId, message.ReceivedAt,
                     senderLabel: message.SenderNickname, ct: ct).ConfigureAwait(false);
             _logger.LogInformation(
                 "通知已写入存储（MessageId={MessageId}, GroupOpenId={GroupOpenId}, Length={Length}）",
@@ -958,7 +963,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             await EnqueueRetrySafeAsync(
                 RetryOperationType.StoreWrite,
                 // 携带 MemberOpenId/GroupOpenId：重放时学科前缀语义与首次写入一致
-                new StoreWritePayload(StoreWriteKind.NoticeUpsert, messageId, text, null, memberOpenId, message.GroupOpenId),
+                new StoreWritePayload(StoreWriteKind.NoticeUpsert, messageId, text, null, memberOpenId,
+                    message.GroupOpenId, message.ReceivedAt),
                 messageId).ConfigureAwait(false);
         }
     }
@@ -986,7 +992,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             try
             {
                 var record = await _filePipeline!
-                    .EnqueueAsync(message.MessageId, fileName, segment.Url, message.MemberOpenId, message.GroupOpenId, ct)
+                    .EnqueueAsync(message.MessageId, fileName, segment.Url, message.MemberOpenId,
+                        message.GroupOpenId, message.ReceivedAt, ct)
                     .ConfigureAwait(false);
                 ids.Add(record.Id);
                 _logger.LogInformation(
@@ -1003,7 +1010,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                     await EnqueueRetrySafeAsync(
                         RetryOperationType.FileDownload,
                         BuildFileDownloadPayload(
-                            message.MessageId, fileName, segment.Url, message.MemberOpenId, message.GroupOpenId),
+                            message.MessageId, fileName, segment.Url, message.MemberOpenId, message.GroupOpenId,
+                            message.ReceivedAt),
                         message.MessageId).ConfigureAwait(false);
                 }
             }
@@ -1018,7 +1026,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                     message.MessageId, message.GroupOpenId, fileName);
                 await EnqueueRetrySafeAsync(
                     RetryOperationType.FileDownload,
-                    BuildFileDownloadPayload(message.MessageId, fileName, segment.Url, message.MemberOpenId, message.GroupOpenId),
+                    BuildFileDownloadPayload(message.MessageId, fileName, segment.Url, message.MemberOpenId,
+                        message.GroupOpenId, message.ReceivedAt),
                     message.MessageId).ConfigureAwait(false);
             }
         }
@@ -1160,7 +1169,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         }
 
         var record = await _filePipeline
-            .EnqueueAsync(payload.MessageId, payload.FileName, payload.Url, payload.MemberOpenId, payload.GroupOpenId, ct)
+            .EnqueueAsync(payload.MessageId, payload.FileName, payload.Url, payload.MemberOpenId,
+                payload.GroupOpenId, payload.CreatedAt, ct)
             .ConfigureAwait(false);
         var success = record.Status is FileStatus.Archived or FileStatus.Duplicate;
         _logger.LogInformation(
@@ -1216,7 +1226,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                 SubjectConfidence = result.Confidence,
                 SubjectSource = result.Source,
                 AttachmentIds = attachments,
-                CreatedAt = DateTimeOffset.Now
+                // 时间口径：重试载荷携带的原始消息发送时间；旧载荷无该字段（null）→ 回落补写时刻
+                CreatedAt = payload.CreatedAt ?? DateTimeOffset.Now
             };
             await _homeworkStore.UpsertAsync(item, ct).ConfigureAwait(false);
             await AppendDocumentEntrySafeAsync(
@@ -1258,9 +1269,10 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
             switch (payload.Kind)
             {
                 case StoreWriteKind.NoticeUpsert when _noticeStore is not null:
+                    // 时间口径：沿用载荷携带的原始消息发送时间；旧载荷无该字段（null）→ NoticeStore 内部回落补写时刻
                     await _noticeStore
                         .AddOrUpdateAsync(payload.MessageId, payload.Content ?? "", payload.MemberOpenId,
-                            payload.GroupOpenId, null, ct)
+                            payload.GroupOpenId, payload.CreatedAt, ct)
                         .ConfigureAwait(false);
                     break;
 
@@ -1278,7 +1290,8 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
                         SubjectConfidence = result.Confidence,
                         SubjectSource = result.Source,
                         AttachmentIds = attachments,
-                        CreatedAt = DateTimeOffset.Now
+                        // 时间口径：重试载荷携带的原始消息发送时间；旧载荷无该字段（null）→ 回落补写时刻
+                        CreatedAt = payload.CreatedAt ?? DateTimeOffset.Now
                     };
                     await _homeworkStore.UpsertAsync(retryItem, ct).ConfigureAwait(false);
                     await AppendDocumentEntrySafeAsync(
@@ -1414,22 +1427,39 @@ public sealed class MessageDispatchService : IHostedService, IDisposable
         HomeworkSetSubject
     }
 
+    /// <summary>
+    /// FileDownload 重试载荷。<paramref name="CreatedAt"/> = 原始消息发送时间
+    /// （<see cref="MessageRecord.ReceivedAt"/>）；旧版本持久化的载荷无该字段 → 反序列化为 null
+    /// → 重放时回落本机当前时间（向后兼容，不做存档迁移）。
+    /// </summary>
     internal sealed record FileDownloadPayload(
-        string MessageId, string FileName, string Url, string? MemberOpenId = null, string? GroupOpenId = null);
+        string MessageId, string FileName, string Url, string? MemberOpenId = null, string? GroupOpenId = null,
+        DateTimeOffset? CreatedAt = null);
 
-    internal sealed record SubjectClassifyPayload(string MessageId, string Text, string? MemberOpenId = null);
+    /// <summary>
+    /// SubjectClassify 重试载荷。<paramref name="CreatedAt"/> 语义同 <see cref="FileDownloadPayload"/>：
+    /// 携带原始消息发送时间，旧载荷缺省为 null。
+    /// </summary>
+    internal sealed record SubjectClassifyPayload(
+        string MessageId, string Text, string? MemberOpenId = null, DateTimeOffset? CreatedAt = null);
 
+    /// <summary>
+    /// StoreWrite 重试载荷。<paramref name="CreatedAt"/> 语义同 <see cref="FileDownloadPayload"/>：
+    /// 携带原始消息发送时间（通知/作业补写落档用），旧载荷缺省为 null → 回落补写时刻。
+    /// </summary>
     internal sealed record StoreWritePayload(
         StoreWriteKind Kind, string MessageId, string? Content, string? Subject,
-        string? MemberOpenId = null, string? GroupOpenId = null);
+        string? MemberOpenId = null, string? GroupOpenId = null, DateTimeOffset? CreatedAt = null);
 
     internal static string BuildFileDownloadPayload(
-        string messageId, string fileName, string url, string? memberOpenId = null, string? groupOpenId = null) =>
-        JsonSerializer.Serialize(new FileDownloadPayload(messageId, fileName, url, memberOpenId, groupOpenId),
+        string messageId, string fileName, string url, string? memberOpenId = null, string? groupOpenId = null,
+        DateTimeOffset? createdAt = null) =>
+        JsonSerializer.Serialize(new FileDownloadPayload(messageId, fileName, url, memberOpenId, groupOpenId, createdAt),
             PayloadJsonOptions);
 
-    internal static string BuildSubjectClassifyPayload(string messageId, string text, string memberOpenId = "") =>
-        JsonSerializer.Serialize(new SubjectClassifyPayload(messageId, text, memberOpenId), PayloadJsonOptions);
+    internal static string BuildSubjectClassifyPayload(string messageId, string text, string memberOpenId = "",
+        DateTimeOffset? createdAt = null) =>
+        JsonSerializer.Serialize(new SubjectClassifyPayload(messageId, text, memberOpenId, createdAt), PayloadJsonOptions);
 
     /// <summary>重试载荷序列化选项（internal 供单元测试复用）。</summary>
     internal static JsonSerializerOptions PayloadSerializerOptions => PayloadJsonOptions;

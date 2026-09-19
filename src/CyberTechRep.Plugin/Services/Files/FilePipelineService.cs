@@ -93,10 +93,25 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
     }
 
     /// <inheritdoc />
-    public async Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+    public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
         string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default)
+        => EnqueueCoreAsync(messageId, fileName, url, memberOpenId, groupOpenId, createdAt: null, ct);
+
+    /// <inheritdoc />
+    public Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+        string? memberOpenId, string? groupOpenId, DateTimeOffset? createdAt, CancellationToken ct = default)
+        => EnqueueCoreAsync(messageId, fileName, url, memberOpenId, groupOpenId, createdAt, ct);
+
+    /// <summary>
+    /// 入队核心：<paramref name="createdAt"/> = 消息在群里的真实发送时间
+    /// （消息时间优先、接收时间兜底），null → 本机当前时间（拖放导入等本机操作）。
+    /// 该时间决定记录 <see cref="FileRecord.CreatedAt"/> 与归档目录的日期归属；
+    /// 复用既有 Failed 记录时保留原时间（幂等：重试不刷新首见时间）。
+    /// </summary>
+    private async Task<FileRecord> EnqueueCoreAsync(string messageId, string fileName, string? url,
+        string? memberOpenId, string? groupOpenId, DateTimeOffset? createdAt, CancellationToken ct)
     {
-        var record = BeginEnqueue(messageId ?? "", fileName ?? "", memberOpenId, groupOpenId);
+        var record = BeginEnqueue(messageId ?? "", fileName ?? "", memberOpenId, groupOpenId, createdAt);
         RaiseUpdated(record);
 
         // ① 文件名路径安全校验（拒绝 ..、路径分隔符、非法字符、超长名、Windows 保留名）
@@ -734,6 +749,9 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
 
         record.Status = FileStatus.Failed;
         record.LastError = $"磁盘占用已达上限（{settings.MaxDiskUsageMb} MB，清理策略 {settings.CleanupPolicy}），拒绝接收新文件";
+        // 磁盘策略拒绝属永久失败（见 FileRecord.FailureRetriable 契约）：显式置 false，
+        // 避免复用记录时残留的历史「可重试」标记让调用方投递注定失败的重试。
+        record.FailureRetriable = false;
         PersistAndRaise(record);
         _logger.LogWarning(
             "磁盘占用 {Usage} 字节超上限 {Limit} 字节（清理策略 {Policy}），拒绝新文件 {Name}",
@@ -932,8 +950,11 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
     /// <summary>
     /// 入队：同 MessageId+FileName 的 Failed 记录可复用（可重入重试，AttemptCount 累计）。
     /// MemberOpenId/GroupOpenId 随记录持久化（成员绑定回溯归因用；复用记录时补写空缺值）。
+    /// <paramref name="createdAt"/>：消息发送时间覆盖（null = 本机当前时间）；新建记录时生效，
+    /// 复用既有记录时保留原 <see cref="FileRecord.CreatedAt"/>（重投/重试不改写首见时间）。
     /// </summary>
-    private FileRecord BeginEnqueue(string messageId, string fileName, string? memberOpenId, string? groupOpenId)
+    private FileRecord BeginEnqueue(string messageId, string fileName, string? memberOpenId, string? groupOpenId,
+        DateTimeOffset? createdAt = null)
     {
         lock (_lock)
         {
@@ -944,6 +965,10 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
                 existing.Status = FileStatus.Pending;
                 existing.LastError = null;
                 existing.CompletedAt = null;
+                // 新一轮尝试开始：清掉上一轮失败留下的「可重试」标记。否则本次若在
+                // 未显式赋值的失败路径（如磁盘策略拒绝）落 Failed，会带着上一轮的
+                // stale=true 误导调用方投递注定失败的 FileDownload 重试。
+                existing.FailureRetriable = false;
                 existing.MemberOpenId = string.IsNullOrEmpty(existing.MemberOpenId)
                     ? memberOpenId ?? ""
                     : existing.MemberOpenId;
@@ -961,7 +986,8 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
                 MemberOpenId = memberOpenId ?? "",
                 GroupOpenId = groupOpenId ?? "",
                 Status = FileStatus.Pending,
-                CreatedAt = DateTimeOffset.Now
+                // 时间口径：消息在群里的真实发送时间优先（调用方传入），本机当前时间兜底
+                CreatedAt = createdAt ?? DateTimeOffset.Now
             };
             _records.Add(record);
             Save();
@@ -1005,9 +1031,32 @@ public sealed class FilePipelineService : IFilePipelineService, IFileImportServi
         RaiseUpdated(record);
     }
 
+    /// <summary>
+    /// 广播文件状态变化。订阅者异常必须隔离：本方法在下载/归档/失败落档的关键路径上被调用
+    /// （如「归档成功后 PersistAndRaise」），订阅者抛出的异常此前会冒泡进下载重试循环，
+    /// 把「已成功归档」误判为下载失败（records 里落成 Failed、附件二次归档/弹窗全丢），
+    /// 甚至导致调用方再次投递 FileDownload 重试产生重复记录。逐订阅者 try/catch + 记日志。
+    /// </summary>
     private void RaiseUpdated(FileRecord record)
     {
-        FileUpdated?.Invoke(this, record);
+        var handler = FileUpdated;
+        if (handler is null)
+        {
+            return;
+        }
+
+        foreach (EventHandler<FileRecord> subscriber in handler.GetInvocationList())
+        {
+            try
+            {
+                subscriber(this, record);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "文件管道 FileUpdated 订阅者异常（已吞掉，不影响下载/归档状态）：{Name}", record.FileName);
+            }
+        }
     }
 
     /// <summary>崩溃安全持久化：临时文件 + 原子替换（files.json）。</summary>

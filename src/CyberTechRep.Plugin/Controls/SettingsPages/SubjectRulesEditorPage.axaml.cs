@@ -223,7 +223,7 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
 
             if (!seen.Add($"{row.GroupOpenId?.Trim() ?? ""}\n{row.MemberOpenId.Trim()}"))
             {
-                errors.Add($"成员学科绑定：成员 {row.MemberOpenId}（群 {row.GroupOpenId}）重复条目。");
+                errors.Add($"成员学科绑定：成员 {row.MemberOpenId}（群 {row.GroupOpenId}）重复了，请删掉多余的一行。");
             }
         }
 
@@ -279,7 +279,7 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
             return;
         }
 
-        const string resetText = "完全重置（清空绑定与学习映射）";
+        const string resetText = "完全重置（清空绑定和学习记录）";
         if (!_resetConfirmGate.IsPending)
         {
             // 第一次点击：进入待确认态（3 秒后自动复位）
@@ -312,8 +312,8 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
             // settings.json 保存并广播 SettingsChanged → 识别链经实时委托读 Current，热生效
             await SettingsService.SaveAsync().ConfigureAwait(true);
 
-            ResetFeedback = $"已完全重置：清除成员学科绑定 {summary.RemovedBindings} 条、"
-                + $"学习映射 {summary.RemovedRules} 条；学科识别模式已恢复默认（成员绑定优先 + 显示选择窗）。";
+            ResetFeedback = $"已完全重置：清除了 {summary.RemovedBindings} 条成员学科绑定和 {summary.RemovedRules} 条学习记录，"
+                + "学科识别方式已恢复默认（成员绑定优先、显示选择窗）。";
         }
         catch (Exception ex)
         {
@@ -343,7 +343,7 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
         {
             var dto = new SubjectRulesDto { Rules = [.. Rules.Select(r => r.ToRule())] };
             await CopyToClipboardAsync(JsonSerializer.Serialize(dto, JsonOptions)).ConfigureAwait(true);
-            TransferFeedback = "已导出学科规则 JSON 到剪贴板。";
+            TransferFeedback = "已把学科规则复制到剪贴板。";
         }
         catch (Exception ex)
         {
@@ -358,14 +358,14 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
             var json = await ReadClipboardTextAsync().ConfigureAwait(true);
             if (string.IsNullOrWhiteSpace(json))
             {
-                TransferFeedback = "剪贴板没有可导入的学科规则 JSON。";
+                TransferFeedback = "剪贴板里没有可导入的学科规则。";
                 return;
             }
 
             var imported = JsonSerializer.Deserialize<SubjectRulesDto>(json, JsonOptions)?.Rules;
             if (imported is null || imported.Count == 0)
             {
-                TransferFeedback = "导入内容没有可用的学科规则（需要 { \"rules\": [ ... ] } 结构）。";
+                TransferFeedback = "导入内容里没有可用的学科规则，请确认复制的是导出的内容。";
                 return;
             }
 
@@ -373,11 +373,11 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
             // 导入内容可能自带防呆问题（空学科名等）：立即提示，保存时仍会拦截
             var errors = SubjectRulesEditorLogic.Validate(Rules.Select(r => r.ToRule()));
             ValidationMessage = errors.Count > 0 ? string.Join("\n", errors) : "";
-            TransferFeedback = $"已导入 {Rules.Count} 条学科规则，请检查后点击「保存并应用」。";
+            TransferFeedback = $"已导入 {Rules.Count} 条学科规则，请检查后点「保存并应用」。";
         }
         catch (JsonException ex)
         {
-            TransferFeedback = $"导入被拒绝：不是合法的学科规则 JSON（{ex.Message}）";
+            TransferFeedback = $"导入失败：内容不是有效的学科规则数据（{ex.Message}）";
         }
         catch (Exception ex)
         {
@@ -391,14 +391,14 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
         {
             if (!File.Exists(_subjectsAssetPath))
             {
-                TransferFeedback = $"Assets 模板缺失（{_subjectsAssetPath}），已改用内置默认规则。";
+                TransferFeedback = "默认模板文件缺失，已改用内置的默认学科词表。";
                 ReplaceRules(SubjectRuleFile.BuiltInDefaults);
                 return;
             }
 
             var defaults = ParseRules(File.ReadAllText(_subjectsAssetPath));
             ReplaceRules(defaults);
-            TransferFeedback = "已载入 Assets 默认学科模板，点击「保存并应用」写入并热生效。";
+            TransferFeedback = "已载入默认学科词表，点「保存并应用」后生效。";
         }
         catch (Exception ex)
         {
@@ -418,7 +418,7 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
                 HomeworkKeywords = [.. TextToLines(HomeworkKeywordsText)]
             };
             await CopyToClipboardAsync(JsonSerializer.Serialize(dto, JsonOptions)).ConfigureAwait(true);
-            TransferFeedback = "已导出分类关键词 JSON 到剪贴板。";
+            TransferFeedback = "已把通知 / 作业关键词复制到剪贴板。";
         }
         catch (Exception ex)
         {
@@ -433,14 +433,14 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
             var json = await ReadClipboardTextAsync().ConfigureAwait(true);
             if (string.IsNullOrWhiteSpace(json))
             {
-                TransferFeedback = "剪贴板没有可导入的分类关键词 JSON。";
+                TransferFeedback = "剪贴板里没有可导入的关键词。";
                 return;
             }
 
             var dto = JsonSerializer.Deserialize<KeywordRulesDto>(json, JsonOptions);
             if (dto is null)
             {
-                TransferFeedback = "导入内容为空（需要 noticeKeywords / homeworkKeywords 结构）。";
+                TransferFeedback = "导入内容里没有可用的关键词，请确认复制的是导出的内容。";
                 return;
             }
 
@@ -448,11 +448,11 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
             HomeworkKeywordsText = LinesToText([.. dto.HomeworkKeywords]);
             RaisePropertyChanged(nameof(NoticeKeywordsText));
             RaisePropertyChanged(nameof(HomeworkKeywordsText));
-            TransferFeedback = "已导入分类关键词，点击「保存并应用」写入并热生效。";
+            TransferFeedback = "已导入关键词，点「保存并应用」后生效。";
         }
         catch (JsonException ex)
         {
-            TransferFeedback = $"导入被拒绝：不是合法的分类关键词 JSON（{ex.Message}）";
+            TransferFeedback = $"导入失败：内容不是有效的关键词数据（{ex.Message}）";
         }
         catch (Exception ex)
         {
@@ -471,7 +471,7 @@ public partial class SubjectRulesEditorPage : CyberTechRepSettingsPageBase
             HomeworkKeywordsText = LinesToText([.. snapshot.HomeworkKeywords]);
             RaisePropertyChanged(nameof(NoticeKeywordsText));
             RaisePropertyChanged(nameof(HomeworkKeywordsText));
-            TransferFeedback = "已载入 Assets 默认关键词模板，点击「保存并应用」写入并热生效。";
+            TransferFeedback = "已载入默认关键词，点「保存并应用」后生效。";
         }
         catch (Exception ex)
         {

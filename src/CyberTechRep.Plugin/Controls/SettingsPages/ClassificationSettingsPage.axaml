@@ -12,26 +12,26 @@
 
             <TextBlock Text="分类设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
 
-            <!-- 设置归属说明（需求 6 去重：每项设置单一入口） -->
-            <TextBlock Text="设置归属：通知/作业关键词与学科词表在「学科词表编辑」页编辑；AI 相关配置（总开关、云端 API、置信度阈值等）已全部集中到「CyberTechRep AI」页，本页不再重复。"
+            <!-- 设置入口说明：每项设置只在一个页面里编辑 -->
+            <TextBlock Text="本页只管人工确认队列。通知 / 作业关键词和学科词表请到「CyberTechRep 词表编辑」页设置，AI 相关设置请到「CyberTechRep AI」页。"
                        TextWrapping="Wrap" Opacity="0.75"/>
 
             <!-- 人工确认队列 -->
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="6">
                     <TextBlock Text="人工确认队列" FontWeight="SemiBold"/>
-                    <TextBlock Text="学科识别（关键词/AI）低置信或失败时，消息进入待确认队列等待人工指定学科。置信度阈值在「CyberTechRep AI」页调整。"
+                    <TextBlock Text="消息没能可靠识别出学科时（关键词和 AI 都没把握），会先放进这个队列，等人工点选学科。默认开启；识别门槛可在「CyberTechRep AI」页调整。"
                                TextWrapping="Wrap" Opacity="0.8"/>
                     <ToggleSwitch Content="启用人工确认队列"
                                   IsChecked="{Binding Settings.Classification.ManualConfirmQueueEnabled}"/>
                 </StackPanel>
             </Border>
 
-            <!-- 学科词表入口指向（去重：编辑统一在「学科词表编辑」页） -->
+            <!-- 学科词表入口指向（统一在「CyberTechRep 词表编辑」页编辑） -->
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="6">
                     <TextBlock Text="学科词表" FontWeight="SemiBold"/>
-                    <TextBlock Text="学科关键词规则（subjects.json）与消息分类关键词（classification-keywords.json）统一在「学科词表编辑」页可视化编辑（含导入/导出/恢复默认），本页不再提供重复编辑入口。"
+                    <TextBlock Text="学科关键词和通知 / 作业关键词都在「CyberTechRep 词表编辑」页里编辑，支持导入、导出和恢复默认。"
                                TextWrapping="Wrap" Opacity="0.8"/>
                 </StackPanel>
             </Border>

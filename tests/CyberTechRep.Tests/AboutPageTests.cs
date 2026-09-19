@@ -8,7 +8,7 @@ namespace CyberTechRep.Tests;
 /// <summary>
 /// 需求 5：「关于 CyberTechRep」页展示信息（<see cref="AboutInfo"/>）的取值与兜底。
 /// 版本号动态读取程序集信息（绝不写死），manifest.yml 仅作补充与兜底；
-/// manifest.yml 缺失/损坏时不抛异常，作者与仓库地址回落固定值。
+/// manifest.yml 缺失/损坏时不抛异常，作者、仓库地址、交流 QQ 群号与作者 QQ 号回落固定值。
 /// </summary>
 public sealed class AboutPageTests : IDisposable
 {
@@ -112,6 +112,63 @@ public sealed class AboutPageTests : IDisposable
         Assert.Null(info.ManifestUrl);
         Assert.Equal("Chenxuan Yan", info.Author);
         Assert.Matches(VersionPattern, info.Version);
+    }
+
+    [Fact]
+    public void Create_ContactInfo_UsesFixedQqGroupAndAuthorQq()
+    {
+        // 交流 QQ 群与作者 QQ 是插件固定信息：页面显示、复制按钮与单测都取这两个常量
+        Assert.Equal("305535138", AboutInfo.SupportQqGroupNumber);
+        Assert.Equal("2175983782", AboutInfo.SupportQqNumber);
+
+        var info = AboutInfo.Create(dataDirectory: _dir, baseDirectory: Path.Combine(_dir, "no-manifest"));
+
+        Assert.Equal(AboutInfo.SupportQqGroupNumber, info.SupportQqGroup);
+        Assert.Equal(AboutInfo.SupportQqNumber, info.SupportQq);
+
+        // 号码本身要能直接拿去 QQ 搜索：纯数字，前后无空格、无其他文字
+        Assert.Matches(@"^\d+$", info.SupportQqGroup);
+        Assert.Matches(@"^\d+$", info.SupportQq);
+
+        // 记录默认值与 Create(...) 的赋值一致（两个取值来源不得分叉）
+        var defaults = new AboutInfo();
+        Assert.Equal(AboutInfo.SupportQqGroupNumber, defaults.SupportQqGroup);
+        Assert.Equal(AboutInfo.SupportQqNumber, defaults.SupportQq);
+    }
+
+    [Fact]
+    public void AboutPage_ShowsContactNumbersWithCopyButtons()
+    {
+        // 关于页要把两个号码显示出来（绑定到联系方式字段）并提供一键复制按钮；
+        // 复制按钮写入剪贴板的内容取自 AboutInfo 常量，号码本身只在这里维护一份
+        var xaml = File.ReadAllText(Path.Combine(ResolveSettingsPagesDirectory(), "AboutSettingsPage.axaml"));
+
+        Assert.Contains("Text=\"{Binding Info.SupportQqGroup}\"", xaml);
+        Assert.Contains("Text=\"{Binding Info.SupportQq}\"", xaml);
+        Assert.Contains("Click=\"OnCopyQqGroupClick\"", xaml);
+        Assert.Contains("Click=\"OnCopyQqNumberClick\"", xaml);
+    }
+
+    /// <summary>
+    /// 定位仓库内设置页目录：从测试程序集输出目录向上查找含
+    /// <c>src\CyberTechRep.Plugin</c> 的仓库根，再拼出 <c>Controls\SettingsPages</c>。
+    /// </summary>
+    private static string ResolveSettingsPagesDirectory()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var pagesDir = Path.Combine(dir.FullName, "src", "CyberTechRep.Plugin", "Controls", "SettingsPages");
+            if (Directory.Exists(pagesDir))
+            {
+                return pagesDir;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new DirectoryNotFoundException(
+            $"未能从 {AppContext.BaseDirectory} 向上找到 src\\CyberTechRep.Plugin\\Controls\\SettingsPages。");
     }
 
     [Fact]

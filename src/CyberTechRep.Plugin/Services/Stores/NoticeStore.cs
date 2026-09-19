@@ -272,6 +272,9 @@ public sealed class NoticeStore : INoticeStore
                     MemberOpenId = existing.MemberOpenId,
                     GroupOpenId = existing.GroupOpenId,
                     Subject = existing.Subject,
+                    // 来源展示名必须一并保留：换类（通知→作业）时经该字段把来源带回作业侧，
+                    // 丢失后「标记未读」过的通知再换类会在作业侧显示「成员」（数据丢失）。
+                    SenderLabel = existing.SenderLabel,
                     CreatedAt = existing.CreatedAt,
                     IsRead = false,
                     ReadAt = null

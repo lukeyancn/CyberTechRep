@@ -46,6 +46,14 @@ public sealed class QQOfficialWsClient : IMessageGatewayClient
     private readonly ILogger? _logger;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
+    /// <summary>
+    /// 默认 HTTP 调用器（未注入 <see cref="QQOfficialWsClientOptions.HttpInvoker"/> 时使用）。
+    /// 每次重连都会走 AccessToken/网关两个 HTTP 调用，此前每次调用都新建 Invoker+SocketsHttpHandler，
+    /// 连接池与套接字随重连次数泄漏（且从不释放）。改为每客户端惰性创建一个，随
+    /// <see cref="DisposeAsync"/> 释放。
+    /// </summary>
+    private HttpMessageInvoker? _defaultInvoker;
+
     private CancellationTokenSource? _cts;
     private Task? _runLoop;
     private volatile bool _disposed;
@@ -360,7 +368,7 @@ public sealed class QQOfficialWsClient : IMessageGatewayClient
             return _accessToken;
         }
 
-        var invoker = _options.HttpInvoker ?? CreateDefaultHttpInvoker();
+        var invoker = ResolveInvoker();
         var url = _options.TokenApiUrl;
         _logger?.LogInformation("请求 AccessToken：{Url}（AppId={AppId}）", url, MaskAppId(_options.AppId));
 
@@ -405,7 +413,7 @@ public sealed class QQOfficialWsClient : IMessageGatewayClient
     /// <summary>获取 WebSocket 网关地址。</summary>
     private async Task<string> GetGatewayUrlAsync(string token, CancellationToken ct)
     {
-        var invoker = _options.HttpInvoker ?? CreateDefaultHttpInvoker();
+        var invoker = ResolveInvoker();
         var url = $"{_options.ApiBase.TrimEnd('/')}/gateway";
 
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
@@ -430,6 +438,13 @@ public sealed class QQOfficialWsClient : IMessageGatewayClient
 
         return wsUrl!;
     }
+
+    /// <summary>
+    /// 取 HTTP 调用器：优先用调用方注入的（测试/宿主自管生命周期），否则复用本客户端内
+    /// 惰性创建的单一默认调用器（连接池跨重连复用；不再每次调用新建 Handler）。
+    /// </summary>
+    internal HttpMessageInvoker ResolveInvoker() =>
+        _options.HttpInvoker ?? (_defaultInvoker ??= CreateDefaultHttpInvoker());
 
     private static HttpMessageInvoker CreateDefaultHttpInvoker()
     {
@@ -520,6 +535,8 @@ public sealed class QQOfficialWsClient : IMessageGatewayClient
 
         _disposed = true;
         await StopAsync().ConfigureAwait(false);
+        _defaultInvoker?.Dispose();
+        _defaultInvoker = null;
         _sendLock.Dispose();
         _cts?.Dispose();
     }

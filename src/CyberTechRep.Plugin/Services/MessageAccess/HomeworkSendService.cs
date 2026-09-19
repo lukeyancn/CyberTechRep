@@ -63,6 +63,14 @@ public sealed class HomeworkSendService : IHomeworkSendService
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
 
+    /// <summary>
+    /// 默认 HTTP 调用器（未注入 <see cref="HomeworkSendOptionsProvider.HttpInvoker"/> 时使用）。
+    /// 必须整个服务生命周期共用一个 <see cref="SocketsHttpHandler"/>：此前每次发送/取 token 都
+    /// 新建 Invoker+Handler，连接池与套接字随每次「整理并发送」泄漏（未释放亦未复用）。
+    /// 本服务为单例，进程内一个调用器即正确生命周期。
+    /// </summary>
+    private HttpMessageInvoker? _defaultInvoker;
+
     // --- AccessToken 缓存（与 WsClient 各自独立缓存，互不影响）---
     private readonly object _tokenLock = new();
     private string? _accessToken;
@@ -177,7 +185,7 @@ public sealed class HomeworkSendService : IHomeworkSendService
             payload["msg_id"] = msgId;
         }
 
-        var invoker = _provider.HttpInvoker ?? CreateDefaultHttpInvoker();
+        var invoker = ResolveInvoker();
         using var req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("QQBot", token);
         req.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
@@ -271,7 +279,7 @@ public sealed class HomeworkSendService : IHomeworkSendService
         }
 
         var secret = _provider.SecretUnprotector(settings.AppSecretProtected);
-        var invoker = _provider.HttpInvoker ?? CreateDefaultHttpInvoker();
+        var invoker = ResolveInvoker();
         _logger.LogInformation("请求 AccessToken（发送用）：{Url}（AppId={AppId}）", settings.TokenApiUrl, MaskAppId(settings.AppId));
 
         using var req = new HttpRequestMessage(HttpMethod.Post, settings.TokenApiUrl);
@@ -345,6 +353,13 @@ public sealed class HomeworkSendService : IHomeworkSendService
 
         return false;
     }
+
+    /// <summary>
+    /// 取 HTTP 调用器：优先用调用方注入的（测试/宿主自管生命周期），否则复用本服务内
+    /// 惰性创建的单一默认调用器（连接池跨次复用；不再每次调用新建 Handler）。
+    /// </summary>
+    internal HttpMessageInvoker ResolveInvoker() =>
+        _provider.HttpInvoker ?? (_defaultInvoker ??= CreateDefaultHttpInvoker());
 
     private static HttpMessageInvoker CreateDefaultHttpInvoker()
     {

@@ -117,6 +117,17 @@ public interface IFilePipelineService
     Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
         string? memberOpenId = null, string? groupOpenId = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// 入队一个待处理文件，并显式指定记录时间（消息在群里的真实发送时间）。
+    /// <paramref name="createdAt"/>：<see cref="MessageRecord.ReceivedAt"/>（发送时间优先、接收时间兜底）；
+    /// null = 回落本机当前时间（拖放导入等本机操作没有「发送时间」，保持旧行为）。
+    /// 该时间同时决定 <see cref="FileRecord.CreatedAt"/> 与归档目录的日期归属。
+    /// <para>默认实现回落到不带时间的旧重载（测试替身无需改动）。</para>
+    /// </summary>
+    Task<FileRecord> EnqueueAsync(string messageId, string fileName, string? url,
+        string? memberOpenId, string? groupOpenId, DateTimeOffset? createdAt, CancellationToken ct = default)
+        => EnqueueAsync(messageId, fileName, url, memberOpenId, groupOpenId, ct);
+
     /// <summary>指定文件的学科（识别完成后二次归档：移动到 学科/日期 目录）。</summary>
     Task ReassignSubjectAsync(Guid fileId, string subject, CancellationToken ct = default);
 

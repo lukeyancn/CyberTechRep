@@ -11,17 +11,17 @@
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
             <TextBlock Text="文件设置" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
-            <TextBlock Text="下载文件的存放、归档与清理策略；排版与「分类设置」页保持一致。"
+            <TextBlock Text="设置群里下载的文件保存在哪里、最多占多少空间，以及什么时候自动清理。"
                        TextWrapping="Wrap" Opacity="0.75" Margin="0,0,0,6"/>
 
             <!-- 下载与归档 -->
             <Expander Header="下载与归档" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="下载根目录（相对插件数据目录或绝对路径）" FontWeight="SemiBold"/>
+                    <TextBlock Text="下载目录（可填完整路径，也可填相对于数据目录的路径）" FontWeight="SemiBold"/>
                     <TextBox Text="{Binding Settings.Files.DownloadRoot}"/>
-                    <ToggleSwitch Content="按学科分组归档（下载文件按 学科/日期/文件名 目录结构存放）"
+                    <ToggleSwitch Content="按学科分组归档（下载的文件按 学科/日期/文件名 存放）"
                                   IsChecked="{Binding Settings.Files.GroupBySubject}"/>
-                    <ToggleSwitch Content="MD5 内容去重（重复文件不落盘，保留原记录）"
+                    <ToggleSwitch Content="内容去重（内容相同的文件只保存一份，不再重复下载）"
                                   IsChecked="{Binding Settings.Files.Md5DedupEnabled}"/>
                 </StackPanel>
             </Expander>
@@ -29,13 +29,13 @@
             <!-- 磁盘占用与清理 -->
             <Expander Header="磁盘占用与清理" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="磁盘占用上限（MB，0 = 不限）"/>
+                    <TextBlock Text="最多占用磁盘空间（MB；0 = 不限制）"/>
                     <NumericUpDown Value="{Binding Settings.Files.MaxDiskUsageMb}" Minimum="0" Maximum="10485760"
                                    Increment="128"/>
-                    <TextBlock Text="磁盘上限清理策略"/>
+                    <TextBlock Text="达到上限后怎么办"/>
                     <ComboBox SelectedIndex="{Binding Settings.Files.CleanupPolicy}" MinWidth="260">
-                        <ComboBoxItem Content="达到上限后停止接收新文件并告警"/>
-                        <ComboBoxItem Content="达到上限后自动清理最旧文件"/>
+                        <ComboBoxItem Content="停止接收新文件并提示"/>
+                        <ComboBoxItem Content="自动删除最早的文件腾出空间"/>
                     </ComboBox>
                 </StackPanel>
             </Expander>
@@ -43,28 +43,28 @@
             <!-- 下载限制 -->
             <Expander Header="下载限制" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="并发下载数（同时下载的文件数）"/>
+                    <TextBlock Text="同时下载几个文件（建议保持默认 2，太大可能拖慢网络）"/>
                     <NumericUpDown Value="{Binding Settings.Files.DownloadConcurrency}" Minimum="1" Maximum="16"/>
-                    <TextBlock Text="下载限速（KB/s，0 = 不限）"/>
+                    <TextBlock Text="下载限速（KB/s；0 = 不限制）"/>
                     <NumericUpDown Value="{Binding Settings.Files.SpeedLimitKbps}" Minimum="0" Maximum="1048576"
                                    Increment="64"/>
-                    <TextBlock Text="单文件大小上限（MB），超出拒绝接收并告警"/>
+                    <TextBlock Text="单个文件大小上限（MB），超出不再下载并提示"/>
                     <NumericUpDown Value="{Binding Settings.Files.MaxFileSizeMb}" Minimum="1" Maximum="65536"
                                    Increment="16"/>
-                    <TextBlock Text="文件名最大长度（字符，超出拒绝接收并告警）"/>
+                    <TextBlock Text="文件名最大长度（字符），超出不再下载并提示"/>
                     <NumericUpDown Value="{Binding Settings.Files.MaxFileNameLength}" Minimum="16" Maximum="512"/>
                 </StackPanel>
             </Expander>
 
-            <!-- 数据保留（通知/作业存储的保留期，语义上与归档清理同组） -->
+            <!-- 数据保留（通知/作业的保留期，与归档清理同组） -->
             <Expander Header="数据保留与清理" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="通知与作业按创建日期分桶存储，超过保留期后由清理任务在启动时或跨天时移除；已读通知仅保留当天，未读通知不受保留期限制。"
+                    <TextBlock Text="通知和作业按日期保存；超过保留天数后，插件会在启动时或第二天自动清理。已读通知只保留当天，未读通知不受保留天数限制。"
                                TextWrapping="Wrap" Opacity="0.75"/>
-                    <TextBlock Text="通知保留天数（0 = 永久保留）"/>
+                    <TextBlock Text="通知保留天数（0 = 一直保留）"/>
                     <NumericUpDown Value="{Binding Settings.Maintenance.NoticesRetentionDays}" Minimum="0"
                                    Maximum="3650"/>
-                    <TextBlock Text="作业保留天数（0 = 永久保留；大于 0 时保留最近 N 天，含当天）"/>
+                    <TextBlock Text="作业保留天数（0 = 一直保留；填 N 时保留最近 N 天，含当天）"/>
                     <NumericUpDown Value="{Binding Settings.Maintenance.HomeworkRetentionDays}" Minimum="0"
                                    Maximum="3650"/>
                 </StackPanel>

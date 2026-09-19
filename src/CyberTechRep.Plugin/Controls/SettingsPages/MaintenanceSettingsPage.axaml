@@ -13,7 +13,7 @@
             <TextBlock Text="维护与排错" FontSize="22" FontWeight="Bold" Margin="0,0,0,10"/>
 
             <!-- 日志级别 -->
-            <TextBlock Text="日志级别" FontWeight="SemiBold"/>
+            <TextBlock Text="日志级别（排查问题时用；Trace 记录最详细、Error 记录最少，平时保持 Info 即可）" FontWeight="SemiBold"/>
             <ComboBox SelectedIndex="{Binding LogLevelIndex, Mode=TwoWay}" MinWidth="200">
                 <ComboBoxItem Content="Trace"/>
                 <ComboBoxItem Content="Debug"/>
@@ -22,22 +22,22 @@
                 <ComboBoxItem Content="Error"/>
             </ComboBox>
 
-            <ToggleSwitch Content="启用失败重试队列"
+            <ToggleSwitch Content="失败后自动重试（下载或发送失败时自动再试；关闭后失败直接提示）"
                           IsChecked="{Binding Settings.Maintenance.RetryQueueEnabled}"/>
-            <TextBlock Text="重试上限次数（超过后置为「已放弃」，需手动重放）"/>
+            <TextBlock Text="最多重试几次（超过后标记为「已放弃」，可以在下面的列表里手动重新执行）"/>
             <NumericUpDown Value="{Binding Settings.Maintenance.MaxRetryAttempts}" Minimum="1" Maximum="100"/>
 
-            <!-- 首次启动引导（模块 9） -->
+            <!-- 首次启动引导 -->
             <Expander Header="首次启动引导" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="重新查看首次启动的欢迎与连接配置向导；已有连接参数会预填，不会被清空。"
+                    <TextBlock Text="重新打开第一次启动时的欢迎与连接设置向导；已经填过的连接信息会自动带入，不会被清空。"
                                FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
                     <Button Content="重新打开引导" Click="OnReopenWizardClicked" HorizontalAlignment="Left"/>
                 </StackPanel>
             </Expander>
 
             <!-- 排错面板 -->
-            <Expander Header="排错面板（连接状态 / 最近消息 / 重试队列）" IsExpanded="False">
+            <Expander Header="排错面板（连接状态 / 最近消息 / 待重试任务）" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
                     <TextBlock Text="{Binding DiagnosticsSummaryText}" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
@@ -45,7 +45,7 @@
                         <Button Content="手动重连" Click="OnReconnectClicked"/>
                     </StackPanel>
 
-                    <TextBlock Text="最近消息（最多 50 条，预览已截断，含群 OpenID）" FontWeight="SemiBold"/>
+                    <TextBlock Text="最近收到的消息（最多 50 条，内容过长会截断，并显示群 OpenID）" FontWeight="SemiBold"/>
                     <ListBox ItemsSource="{Binding RecentMessages}" Height="140" FontSize="12">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
@@ -54,16 +54,16 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
 
-                    <TextBlock Text="消息日志 dump 导出" FontWeight="SemiBold"/>
-                    <TextBlock Text="把最近收到的消息（最多 1000 条）导出为 JSONL 文件：每行一条消息的全字段结构化数据，含消息 id、群 OpenID、成员 OpenID、昵称、时间、消息段、分类结果、学科识别结果与文件关联。导出内容不含 AppSecret/Token/ApiKey。"
+                    <TextBlock Text="导出消息记录" FontWeight="SemiBold"/>
+                    <TextBlock Text="把最近收到的消息（最多 1000 条）导出成一个 JSONL 文件（记事本也能打开，每行一条消息），包含消息编号、群 OpenID、成员 OpenID、昵称、时间、消息内容、分类结果、学科识别结果和关联文件。导出内容不含 AppSecret、AccessToken、API Key 等密钥。"
                                FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Content="导出消息日志 dump" Click="OnExportDumpClicked"/>
+                        <Button Content="导出消息记录" Click="OnExportDumpClicked"/>
                         <TextBox Text="{Binding DumpFeedback, Mode=OneWay}" IsReadOnly="True"
                                  AcceptsReturn="False" MinWidth="320"/>
                     </StackPanel>
 
-                    <TextBlock Text="重试队列" FontWeight="SemiBold"/>
+                    <TextBlock Text="待重试任务" FontWeight="SemiBold"/>
                     <ListBox ItemsSource="{Binding RetryQueueLines}" Height="140" FontSize="12"
                              SelectedItem="{Binding SelectedRetryLine, Mode=TwoWay}">
                         <ListBox.ItemTemplate>
@@ -72,13 +72,13 @@
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
-                    <Button Content="重放选中条目" Click="OnReplayClicked" HorizontalAlignment="Left"/>
-                    <TextBlock Text="在重试队列列表中选中一条后点击重放；重放会重置尝试计数并立即执行。"
+                    <Button Content="重新执行选中任务" Click="OnReplayClicked" HorizontalAlignment="Left"/>
+                    <TextBlock Text="在列表里选中一条，再点「重新执行选中任务」；失败次数会清零并立刻重试。"
                                FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
 
                     <Separator Margin="0,6,0,0"/>
 
-                    <TextBlock Text="NapCat 日志（后台实时）" FontWeight="SemiBold"/>
+                    <TextBlock Text="NapCat 后台日志（实时刷新）" FontWeight="SemiBold"/>
                     <TextBlock Text="{Binding NapCatStatusText}" TextWrapping="Wrap" FontSize="12" Opacity="0.85"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <ToggleSwitch Content="暂停滚动" IsChecked="{Binding NapCatLogPaused, Mode=TwoWay}"/>
@@ -96,7 +96,7 @@
             <!-- 配置导入导出 -->
             <Expander Header="配置导入 / 导出 / 恢复默认" IsExpanded="False">
                 <StackPanel Spacing="10" Margin="0,6">
-                    <TextBlock Text="导出内容已脱敏（不含 AppSecret / 云端 API Key）；导入时敏感字段保留本机值。"
+                    <TextBlock Text="导出的设置不含 AppSecret、API Key 等密钥；导入时，本机已保存的密钥不会被覆盖。"
                                FontStyle="Italic" Opacity="0.8" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="导出设置到剪贴板" Click="OnExportClicked"/>

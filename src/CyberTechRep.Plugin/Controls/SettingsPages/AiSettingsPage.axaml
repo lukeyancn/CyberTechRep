@@ -11,46 +11,37 @@
         <StackPanel Margin="24" MaxWidth="720" Spacing="10">
 
             <TextBlock Text="CyberTechRep AI" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
-            <TextBlock Text="AI 设置集中页：云端 API 接口配置与四种识别用途的 AI 参与方式都在本页。保存后立即热生效。"
+            <TextBlock Text="本页集中管理 AI 识别：云端 API 的连接信息，以及哪些识别环节使用 AI。保存后立即生效。"
                        TextWrapping="Wrap" Opacity="0.85"/>
 
-            <!-- 云端 API 接口配置（全插件唯一凭据入口，自「分类」页迁入） -->
+            <!-- 云端 API 接口配置（全插件唯一凭据入口） -->
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="8">
                     <TextBlock Text="云端 API 接口" FontWeight="SemiBold"/>
-                    <TextBlock Text="云端凭据的唯一配置入口（此前分散在「CyberTechRep 分类」页，已迁入本页；settings.json 旧位置字段自动迁移，已配置密钥的用户无需重新填写）。未配置时，即使下方用途选择「唯一识别/后补识别」，AI 级也会自动跳过并按原有链路降级，行为与现状一致。"
+                    <TextBlock Text="在这里填写云端 AI 服务的连接信息（整个插件只有本页需要填）。不填也能正常使用：即使下面选了「唯一识别」或「后补识别」，插件也会自动跳过 AI，改用关键词识别。"
                                TextWrapping="Wrap" Opacity="0.75"/>
-                    <ToggleSwitch Content="启用 AI 识别（总开关；关闭后所有 AI 用途自动跳过）"
+                    <ToggleSwitch Content="启用 AI 识别（总开关；关闭后下面所有用途都不再调用 AI）"
                                   IsChecked="{Binding Settings.Ai.AiEnabled}"/>
-                    <TextBlock Text="云端 API 提供者"/>
+                    <TextBlock Text="服务商类型"/>
                     <ComboBox SelectedIndex="{Binding CloudProviderIndex, Mode=TwoWay}" MinWidth="240"
                               HorizontalAlignment="Left">
-                        <ComboBoxItem Content="OpenAI 兼容（chat/completions）"/>
-                        <ComboBoxItem Content="Anthropic（Messages API）"/>
+                        <ComboBoxItem Content="OpenAI 兼容接口（多数服务商可选）"/>
+                        <ComboBoxItem Content="Anthropic 接口（Claude 官方）"/>
                     </ComboBox>
-                    <TextBlock Text="API 端点（OpenAI 兼容 Base URL，或 Anthropic API Base，自动补 /v1/messages）"/>
+                    <TextBlock Text="API 地址（按服务商提供的接口地址填写，例如 https://api.example.com/v1）"/>
                     <TextBox Text="{Binding Settings.Ai.CloudEndpoint}"
                              Watermark="https://api.example.com/v1"/>
-                    <TextBlock Text="API Key（DPAPI 加密存储，脱敏显示，绝不写入日志）"/>
+                    <TextBlock Text="API Key（只保存在本机并加密，输入时不显示明文，也不会写进日志）"/>
                     <TextBox Text="{Binding CloudApiKeyPlain, Mode=TwoWay}" PasswordChar="●"/>
                     <TextBlock Text="模型名称"/>
                     <TextBox Text="{Binding Settings.Ai.CloudModelName}"/>
-                    <TextBlock Text="云端每日调用上限（费用/频率保护，超过后 AI 级自动降级）"/>
+                    <TextBlock Text="每天最多调用多少次（防止用量失控；超出后当天自动改用关键词识别；0 = 不限制）"/>
                     <NumericUpDown Value="{Binding Settings.Ai.CloudDailyCallLimit}" Minimum="0"
                                    Maximum="100000" Increment="10"/>
-                    <TextBlock Text="置信度阈值（AI 判定低于此值时进入人工确认队列）"/>
+                    <TextBlock Text="识别可信度阈值（AI 判断的可信度低于这个值时，消息转入人工确认队列）"/>
                     <Slider Minimum="0" Maximum="1" Value="{Binding Settings.Ai.ConfidenceThreshold}"
                             TickFrequency="0.05"/>
                     <TextBlock Text="{Binding ConfidenceThresholdText}" Opacity="0.8"/>
-                </StackPanel>
-            </Border>
-
-            <!-- 本地 ONNX：占位实现，不提供设置入口 -->
-            <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
-                <StackPanel Spacing="4">
-                    <TextBlock Text="本地模型（ONNX）" FontWeight="SemiBold"/>
-                    <TextBlock Text="本地 ONNX 识别为占位实现（未接入真实推理，模型缺失时自动跳过并降级），暂不提供设置入口，不可配置；云端 API 不受影响。此前的「本地模型优先」「本地模型路径」设置项已从设置 UI 移除。"
-                               TextWrapping="Wrap" Opacity="0.75"/>
                 </StackPanel>
             </Border>
 
@@ -58,12 +49,12 @@
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="6">
                     <TextBlock Text="① 通知作业学科分类" FontWeight="SemiBold"/>
-                    <TextBlock Text="判断作业消息属于哪个学科（数学/语文/英语等）。后补识别（默认）= 关键词不中或低置信时才用 AI（即现有三级链行为）；唯一识别 = 跳过关键词直接用 AI。"
+                    <TextBlock Text="判断作业消息属于哪个学科（数学、语文、英语等）。后补识别（默认）：先用关键词判断，判断不了才问 AI；唯一识别：直接让 AI 判断。"
                                TextWrapping="Wrap" Opacity="0.8"/>
                     <ComboBox SelectedIndex="{Binding SubjectClassifyModeIndex}" MinWidth="180" HorizontalAlignment="Left">
-                        <ComboBoxItem Content="关闭"/>
-                        <ComboBoxItem Content="唯一识别（AI 优先）"/>
-                        <ComboBoxItem Content="后补识别（关键词不中才 AI）"/>
+                        <ComboBoxItem Content="关闭（不用 AI）"/>
+                        <ComboBoxItem Content="唯一识别（直接用 AI 判断）"/>
+                        <ComboBoxItem Content="后补识别（先关键词，判断不了再问 AI）"/>
                     </ComboBox>
                 </StackPanel>
             </Border>
@@ -72,14 +63,14 @@
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="6">
                     <TextBlock Text="② 通知/作业二分类" FontWeight="SemiBold"/>
-                    <TextBlock Text="判断消息是通知还是作业（现有实现为关键词规则；未命中任何关键词或两侧命中数相等时一律归为通知）。后补识别 = 关键词未命中（默认归通知前）时问 AI；唯一识别 = 每条消息都直接问 AI。"
+                    <TextBlock Text="判断一条消息是通知还是作业。默认全部用关键词判断，关键词都没命中时算通知；本项默认关闭（不用 AI）。后补识别：关键词判断不了时才问 AI；唯一识别：每条消息都问 AI。"
                                TextWrapping="Wrap" Opacity="0.8"/>
                     <ComboBox SelectedIndex="{Binding MessageClassifyModeIndex}" MinWidth="180" HorizontalAlignment="Left">
-                        <ComboBoxItem Content="关闭"/>
-                        <ComboBoxItem Content="唯一识别（AI 优先）"/>
-                        <ComboBoxItem Content="后补识别（关键词不中才 AI）"/>
+                        <ComboBoxItem Content="关闭（不用 AI）"/>
+                        <ComboBoxItem Content="唯一识别（每条消息都问 AI）"/>
+                        <ComboBoxItem Content="后补识别（关键词判断不了才问 AI）"/>
                     </ComboBox>
-                    <TextBlock Text="⚠ 成本提示：唯一识别模式会对每一条收到的消息调用 AI，产生持续的 API 费用与每日调用上限消耗，请确认后再开启。"
+                    <TextBlock Text="⚠ 费用提示：选「唯一识别」后，每收到一条消息都会调用一次 AI，会持续产生 API 费用并消耗每天的调用次数，请确认后再开启。"
                                TextWrapping="Wrap" Foreground="#B8860B"/>
                 </StackPanel>
             </Border>
@@ -88,12 +79,12 @@
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="6">
                     <TextBlock Text="③ 无关键词消息兜底识别" FontWeight="SemiBold"/>
-                    <TextBlock Text="消息文本不含任何通知/作业关键词时（默认会归为通知），先兜底走学科识别链：能可信判断学科的按作业归档，判断不了则落为通知。后补识别 = 先试学科关键词再 AI；唯一识别 = 直接 AI。"
+                    <TextBlock Text="消息里没有任何通知 / 作业关键词时（默认算通知），先试着识别学科：能确认学科的按作业归档，确认不了仍算通知。本项默认关闭（不用 AI）。后补识别：先查学科关键词再问 AI；唯一识别：直接问 AI。"
                                TextWrapping="Wrap" Opacity="0.8"/>
                     <ComboBox SelectedIndex="{Binding NoKeywordFallbackModeIndex}" MinWidth="180" HorizontalAlignment="Left">
-                        <ComboBoxItem Content="关闭"/>
-                        <ComboBoxItem Content="唯一识别（AI 优先）"/>
-                        <ComboBoxItem Content="后补识别（先关键词后 AI）"/>
+                        <ComboBoxItem Content="关闭（不用 AI）"/>
+                        <ComboBoxItem Content="唯一识别（直接问 AI）"/>
+                        <ComboBoxItem Content="后补识别（先查关键词再问 AI）"/>
                     </ComboBox>
                 </StackPanel>
             </Border>
@@ -102,15 +93,15 @@
             <Border BorderBrush="#33808080" BorderThickness="1" CornerRadius="6" Padding="14,10">
                 <StackPanel Spacing="6">
                     <TextBlock Text="④ 文件分类" FontWeight="SemiBold"/>
-                    <TextBlock Text="文件本身不单独分类：文件随其所在消息的学科归档（识别完成后自动移动到「学科/日期」目录），因此本用途没有独立模式，实际行为完全跟随「① 通知作业学科分类」的模式选择。"
+                    <TextBlock Text="文件跟着它所属消息的学科归档（识别完成后自动移动到「学科/日期」目录），没有单独的模式开关，跟随上面第 ① 项的选择。"
                                TextWrapping="Wrap" Opacity="0.8"/>
                 </StackPanel>
             </Border>
 
             <!-- AI 采样参数 -->
-            <Expander Header="高级：AI 采样参数" IsExpanded="False">
+            <Expander Header="高级：AI 回答的随机程度" IsExpanded="False">
                 <StackPanel Spacing="8" Margin="0,6">
-                    <TextBlock Text="云端 LLM 采样温度（0 = 最确定；分类任务建议 0）"/>
+                    <TextBlock Text="AI 回答的随机性（0 = 最稳定；识别分类建议保持 0，一般不用改）"/>
                     <NumericUpDown Value="{Binding Settings.Ai.CloudTemperature}" Minimum="0" Maximum="2"
                                    Increment="0.1" FormatString="0.0"/>
                 </StackPanel>

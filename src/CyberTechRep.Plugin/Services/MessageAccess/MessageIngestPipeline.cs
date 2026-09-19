@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using CyberTechRep.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -136,8 +137,9 @@ public sealed class MessageIngestPipeline
     /// <param name="rawJson">原始 JSON（脱敏快照）。</param>
     /// <param name="receivedAt">
     /// 时间覆盖（断点续传补齐历史消息时传原始时间）。为 null 时优先采用协议端原始时间
-    /// <see cref="GroupMessageEvent.RawTimestamp"/>（NapCat 透传 OneBot <c>time</c>），
-    /// 缺失/非法才回落到本地当前时间——保证「实时」与「历史补齐」两条路径的时间基准同源。
+    /// <see cref="GroupMessageEvent.RawTimestamp"/>——NapCat 透传 OneBot <c>time</c>（Unix 秒）、
+    /// QQ 官方平台为 RFC3339/ISO8601 字符串，两种形式统一由 <see cref="ParseSourceTimestamp"/> 解析；
+    /// 缺失/非法/越界才回落到本地当前时间——保证「实时」与「历史补齐」两条路径的时间基准同源。
     /// </param>
     public static MessageRecord MapToRecord(GroupMessageEvent ev, string rawJson,
         DateTimeOffset? receivedAt = null)
@@ -187,12 +189,42 @@ public sealed class MessageIngestPipeline
         };
     }
 
-    /// <summary>协议端原始时间戳解析（Unix 秒）：缺失/非法/明显异常（2000 年前或未来 1 天以上）→ 0。</summary>
+    /// <summary>
+    /// 协议端原始时间戳解析（双接入模式兼容）：成功返回 Unix 秒，缺失/非法/明显异常 → 0。
+    /// <list type="number">
+    /// <item><b>NapCat（OneBot）</b>：事件 <c>time</c> 字段透传为 Unix 秒数字符串（如 <c>"1725710001"</c>），
+    /// 走 <see cref="long.TryParse(string?, out long)"/>，语义与旧版完全一致；</item>
+    /// <item><b>QQ 官方平台</b>：事件 <c>timestamp</c> 为 RFC3339/ISO8601 绝对时间
+    /// （如 <c>"2026-09-18T23:39:00+08:00"</c> 或 <c>"2026-09-18T15:39:00Z"</c>），
+    /// 走 <see cref="DateTimeOffset.TryParse(string?, IFormatProvider?, DateTimeStyles, out DateTimeOffset)"/>
+    /// （<see cref="CultureInfo.InvariantCulture"/>，不附加任何样式）后取 <see cref="DateTimeOffset.ToUnixTimeSeconds"/>。
+    /// 无偏移后缀的字符串按本机时区解释（<see cref="DateTimeOffset.TryParse(string, out DateTimeOffset)"/> 既有语义）。</item>
+    /// </list>
+    /// <para>
+    /// 安全边界（两种来源共用，越界一律返回 0）：不早于 2000-01-01（Unix 秒 <c>946684800</c>，
+    /// 早于该值的只可能是解析异常/脏数据），不晚于「明天」（24 小时容差：容忍协议端与本机的
+    /// 时钟偏差与跨时区表示，同时拒绝明显错误的未来时间）。0 = 协议端未提供，接入侧回落本机接收时间。
+    /// </para>
+    /// </summary>
     internal static long ParseSourceTimestamp(string? rawTimestamp)
     {
-        if (!long.TryParse(rawTimestamp, out var seconds) || seconds <= 0)
+        if (string.IsNullOrWhiteSpace(rawTimestamp))
         {
             return 0;
+        }
+
+        long seconds;
+        // ① NapCat（OneBot time）：Unix 秒数字符串，保持既有解析语义不变（直接进入下方边界校验）
+        if (!long.TryParse(rawTimestamp, out seconds))
+        {
+            // ② QQ 官方平台：RFC3339/ISO8601 绝对时间（含 +08:00 偏移与 Z 两种形式）
+            if (!DateTimeOffset.TryParse(rawTimestamp, CultureInfo.InvariantCulture, DateTimeStyles.None,
+                    out var parsed))
+            {
+                return 0;
+            }
+
+            seconds = parsed.ToUnixTimeSeconds();
         }
 
         const long Year2000 = 946684800;
